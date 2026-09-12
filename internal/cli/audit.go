@@ -37,7 +37,12 @@ func newAuditCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "scope the sweep to this namespace (and anything nested under it)")
-	cmd.Flags().Float64Var(&minScore, "min-score", 0.75, "minimum cosine similarity to surface a pair")
+	// 0.5 is calibrated against a small local model (Ollama's all-minilm,
+	// 384-dim): a genuine paraphrase pair scored ~0.69, unrelated pairs
+	// ~0.36-0.37 — small models compress cosine similarity into a narrower
+	// band than one might assume, so don't reuse thresholds tuned for a
+	// different model without recalibrating. Always overridable per call.
+	cmd.Flags().Float64Var(&minScore, "min-score", 0.5, "minimum cosine similarity to surface a pair (tune for your embedding model)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of pairs to return (0 = unlimited)")
 
 	return cmd

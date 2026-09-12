@@ -32,8 +32,9 @@ type Candidate struct {
 // false positives here are cheap for an agent to glance at and dismiss (the
 // same tradeoff SPEC.md already accepts for code-derived staleness), and
 // this path exists specifically to catch differently-worded matches lexical
-// search would otherwise miss entirely.
-const minSemanticScore = 0.6
+// search would otherwise miss entirely. 0.5 matches audit's default — see
+// its doc comment for the empirical calibration against a small local model.
+const minSemanticScore = 0.5
 
 const (
 	sourceKindStatement = "statement"
