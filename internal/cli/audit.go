@@ -1,0 +1,44 @@
+package cli
+
+import (
+	"github.com/spf13/cobra"
+
+	"github.com/nicklecoder/requiem/internal/index"
+)
+
+func newAuditCmd() *cobra.Command {
+	var namespace string
+	var minScore float64
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Sweep the corpus for candidate conflicting/duplicate statement pairs",
+		Long: "Ranks statement pairs by embedding similarity, skipping any pair that\n" +
+			"already has a relationship recorded between them. Requiem surfaces the\n" +
+			"candidate only — classifying a pair as a real conflict, a duplicate, or a\n" +
+			"false positive is the calling agent's job, recorded afterward via `link\n" +
+			"--type conflicts_with|duplicates|not_related`.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, err := openService()
+			if err != nil {
+				return err
+			}
+			candidates, err := svc.Audit(namespace, minScore, limit)
+			if err != nil {
+				return err
+			}
+			if candidates == nil {
+				candidates = []index.PairCandidate{}
+			}
+			return printJSON(candidates)
+		},
+	}
+
+	cmd.Flags().StringVar(&namespace, "namespace", "", "scope the sweep to this namespace (and anything nested under it)")
+	cmd.Flags().Float64Var(&minScore, "min-score", 0.75, "minimum cosine similarity to surface a pair")
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of pairs to return (0 = unlimited)")
+
+	return cmd
+}

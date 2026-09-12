@@ -1,0 +1,46 @@
+package cli
+
+import (
+	"github.com/spf13/cobra"
+
+	"github.com/nicklecoder/requiem/internal/requiem"
+)
+
+func newListCmd() *cobra.Command {
+	var namespace, kind, status, tag string
+	var needsEmbedding bool
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List compact statement summaries matching filters",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, err := openService()
+			if err != nil {
+				return err
+			}
+			summaries, err := svc.List(requiem.ListFilter{
+				Namespace:      namespace,
+				Kind:           kind,
+				Status:         status,
+				Tag:            tag,
+				NeedsEmbedding: needsEmbedding,
+			})
+			if err != nil {
+				return err
+			}
+			if summaries == nil {
+				summaries = []requiem.StatementSummary{}
+			}
+			return printJSON(summaries)
+		},
+	}
+
+	cmd.Flags().StringVar(&namespace, "namespace", "", "filter by namespace")
+	cmd.Flags().StringVar(&kind, "kind", "", "filter by kind")
+	cmd.Flags().StringVar(&status, "status", "", "filter by status")
+	cmd.Flags().StringVar(&tag, "tag", "", "filter by tag")
+	cmd.Flags().BoolVar(&needsEmbedding, "needs-embedding", false, "only statements with a missing or stale embedding")
+
+	return cmd
+}

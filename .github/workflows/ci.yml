@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  # Build-only (no test run) smoke step for platforms we don't run tests
+  # on: exists specifically to catch a future dependency accidentally
+  # reintroducing cgo, which would silently break the single-static-binary
+  # distribution goal that pure-Go modernc.org/sqlite was chosen for.
+  cross-compile:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [darwin/amd64, darwin/arm64, windows/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build ${{ matrix.target }}
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS="${{ matrix.target }}"
+          GOARCH="${GOOS#*/}"
+          GOOS="${GOOS%/*}"
+          export GOOS GOARCH
+          go build -o /dev/null ./cmd/requiem
