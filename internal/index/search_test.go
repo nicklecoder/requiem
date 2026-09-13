@@ -1,6 +1,8 @@
 package index
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -437,5 +439,156 @@ func TestCheck_LimitTruncatesLowestRankedFirst(t *testing.T) {
 		if limited[i].FullID != all[i].FullID {
 			t.Fatalf("limit must keep the best-ranked prefix: got %+v, want prefix of %+v", limited, all)
 		}
+	}
+}
+
+// seedCorpus creates n statements sharing `common` and gives each a unique
+// rare term, so document frequency has enough documents to mean something.
+func seedCorpus(t *testing.T, s *store.Store, ix *Index, n int, common string) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		seedStatement(t, s, model.Statement{
+			ID: fmt.Sprintf("s%d", i), Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: fmt.Sprintf("%s and unique%d", common, i),
+		})
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+}
+
+// The filter adapts to the corpus rather than to English: in an auth-heavy
+// namespace "token" saturates and is dropped, which no stopword list catches.
+func TestBuildMatchQuery_DropsSaturatingTermsKeepsRareOnes(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedCorpus(t, s, ix, 30, "the session token")
+
+	q, err := ix.buildMatchQuery("should the session token expire unique7", statementsVocab, statementsFTSTable)
+	if err != nil {
+		t.Fatalf("buildMatchQuery: %v", err)
+	}
+	for _, dropped := range []string{"the", "session", "token"} {
+		if strings.Contains(q, `"`+dropped+`"`) {
+			t.Fatalf("expected the saturating term %q to be dropped, got: %s", dropped, q)
+		}
+	}
+	for _, kept := range []string{"should", "expire", "unique7"} {
+		if !strings.Contains(q, `"`+kept+`"`) {
+			t.Fatalf("expected the rare term %q to be kept, got: %s", kept, q)
+		}
+	}
+}
+
+// Regression: this filter is more aggressive than the FTS5 clamp it models —
+// the clamp only lowers a score, while dropping a term stops its documents
+// being retrieved at all. On a tiny corpus every term saturates, which would
+// empty the query.
+func TestBuildMatchQuery_NoFilteringBelowCorpusFloor(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedCorpus(t, s, ix, 3, "the session token")
+
+	q, err := ix.buildMatchQuery("the session token", statementsVocab, statementsFTSTable)
+	if err != nil {
+		t.Fatalf("buildMatchQuery: %v", err)
+	}
+	for _, term := range []string{"the", "session", "token"} {
+		if !strings.Contains(q, `"`+term+`"`) {
+			t.Fatalf("below the corpus floor nothing may be dropped, %q is missing from: %s", term, q)
+		}
+	}
+}
+
+// An empty MATCH returns nothing, which an agent would read as "no prior
+// decisions" — worse than an arbitrary ranked list.
+func TestBuildMatchQuery_KeepsEverythingWhenAllTermsSaturate(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedCorpus(t, s, ix, 30, "session token")
+
+	q, err := ix.buildMatchQuery("session token", statementsVocab, statementsFTSTable)
+	if err != nil {
+		t.Fatalf("buildMatchQuery: %v", err)
+	}
+	if !strings.Contains(q, `"session"`) || !strings.Contains(q, `"token"`) {
+		t.Fatalf("expected the fallback to keep every term, got: %s", q)
+	}
+}
+
+// Punctuation must not defeat the lookup: "tokens." has to resolve to the
+// indexed term "tokens".
+func TestBuildMatchQuery_NormalizesPunctuationAndCase(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedCorpus(t, s, ix, 30, "the session token")
+
+	q, err := ix.buildMatchQuery("TOKEN, unique3", statementsVocab, statementsFTSTable)
+	if err != nil {
+		t.Fatalf("buildMatchQuery: %v", err)
+	}
+	if strings.Contains(strings.ToLower(q), `"token,"`) {
+		t.Fatalf("expected 'TOKEN,' to normalize and be dropped as saturating, got: %s", q)
+	}
+	if !strings.Contains(q, `"unique3"`) {
+		t.Fatalf("expected the rare term kept, got: %s", q)
+	}
+}
+
+// Frequencies are per table: a term saturating the statements corpus may
+// still discriminate among rejections, so the two queries are built apart.
+// Each term here saturates exactly one of the two tables, so neither query
+// falls back to keeping everything.
+func TestBuildMatchQuery_FrequenciesAreScopedPerTable(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedCorpus(t, s, ix, 30, "token")
+	for i := 0; i < 30; i++ {
+		if err := s.AppendRejection(model.Rejection{
+			ID: fmt.Sprintf("r%d", i), Namespace: "ns", RejectedAt: time.Now().UTC(),
+			Body: fmt.Sprintf("caching proposal %d", i),
+		}); err != nil {
+			t.Fatalf("AppendRejection: %v", err)
+		}
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	stmtQ, err := ix.buildMatchQuery("token caching", statementsVocab, statementsFTSTable)
+	if err != nil {
+		t.Fatalf("statement query: %v", err)
+	}
+	rejQ, err := ix.buildMatchQuery("token caching", rejectionsVocab, rejectionsFTSTable)
+	if err != nil {
+		t.Fatalf("rejection query: %v", err)
+	}
+
+	// "token" saturates statements and is absent from rejections.
+	if strings.Contains(stmtQ, `"token"`) {
+		t.Fatalf("expected 'token' dropped for statements, got: %s", stmtQ)
+	}
+	if !strings.Contains(rejQ, `"token"`) {
+		t.Fatalf("expected 'token' kept for rejections, where it is rare: %s", rejQ)
+	}
+	// "caching" is the mirror image.
+	if !strings.Contains(stmtQ, `"caching"`) {
+		t.Fatalf("expected 'caching' kept for statements, where it is rare: %s", stmtQ)
+	}
+	if strings.Contains(rejQ, `"caching"`) {
+		t.Fatalf("expected 'caching' dropped for rejections, got: %s", rejQ)
+	}
+}
+
+func TestScanLimit_WideMultipleAndUnlimitedPassesThrough(t *testing.T) {
+	if got := scanLimit(0); got != 0 {
+		t.Fatalf("an explicit request for everything must not be capped, got %d", got)
+	}
+	if got := scanLimit(10); got < 100 {
+		t.Fatalf("cap must stay a wide multiple of the request, got %d", got)
+	}
+	if got := scanLimit(50); got != 500 {
+		t.Fatalf("expected 10x for larger limits, got %d", got)
 	}
 }

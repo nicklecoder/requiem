@@ -99,4 +99,14 @@ var schema = []string{
 	// in reindex.go alongside the relational tables, in the same transaction.
 	`CREATE VIRTUAL TABLE IF NOT EXISTS statements_fts USING fts5(full_id UNINDEXED, namespace, body, tags)`,
 	`CREATE VIRTUAL TABLE IF NOT EXISTS rejections_fts USING fts5(full_id UNINDEXED, namespace, body)`,
+
+	// fts5vocab exposes each FTS index's term -> document-frequency table.
+	// It is a view over data FTS5 already maintains, not a second index:
+	// nothing writes to it, reindex never touches it, and it cannot fall out
+	// of sync with the table it reads. Used by buildMatchQuery to drop query
+	// terms that occur in more than half the corpus — precisely the terms
+	// FTS5's own bm25 scores as carrying no information (see fuse). Declared
+	// after the FTS tables because a vocab table names an existing one.
+	`CREATE VIRTUAL TABLE IF NOT EXISTS statements_vocab USING fts5vocab(statements_fts, row)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS rejections_vocab USING fts5vocab(rejections_fts, row)`,
 }

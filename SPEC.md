@@ -90,7 +90,13 @@ Fusion also changes what happens when both paths find the same statement. Previo
 
 ### Query construction
 
-`check` builds its FTS query by OR-joining the draft's tokens. Terms occurring in more than half the corpus are dropped first, via an `fts5vocab` lookup — these are exactly the terms FTS5 already scores as carrying no information. Being frequency-driven rather than a fixed word list, this adapts to the corpus and catches domain stopwords (`token` in an auth-heavy namespace) that no English stoplist would. If *every* term would be dropped, all are kept: arbitrary results beat none.
+`check` builds its FTS query by OR-joining the draft's tokens. Terms occurring in more than half the rows are dropped first, via an `fts5vocab` lookup — exactly where FTS5 clamps a term's IDF to `1e-6`, so these are the terms its own ranking already treats as carrying no information. Being frequency-driven rather than a fixed word list, this adapts to the corpus and catches domain stopwords (`token` in an auth-heavy namespace) that no English stoplist would. Frequencies are counted per FTS table, since a term saturating the statement corpus may still discriminate among rejections.
+
+Two limits on it, both deliberate.
+
+It is **more aggressive than the clamp it mirrors**: the clamp lowers a score, while dropping a term removes its documents from the result set entirely. That difference is harmless on a large corpus and destructive on a small one, where "more than half the rows" describes a handful of documents rather than the vocabulary — at the limit, every term in a single-document table saturates it. So no filtering happens below a floor of twenty rows, which costs nothing, because the blowup this exists to prevent needs a corpus large enough for a full-table match to be expensive. If every term would be dropped above that floor, all are kept: an empty query returns nothing, which reads as "no prior decisions" rather than "no discriminating terms".
+
+It **reduces broad matching without bounding it**. Measured on a 200-statement corpus, an ordinary draft sentence matched 86% of rows unfiltered and 66% filtered. The remainder is not a tuning failure: several terms that are each individually informative still union to most of the corpus, and no per-term threshold can bound a union. Lowering the threshold to chase that number would discard real signal. Bounding what reaches the caller is the result limit's job, which is why both exist.
 
 ### Coverage honesty
 

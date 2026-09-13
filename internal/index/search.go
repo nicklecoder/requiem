@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/nicklecoder/requiem/internal/model"
 )
@@ -76,15 +77,28 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32, 
 
 	var lists [][]Candidate
 
-	if matchQuery := buildMatchQuery(text); matchQuery != "" {
-		statementCandidates, err := ix.checkStatements(matchQuery, namespace, tags)
+	// Built per table: each is filtered against its own document
+	// frequencies, so a term saturating one corpus can still discriminate in
+	// the other.
+	statementQuery, err := ix.buildMatchQuery(text, statementsVocab, statementsFTSTable)
+	if err != nil {
+		return nil, fmt.Errorf("build statement query: %w", err)
+	}
+	if statementQuery != "" {
+		statementCandidates, err := ix.checkStatements(statementQuery, namespace, tags, scanLimit(limit))
 		if err != nil {
 			return nil, fmt.Errorf("check statements: %w", err)
 		}
 		lists = append(lists, markKind(statementCandidates, matchLexical))
+	}
 
-		if len(tags) == 0 {
-			rejectionCandidates, err := ix.checkRejections(matchQuery, namespace)
+	if len(tags) == 0 {
+		rejectionQuery, err := ix.buildMatchQuery(text, rejectionsVocab, rejectionsFTSTable)
+		if err != nil {
+			return nil, fmt.Errorf("build rejection query: %w", err)
+		}
+		if rejectionQuery != "" {
+			rejectionCandidates, err := ix.checkRejections(rejectionQuery, namespace, scanLimit(limit))
 			if err != nil {
 				return nil, fmt.Errorf("check rejections: %w", err)
 			}
@@ -105,6 +119,32 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32, 
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// scanLimit bounds how many rows each lexical source materializes before
+// fusion. It is a guard, not a second ranking decision: the cap is a wide
+// multiple of what the caller asked for, so in practice it only ever trims a
+// tail that truncation would discard anyway.
+//
+// It is not strictly free, and the comment should say so rather than claim
+// otherwise. A candidate sitting deep in the lexical list but at the top of
+// the semantic one loses its lexical contribution if the cap cuts it, which
+// can shift ordering — though not membership, since the semantic list still
+// carries it. At 10x the requested limit that requires a pathological corpus.
+// An explicit request for everything (limit 0) disables the cap entirely,
+// because silently capping "unlimited" would be a lie.
+func scanLimit(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	const (
+		multiple = 10
+		floor    = 100
+	)
+	if n := limit * multiple; n > floor {
+		return n
+	}
+	return floor
 }
 
 // rrfK is the conventional Reciprocal Rank Fusion constant. Its only job is
@@ -287,7 +327,7 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 	return out, nil
 }
 
-func (ix *Index) checkStatements(matchQuery, namespace string, tags []string) ([]Candidate, error) {
+func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, scanCap int) ([]Candidate, error) {
 	query := `SELECT s.full_id, s.namespace, s.kind, s.status, s.body, fts.rank
 		FROM statements_fts fts
 		JOIN statements s ON s.full_id = fts.full_id
@@ -303,6 +343,10 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string) ([
 		args = append(args, tag)
 	}
 	query += ` ORDER BY fts.rank`
+	if scanCap > 0 {
+		query += ` LIMIT ?`
+		args = append(args, scanCap)
+	}
 
 	rows, err := ix.db.Query(query, args...)
 	if err != nil {
@@ -326,7 +370,7 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string) ([
 	return out, rows.Err()
 }
 
-func (ix *Index) checkRejections(matchQuery, namespace string) ([]Candidate, error) {
+func (ix *Index) checkRejections(matchQuery, namespace string, scanCap int) ([]Candidate, error) {
 	query := `SELECT r.full_id, r.namespace, r.body, fts.rank
 		FROM rejections_fts fts
 		JOIN rejections r ON r.full_id = fts.full_id
@@ -338,6 +382,10 @@ func (ix *Index) checkRejections(matchQuery, namespace string) ([]Candidate, err
 		args = append(args, namespace, namespace+"/%")
 	}
 	query += ` ORDER BY fts.rank`
+	if scanCap > 0 {
+		query += ` LIMIT ?`
+		args = append(args, scanCap)
+	}
 
 	rows, err := ix.db.Query(query, args...)
 	if err != nil {
@@ -359,21 +407,159 @@ func (ix *Index) checkRejections(matchQuery, namespace string) ([]Candidate, err
 	return out, rows.Err()
 }
 
+// minCorpusForDFFilter is the corpus size below which no term is dropped.
+//
+// This filter is modelled on FTS5's IDF clamp but is strictly more
+// aggressive than it, and the difference is easy to miss: the clamp affects
+// *ranking* — a saturating term scores ~0 but its documents are still
+// returned — whereas dropping a term from the MATCH affects *retrieval*, and
+// a document matching only that term is never seen at all.
+//
+// On a large corpus that is the entire point, and it is how stopwords get
+// removed. On a small one it is destructive: with three statements, a term
+// in two of them "occurs in more than half the rows" while being evidence of
+// nothing. Taken to the limit, every term of a single-document table
+// saturates it, and the filter would empty the query completely.
+//
+// Below this size the filter is also pointless, which makes the floor cheap:
+// the blowup it exists to prevent (one draft sentence OR-matching 167 of 200
+// rows) needs a corpus large enough for a full-table match to be expensive,
+// and at twenty rows the result cap already bounds the damage.
+const minCorpusForDFFilter = 20
+
+// Each FTS table is paired with its own fts5vocab view. Document frequency
+// is computed per table on purpose: a term saturating the statement corpus
+// may be rare among rejections, and filtering the rejection query by
+// statement frequencies would discard a term that still discriminates there.
+const (
+	statementsFTSTable = "statements_fts"
+	rejectionsFTSTable = "rejections_fts"
+	statementsVocab    = "statements_vocab"
+	rejectionsVocab    = "rejections_vocab"
+)
+
 // buildMatchQuery turns free-form draft text into a safe FTS5 MATCH query:
-// each whitespace-separated token becomes a quoted phrase (escaping
-// embedded quotes), joined with OR. Quoting is what makes this safe against
-// FTS5's query syntax (AND/OR/NOT, -, *, :) appearing incidentally in
-// ordinary prose — a raw pass-through would error or misbehave on it.
-func buildMatchQuery(text string) string {
+// each whitespace-separated token becomes a quoted phrase (escaping embedded
+// quotes), joined with OR. Quoting is what makes this safe against FTS5's
+// query syntax (AND/OR/NOT, -, *, :) appearing incidentally in ordinary
+// prose — a raw pass-through would error or misbehave on it.
+//
+// Terms occurring in more than half the table's rows are dropped first.
+// That threshold is not a guess: it is exactly where FTS5 clamps a term's
+// IDF to 1e-6 (`if (N < 2*nHit)` in fts5_aux.c), so these are the terms its
+// own ranking already treats as carrying no information. Dropping them is
+// what keeps an ordinary English sentence from OR-matching most of the
+// corpus — measured at 167 of 200 rows before this existed.
+//
+// Frequency-driven rather than a fixed stoplist, so it adapts: in an
+// auth-heavy namespace "token" saturates the corpus and is dropped, which no
+// English stopword list would ever catch.
+func (ix *Index) buildMatchQuery(text, vocabTable, ftsTable string) (string, error) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
-		return ""
+		return "", nil
 	}
-	parts := make([]string, 0, len(fields))
-	for _, f := range fields {
+
+	freq, total, err := ix.docFrequencies(vocabTable, ftsTable, fields)
+	if err != nil {
+		return "", err
+	}
+
+	kept := make([]string, 0, len(fields))
+	if total >= minCorpusForDFFilter {
+		for _, f := range fields {
+			// doc*2 > total mirrors FTS5's own N < 2*nHit condition exactly.
+			if freq[normalizeTerm(f)]*2 > total {
+				continue
+			}
+			kept = append(kept, f)
+		}
+	}
+	// If every term saturates the corpus there is nothing left to
+	// discriminate with, and an empty MATCH would return nothing at all.
+	// Arbitrary results beat none: the caller asked a question, and a ranked
+	// guess is more useful than silence it might read as "no prior decisions".
+	if len(kept) == 0 {
+		kept = fields
+	}
+
+	parts := make([]string, 0, len(kept))
+	for _, f := range kept {
 		parts = append(parts, `"`+strings.ReplaceAll(f, `"`, `""`)+`"`)
 	}
-	return strings.Join(parts, " OR ")
+	return strings.Join(parts, " OR "), nil
+}
+
+// docFrequencies looks up how many rows contain each term, plus the table's
+// total row count. Terms are normalized first (see normalizeTerm); anything
+// that fails to match a vocab entry simply returns 0 and is therefore kept.
+func (ix *Index) docFrequencies(vocabTable, ftsTable string, fields []string) (map[string]int, int, error) {
+	terms := make([]string, 0, len(fields))
+	seen := map[string]bool{}
+	for _, f := range fields {
+		t := normalizeTerm(f)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		terms = append(terms, t)
+	}
+	if len(terms) == 0 {
+		return nil, 0, nil
+	}
+
+	// The base table, not the FTS table: they hold one row each per record,
+	// and counting the ordinary table avoids scanning the FTS index.
+	baseTable := "statements"
+	if ftsTable == rejectionsFTSTable {
+		baseTable = "rejections"
+	}
+	var total int
+	// Table names are package constants, never caller input.
+	if err := ix.db.QueryRow(`SELECT count(*) FROM ` + baseTable).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(terms)), ",")
+	args := make([]interface{}, len(terms))
+	for i, t := range terms {
+		args[i] = t
+	}
+	rows, err := ix.db.Query(`SELECT term, doc FROM `+vocabTable+` WHERE term IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	freq := make(map[string]int, len(terms))
+	for rows.Next() {
+		var term string
+		var doc int
+		if err := rows.Scan(&term, &doc); err != nil {
+			return nil, 0, err
+		}
+		freq[term] = doc
+	}
+	return freq, total, rows.Err()
+}
+
+// normalizeTerm approximates what the unicode61 tokenizer did on the way in:
+// case-fold, and strip the leading/trailing punctuation that tokenizer treats
+// as a separator, so "tokens." looks up the indexed term "tokens".
+//
+// It is an approximation on purpose. A word with interior punctuation
+// ("auth/session") tokenizes into several terms and will not match a single
+// vocab row, so its frequency reads as 0 and the term is kept. Every way this
+// can be wrong therefore fails toward keeping a term, which only forgoes an
+// optimization — whereas dropping a term wrongly would discard signal the
+// caller asked us to search for.
+func normalizeTerm(s string) string {
+	return strings.TrimFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 func searchExcerpt(body string) string {
