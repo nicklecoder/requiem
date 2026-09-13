@@ -105,7 +105,8 @@ Where `check` compares one draft against prior decisions, `audit` compares every
 |---|---|
 | `id` | namespace-relative slug, doubles as the filename; stable once other statements may reference it — renaming is a deliberate operation |
 | `namespace` | hierarchical path, mirrors directory structure |
-| `kind` | requirement / rule / design — plain string, not a hard-constrained enum, so new kinds can be added without a migration |
+| `kind` | requirement / rule / design — plain string, not a hard-constrained enum, so new kinds can be added without a migration. Deliberately **inert**: it exists for grouping and retrieval (`list --kind`), not semantics — see Modality below |
+| `modality` | optional, closed: `must` / `should` / `may` / `must_not` / `should_not`. The normative strength of the statement — see Modality below |
 | `body` | |
 | `status` | active / superseded / deprecated |
 | `tags` | |
@@ -122,6 +123,22 @@ Three fields are *derived at read time and never written to the file*: `stale` (
 - Indexed into SQLite alongside statements but tagged distinctly (`source_kind: rejection`), so `check` can surface them clearly labeled "previously rejected" rather than mixed in with active statements.
 - Follows the same stage → commit model as everything else — not permanent until committed.
 
+### Modality
+
+`kind` and normative strength are orthogonal, and only one of them can bear semantics.
+
+Category resists closure. ISO/IEC/IEEE 29148 splits requirements into functional, quality, usability, interface and more, and the boundary between functional and non-functional is famously unclear in practice — many requirements sit on both sides. Asking an agent to pick one value from a closed category set produces inconsistent answers across sessions, which splits statements that belong together. The Volere requirements shell is explicit that a requirement's Type exists "as an aid to discovering the requirements and to be able to group the requirements that are relevant to a specific expert specialty" — retrieval, not meaning. That is exactly the job `list --kind` already does, so `kind` stays open and inert.
+
+Normative strength is the opposite: small, closed, and settled decades ago. RFC 2119 fixes MUST / SHOULD / MAY / MUST NOT / SHOULD NOT, and deontic logic has formalised the same triad (obligation, permission, prohibition) since the 1950s. `modality` is therefore a closed enum, and it is the one field in the data model that carries machine-usable meaning.
+
+What it buys, precisely: `audit` can flag a pair whose modalities are incompatible — one `must` against one `must_not` on a similar subject — as a distinct, decidable signal rather than another similarity score. `check` surfaces it so an agent can weigh a MUST differently from a MAY.
+
+What it does not buy, and must not claim to: conflict detection. Contradiction research distinguishes negation, antonym, replacement, switch, scope, and latent contradictions, and current methods miss contraries and subalterns entirely — "must be red" and "must be blue" conflict while both are `must`. The state of the art combining formal logic with LLMs detects roughly 60% of contradictions. Modality gives requiem one narrow, cheap, decidable slice of that space, which suits a tool that surfaces candidates and leaves adjudication to the agent. It is not a contradiction checker and will not become one.
+
+`modality` is optional. Many `design` statements have no normative force at all — "we chose Postgres" is neither obligation nor permission — and forcing a value would produce noise. Statements written before this field existed simply have none, so there is no migration.
+
+**Validate on write, tolerate on read.** `add`/`update` reject an unknown modality; the reader treats one as unset rather than erroring. Without this asymmetry, adding a member later would make every older binary reject files that use it — turning a closed enum into a forward-compatibility trap, which is the usual reason people avoid closing an enum at all.
+
 ## CLI
 
 **Output convention:** bare data on stdout on success; nonzero exit code + error on stderr on failure. No wrapper envelope to unwrap on the common path. Every statement payload (in `get`, `add`, `update`, `link` output, and each entry returned by `list`/`check`) includes a computed `full_id` — the `<namespace>/<id>` composite — so output from one command can be passed straight into another's `<namespace/id>` argument without the caller concatenating fields itself.
@@ -129,15 +146,15 @@ Three fields are *derived at read time and never written to the file*: `stale` (
 | command | input | output |
 |---|---|---|
 | `init` | — | path, hooks installed, docs updated |
-| `add` | `--id --namespace --kind --body [--tags] [--provenance] [--source file:line]` | created statement |
-| `update` | `<id> --body [--status]` | updated statement |
+| `add` | `--id --namespace --kind --body [--modality] [--tags] [--provenance] [--source file:line]` | created statement |
+| `update` | `<id> --body [--status] [--modality]` | updated statement |
 | `link` | `<from-id> <to-id> --type [--note]` | confirmation |
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
 | `list` | `[--namespace] [--kind] [--status] [--tag]` | array of compact summaries |
 | `check` | `--namespace --text [--tags] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`), `rank` (lower is more relevant; scale unspecified). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
-| `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship |
+| `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
 | `mv` | `<from-id> <to-id> [--leave-link]` | from, to, rewritten inbound references, whether a stub was left |
 | `reindex` | `[--embed]` | counts: added/updated/removed/unchanged. With `--embed`, also fills missing/stale vectors; partial failure persists progress and exits nonzero. |
 | `review` | — | human-readable description of staged changes |
@@ -148,7 +165,7 @@ Three fields are *derived at read time and never written to the file*: `stale` (
 
 Implemented and in use: the full CLI surface above, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, lexical and semantic retrieval, and corpus-wide audit.
 
-Decided and specified above, not yet built: the embedding pipeline (`.requiem/config.toml`, `reindex --embed`), RRF rank fusion, frequency-driven query-term filtering, and partial-coverage warnings. Until the pipeline lands, vectors must be supplied via `embed --vector`.
+Decided and specified above, not yet built: the embedding pipeline (`.requiem/config.toml`, `reindex --embed`), RRF rank fusion, frequency-driven query-term filtering, partial-coverage warnings, and the `modality` field. Until the pipeline lands, vectors must be supplied via `embed --vector`.
 
 Proposed, not yet decided: requirement–implementation traceability (see below).
 
