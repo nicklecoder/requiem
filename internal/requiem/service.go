@@ -461,18 +461,33 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 // the agent gets a cheap short list instead of needing the whole spec in
 // context, and calls Get on whichever candidates actually warrant full
 // attention. Like Get/List, it reindexes first.
-func (s *Service) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]index.Candidate, error) {
+//
+// Coverage is only computed when a query vector was supplied: without one
+// the semantic path never runs, so an unembedded corpus costs the caller
+// nothing and a warning about it would be noise on the common path.
+func (s *Service) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]index.Candidate, Coverage, error) {
 	ix, err := s.openIndex()
 	if err != nil {
-		return nil, err
+		return nil, Coverage{}, err
 	}
 	defer ix.Close()
 
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, fmt.Errorf("reindex before check: %w", err)
+		return nil, Coverage{}, fmt.Errorf("reindex before check: %w", err)
 	}
 
-	return ix.Check(namespace, text, tags, vector, embModel, limit)
+	candidates, err := ix.Check(namespace, text, tags, vector, embModel, limit)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	if len(vector) == 0 {
+		return candidates, Coverage{}, nil
+	}
+	cov, err := embeddingCoverage(ix, namespace)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	return candidates, cov, nil
 }
 
 // EmbedResult is Embed's output.
@@ -520,18 +535,31 @@ func (s *Service) Embed(fullID, embModel string, vec []float32, force bool) (*Em
 // Get/List/Check, requiem only surfaces the candidate — classifying it as a
 // real conflict, a duplicate, or a false positive is the calling agent's
 // job (recorded afterward via Link).
-func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.PairCandidate, error) {
+//
+// Coverage is returned alongside the candidates rather than folded into
+// them: SPEC's output convention keeps stdout as bare data with no envelope
+// to unwrap, so the shortfall travels as a second return value and reaches
+// the user on stderr. A Go signature is not the JSON payload.
+func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.PairCandidate, Coverage, error) {
 	ix, err := s.openIndex()
 	if err != nil {
-		return nil, err
+		return nil, Coverage{}, err
 	}
 	defer ix.Close()
 
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, fmt.Errorf("reindex before audit: %w", err)
+		return nil, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
 	}
 
-	return ix.FindCandidatePairs(namespace, minScore, limit)
+	pairs, err := ix.FindCandidatePairs(namespace, minScore, limit)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	cov, err := embeddingCoverage(ix, namespace)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	return pairs, cov, nil
 }
 
 // MoveResult is Move's output.

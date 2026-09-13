@@ -31,3 +31,16 @@ func printJSON(v interface{}) error {
 	}
 	return nil
 }
+
+// warnCoverage reports incomplete embedding coverage on stderr, leaving
+// stdout as bare JSON per the CLI output convention. Exit status is
+// deliberately unaffected: the results are real, just partial, and failing
+// the command would break pipelines over a condition the caller may already
+// know about. stderr is the right channel because agent harnesses surface
+// combined output, so the warning reaches the reader that needs it while
+// `jq` never sees it.
+func warnCoverage(c requiem.Coverage) {
+	if w := c.Warning(); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
+}

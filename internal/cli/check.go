@@ -39,10 +39,11 @@ func newCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, err := svc.Check(namespace, text, tags, vec, model, limit)
+			candidates, coverage, err := svc.Check(namespace, text, tags, vec, model, limit)
 			if err != nil {
 				return err
 			}
+			warnCoverage(coverage)
 			if candidates == nil {
 				candidates = []index.Candidate{}
 			}
