@@ -34,6 +34,7 @@ requiem add --id no-plaintext-tokens --namespace auth/session --kind rule \
   --body "Session tokens are never stored in plaintext." --tags security
 
 requiem check --namespace auth --text "should tokens expire on inactivity"  # surfaces related prior decisions
+                                                           # add --vector/--model to also match by meaning
 
 requiem get auth/session/no-plaintext-tokens
 requiem list --namespace auth
@@ -42,6 +43,11 @@ requiem link auth/session/no-plaintext-tokens auth/session/other --type depends_
 requiem reject --id sliding-session-expiration --namespace auth/session \
   --body "Proposed sliding expiration. Rejected: unbounded blast radius on leak." \
   --see-instead auth/session/no-plaintext-tokens
+
+requiem embed auth/session/no-plaintext-tokens \
+  --model all-minilm --vector "$(...)"                      # manual vector; reindex --embed is the normal path
+requiem audit --namespace auth                              # sweep for conflicting/duplicate pairs
+requiem mv auth/session/old auth/shared/new                 # relocate, rewriting inbound references
 
 requiem review                                              # optional — inspect staged changes
 requiem commit                                               # the approval step
