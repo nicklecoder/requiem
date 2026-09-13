@@ -43,6 +43,7 @@ func NewRootCmd() *cobra.Command {
 		newEmbedCmd(),
 		newAuditCmd(),
 		newMvCmd(),
+		newTraceCmd(),
 		newReindexCmd(),
 		newReviewCmd(),
 		newCommitCmd(),

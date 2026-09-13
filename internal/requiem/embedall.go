@@ -46,6 +46,7 @@ type EmbedAllResult struct {
 // fresh and retries only what failed. The caller is expected to exit nonzero
 // when Failed > 0 — a partial run that reports success would let an agent
 // trust an audit built on half a corpus.
+// requiem: embedding/partial-failure-visible
 func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	cfg, err := config.Load(s.Store.Root)
 	if err != nil {
@@ -187,6 +188,7 @@ type itemOutcome struct {
 // extra requests are bounded (at most one per member) and only ever happen
 // on the failure path, where an accurate attribution is worth more than the
 // round trips.
+// requiem: embedding/batch-isolation
 func embedBatch(client *embed.Client, batch []model.Statement, timeout time.Duration) []itemOutcome {
 	call := func(statements []model.Statement) ([][]float32, error) {
 		inputs := make([]string, len(statements))

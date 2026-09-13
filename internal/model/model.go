@@ -57,6 +57,7 @@ func (m Modality) valid() bool {
 // validating on write but tolerating on read is what keeps a closed enum from
 // becoming a forward-compatibility trap, where adding a member later would
 // make an older binary reject files a newer one wrote.
+// requiem: model/validate-write-tolerate-read
 func (m Modality) Known() bool { return m == "" || m.valid() }
 
 // Negative reports whether m prohibits rather than requires or permits.
@@ -73,6 +74,7 @@ func (m Modality) Negative() bool {
 // This is a narrow, decidable signal, not conflict detection. Contraries
 // defeat it entirely: "must be red" and "must be blue" contradict each other
 // while both are ModalityMust. See SPEC.md's Modality section.
+// requiem: model/modality-is-not-conflict-detection
 func (m Modality) ConflictsWith(other Modality) bool {
 	if !m.valid() || !other.valid() {
 		return false
@@ -230,6 +232,13 @@ type Statement struct {
 	// question that stops an agent re-proposing a rejected idea, which is
 	// the stated reason rejections are recorded at all.
 	RejectedAlternatives []string `yaml:"-" json:"rejected_alternatives,omitempty"`
+
+	// CodeRefs is how many labelled source sites reference this statement,
+	// or nil where labelling is not in use in this project at all. Nil
+	// rather than zero on purpose: no references can mean unimplemented,
+	// implemented but unlabelled, or unimplementable, and a zero would invite
+	// reading missing data as an answer.
+	CodeRefs *int `yaml:"-" json:"code_refs,omitempty"`
 
 	// EmbeddingStatus is another derived, never-stored fact: "missing" (no
 	// vector on record), "stale" (body has changed since the vector was

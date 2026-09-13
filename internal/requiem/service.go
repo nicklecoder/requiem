@@ -20,6 +20,7 @@ import (
 	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/model"
 	"github.com/nicklecoder/requiem/internal/store"
+	"github.com/nicklecoder/requiem/internal/trace"
 )
 
 // indexFile is gitignored (see the .requiem/.gitignore Init writes) — it's
@@ -276,6 +277,15 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 	}
 	st.EmbeddingStatus = embeddingStatus(emb, st.Body)
 
+	counts, adopted, err := ix.CodeRefCounts()
+	if err != nil {
+		return nil, err
+	}
+	if adopted {
+		n := counts[fullID]
+		st.CodeRefs = &n
+	}
+
 	if st.ReferencedBy, err = ix.InboundRelationships(fullID); err != nil {
 		return nil, err
 	}
@@ -359,6 +369,40 @@ func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error
 	return &st, nil
 }
 
+// UpdateBlastRadius reports the labelled code sites referencing a statement
+// whose body just changed.
+//
+// Scans live rather than reading the cached counts: this is the payoff of the
+// whole traceability mechanism, delivered at the one moment it matters, and a
+// stale answer to "what does this change affect" is worse than a slow one.
+// Update is a deliberate write, not a hot path, so one scan is affordable.
+func (s *Service) UpdateBlastRadius(fullID string) ([]ClassifiedRef, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer ix.Close()
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, err
+	}
+
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	classified, err := classifyRefs(ix, refs)
+	if err != nil {
+		return nil, err
+	}
+	var out []ClassifiedRef
+	for _, c := range classified {
+		if c.FullID == fullID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
 // Link adds a typed relationship from one statement to another. Both ends
 // must already exist.
 func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note string) (*model.Statement, error) {
@@ -416,6 +460,7 @@ type StatementSummary struct {
 	Namespace       string         `json:"namespace"`
 	Kind            model.Kind     `json:"kind"`
 	Modality        model.Modality `json:"modality,omitempty"`
+	CodeRefs        *int           `json:"code_refs,omitempty"`
 	Status          model.Status   `json:"status"`
 	Tags            []string       `json:"tags,omitempty"`
 	Excerpt         string         `json:"excerpt"`
@@ -488,6 +533,11 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 		return nil, err
 	}
 
+	counts, adopted, err := ix.CodeRefCounts()
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]StatementSummary, 0, len(statements))
 	for _, st := range statements {
 		var emb *index.Embedding
@@ -495,6 +545,10 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			emb = &e
 		}
 		summary := summarize(st, emb)
+		if adopted {
+			n := counts[st.FullID()]
+			summary.CodeRefs = &n
+		}
 		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
 			continue
 		}
@@ -677,12 +731,62 @@ func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.
 	return pairs, cov, nil
 }
 
+// AuditRefs reports labelled code contradicting a recorded decision: sites
+// referencing a retired statement or a rejected idea.
+//
+// Scans live, like Trace and UpdateBlastRadius. Audit is a deliberate,
+// occasional sweep already doing an O(n^2) embedding comparison, so one git
+// grep is noise beside it — and a contradiction reported from a stale cache
+// would be worse than none, since the reader would go looking for code that
+// has already been fixed.
+func (s *Service) AuditRefs() ([]ClassifiedRef, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer ix.Close()
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, err
+	}
+
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	classified, err := classifyRefs(ix, refs)
+	if err != nil {
+		return nil, err
+	}
+	return ContradictingRefs(classified), nil
+}
+
+func (s *Service) refsTo(ix *index.Index, fullID string) ([]ClassifiedRef, error) {
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	classified, err := classifyRefs(ix, refs)
+	if err != nil {
+		return nil, err
+	}
+	var out []ClassifiedRef
+	for _, c := range classified {
+		if c.FullID == fullID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
 // MoveResult is Move's output.
 type MoveResult struct {
 	From              string   `json:"from"`
 	To                string   `json:"to"`
 	UpdatedReferences []string `json:"updated_references"`
 	StubLeft          bool     `json:"stub_left"`
+	// OrphanedCodeRefs are labelled source sites still naming the old id.
+	// Reported, not rewritten — see Move.
+	OrphanedCodeRefs []ClassifiedRef `json:"orphaned_code_refs,omitempty"`
 }
 
 // Move relocates a statement to a new namespace/id, rewriting every inbound
@@ -809,7 +913,17 @@ func (s *Service) Move(fromID, toID string, leaveLink bool) (*MoveResult, error)
 		return nil, err
 	}
 
-	return &MoveResult{From: fromID, To: toID, UpdatedReferences: updated, StubLeft: leaveLink}, nil
+	// Report labelled code pointing at the old id rather than rewriting it.
+	// Rewriting would mean requiem editing source files outside .requiem,
+	// which is a materially larger claim on a project than anything else it
+	// does, and is recorded as an open question rather than decided here.
+	orphaned, err := s.refsTo(ix, fromID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MoveResult{From: fromID, To: toID, UpdatedReferences: updated,
+		StubLeft: leaveLink, OrphanedCodeRefs: orphaned}, nil
 }
 
 // Reindex incrementally syncs the index with the statement files on disk —
@@ -823,7 +937,31 @@ func (s *Service) Reindex() (index.ReindexStats, error) {
 		return index.ReindexStats{}, err
 	}
 	defer ix.Close()
-	return ix.Reindex(s.Store)
+	stats, err := ix.Reindex(s.Store)
+	if err != nil {
+		return stats, err
+	}
+	// The source scan runs here and on the git hooks, never on the lazy
+	// reindex that precedes every get/list/check. Measured around 200ms and
+	// growing with tree size, it is far too expensive for the read path. The
+	// cached counts therefore lag slightly between explicit runs, which is
+	// affordable precisely because they are a hint and not a claim.
+	if err := s.scanCodeRefs(ix); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+func (s *Service) scanCodeRefs(ix *index.Index) error {
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return err
+	}
+	stored := make([]index.CodeRef, len(refs))
+	for i, r := range refs {
+		stored[i] = index.CodeRef{FullID: r.FullID, File: r.File, Line: r.Line}
+	}
+	return ix.ReplaceCodeRefs(stored)
 }
 
 // ReviewResult is Review's output: which files have pending changes, plus

@@ -172,7 +172,8 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
 | `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
 | `mv` | `<from-id> <to-id> [--leave-link]` | from, to, rewritten inbound references, whether a stub was left |
-| `reindex` | `[--embed]` | counts: added/updated/removed/unchanged. With `--embed`, also fills missing/stale vectors; partial failure persists progress and exits nonzero. |
+| `trace` | `<namespace/id>` | labelled source sites referencing this statement, each classified by what it resolves to |
+| `reindex` | `[--embed]` | counts: added/updated/removed/unchanged. Also rescans the source tree for labels — unlike the lazy reindex the read path performs, which never does. With `--embed`, also fills missing/stale vectors; partial failure persists progress and exits nonzero. |
 | `review` | — | human-readable description of staged changes |
 | `commit` | `[--message]` | commit sha |
 | `discard` | `[<id>]` | confirmation |
@@ -263,6 +264,14 @@ Five outcomes, of which two matter:
 The two bold rows are the ones worth raising unprompted, and neither is expressible today. They describe the same underlying hazard: a decision was made and the code was never brought along, so the corpus reads as settled while the source still asserts the superseded position. The requirements look internally consistent precisely because the contradiction has been pushed into the code, where none of requiem's other checks can see it. This is the *undeclared prior constraint* from the Problem section, manufactured by the tool's own workflow rather than inherited from legacy code.
 
 Note the asymmetry with staleness: the commit-date heuristic below would catch a superseded statement only incidentally, because a status change happens to be a commit to that file. Classifying by the target's status catches it directly and can say *why* it is suspect, which a date comparison never can.
+
+### Cached for hints, scanned for answers
+
+Two consumers with different tolerances, so two sources.
+
+`get`, `list` and `check` read a **cached** count, refreshed on explicit `reindex` and on the git hooks. It lags between runs, which is affordable because it is a hint — an invitation to look, not a claim.
+
+`trace`, `update`'s blast radius, `audit`'s classification, and `mv`'s orphan report **scan live**. Each answers a direct question at a moment that matters, and each is a deliberate command rather than a hot path, so one `git grep` is affordable. A stale answer to "what does this change affect" is worse than a slow one, and a contradiction reported from a stale cache is worse than none, since the reader goes looking for code that has already been fixed.
 
 ### Derived staleness, again
 

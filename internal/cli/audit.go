@@ -30,6 +30,11 @@ func newAuditCmd() *cobra.Command {
 				return err
 			}
 			warnCoverage(coverage)
+			contradicting, err := svc.AuditRefs()
+			if err != nil {
+				return err
+			}
+			warnContradictingRefs(contradicting)
 			if candidates == nil {
 				candidates = []index.PairCandidate{}
 			}

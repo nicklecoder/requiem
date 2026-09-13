@@ -47,6 +47,7 @@ func (c Coverage) Warning() string {
 // Scoped to searchable statements because that is precisely what the semantic
 // paths search: counting superseded or deprecated statements here would
 // report a shortfall that no amount of embedding could close.
+// requiem: embedding/coverage-warning
 func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
 	statements, err := ix.ListStatements(index.ListFilter{Namespace: namespace})
 	if err != nil {

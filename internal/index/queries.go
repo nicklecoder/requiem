@@ -110,6 +110,27 @@ const searchableStatuses = `status IN ('active', 'proposed')`
 // statements table.
 const searchableStatusesCol = `s.status IN ('active', 'proposed')`
 
+// AllRejectionIDs lists every rejection's full_id. Used when resolving a
+// scanned code label: a label naming a rejection must not be misreported as
+// a dangling reference.
+func (ix *Index) AllRejectionIDs() ([]string, error) {
+	rows, err := ix.db.Query(`SELECT full_id FROM rejections ORDER BY full_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (ix *Index) InboundRelationships(fullID string) ([]model.InboundRef, error) {
 	rows, err := ix.db.Query(
 		`SELECT from_id, type, COALESCE(note, '') FROM relationships WHERE to_id = ? ORDER BY from_id, type`, fullID)
@@ -258,4 +279,70 @@ func (ix *Index) ListStatements(filter ListFilter) ([]model.Statement, error) {
 		}
 	}
 	return out, nil
+}
+
+// ReplaceCodeRefs swaps the cached scan for a fresh one, wholesale. Wholesale
+// because a scan is a complete picture of the tree at one moment; merging
+// would leave behind references to labels that have since been deleted.
+func (ix *Index) ReplaceCodeRefs(refs []CodeRef) error {
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM code_refs`); err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO code_refs (full_id, file, line) VALUES (?, ?, ?)`,
+			r.FullID, r.File, r.Line); err != nil {
+			return fmt.Errorf("store code ref %s %s:%d: %w", r.FullID, r.File, r.Line, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// CodeRef mirrors trace.Ref for storage, so the index package does not depend
+// on the scanner.
+type CodeRef struct {
+	FullID string
+	File   string
+	Line   int
+}
+
+// CodeRefCounts returns the cached reference count per statement, and whether
+// labelling is in use at all.
+//
+// The second return value is what keeps a zero honest. No references can mean
+// unimplemented, implemented but unlabelled, or unimplementable — "we chose
+// Postgres" has no code site to point at. An agent reading zero as "not
+// implemented" would manufacture a confident answer out of missing data. So
+// below any adoption at all, a count is not reported rather than reported as
+// zero.
+//
+// Adoption is a state, never a percentage. A traceability score is a number
+// people manage toward, which is the failure mode of every requirements
+// traceability tool and is forbidden outright in SPEC's Boundary section.
+func (ix *Index) CodeRefCounts() (map[string]int, bool, error) {
+	rows, err := ix.db.Query(`SELECT full_id, COUNT(*) FROM code_refs GROUP BY full_id`)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, false, err
+		}
+		out[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return out, len(out) > 0, nil
 }

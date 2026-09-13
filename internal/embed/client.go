@@ -32,6 +32,7 @@ type Client struct {
 }
 
 // New builds a client from the embedding section of the project config.
+// requiem: embedding/configured-endpoint
 func New(cfg config.Embedding) (*Client, error) {
 	timeout, err := cfg.ResolvedTimeout()
 	if err != nil {

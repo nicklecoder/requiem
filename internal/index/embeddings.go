@@ -65,6 +65,7 @@ func CosineSimilarity(a, b []float32) float64 {
 // case every existing embedding is wiped and the corpus is re-pinned to the
 // new model — mixing vector spaces would otherwise produce cosine-similarity
 // scores that look plausible but are meaningless.
+// requiem: embedding/model-pinning
 func (ix *Index) UpsertEmbedding(fullID, model string, dims int, vec []float32, sourceHash string, computedAt time.Time, force bool) error {
 	tx, err := ix.db.Begin()
 	if err != nil {

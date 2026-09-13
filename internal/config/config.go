@@ -147,6 +147,7 @@ func (e *Embedding) APIKey() string {
 // its presence never turns the feature on by accident — it exists to make
 // the option discoverable, since an agent reading the project has no other
 // way to learn that embedding is available.
+// requiem: embedding/committed-pipeline
 const Template = `# requiem configuration — committed on purpose.
 #
 # The SQLite index is disposable, but embedding vectors in it cannot be

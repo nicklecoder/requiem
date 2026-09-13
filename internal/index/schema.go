@@ -101,6 +101,24 @@ var schema = []string{
 	`CREATE VIRTUAL TABLE IF NOT EXISTS statements_fts USING fts5(full_id UNINDEXED, namespace, body, tags)`,
 	`CREATE VIRTUAL TABLE IF NOT EXISTS rejections_fts USING fts5(full_id UNINDEXED, namespace, body)`,
 
+	// code_refs caches the last source scan so `get`/`list`/`check` can show
+	// a reference count without touching the working tree. It is a
+	// materialized scan result, not a second index: nothing tracks source
+	// file mtimes, there is no manifest, and each scan replaces the table
+	// wholesale, so it cannot fall out of sync in the way an incremental
+	// index could — it can only lag, which is acceptable for a hint.
+	//
+	// An empty table means no labels were found, which is indistinguishable
+	// from never having scanned, and both correctly read as "labelling is
+	// not in use here" (see codeRefsAdopted).
+	`CREATE TABLE IF NOT EXISTS code_refs (
+		full_id TEXT NOT NULL,
+		file    TEXT NOT NULL,
+		line    INTEGER NOT NULL,
+		PRIMARY KEY (full_id, file, line)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_code_refs_full_id ON code_refs(full_id)`,
+
 	// fts5vocab exposes each FTS index's term -> document-frequency table.
 	// It is a view over data FTS5 already maintains, not a second index:
 	// nothing writes to it, reindex never touches it, and it cannot fall out

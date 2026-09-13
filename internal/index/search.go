@@ -70,6 +70,7 @@ const DefaultCheckLimit = 10
 // cosine similarity between two different models' vectors is a number that
 // looks plausible and means nothing, so it's validated against the corpus's
 // pinned model the same way UpsertEmbedding validates on write.
+// requiem: retrieval/check-result-limit
 func (ix *Index) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]Candidate, error) {
 	if len(vector) > 0 {
 		if err := ix.validateQueryVector(vector, embModel); err != nil {
@@ -181,6 +182,7 @@ const (
 // The fused value is emitted negated so Rank keeps its documented
 // lower-is-more-relevant direction; only the scale changes, which was never
 // specified.
+// requiem: retrieval/rrf-fusion
 func fuse(lists [][]Candidate) []Candidate {
 	type entry struct {
 		candidate Candidate
@@ -474,6 +476,7 @@ const (
 // Frequency-driven rather than a fixed stoplist, so it adapts: in an
 // auth-heavy namespace "token" saturates the corpus and is dropped, which no
 // English stopword list would ever catch.
+// requiem: retrieval/df-filter
 func (ix *Index) buildMatchQuery(text, vocabTable, ftsTable string) (string, error) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {

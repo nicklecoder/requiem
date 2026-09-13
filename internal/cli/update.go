@@ -22,6 +22,16 @@ func newUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Reported on stderr so stdout stays bare JSON, and only when the
+			// body changed: a status or modality edit does not invalidate
+			// the code that implements the statement.
+			if body != "" {
+				refs, err := svc.UpdateBlastRadius(args[0])
+				if err != nil {
+					return err
+				}
+				warnBlastRadius(args[0], refs)
+			}
 			return printJSON(st)
 		},
 	}
