@@ -1,4 +1,33 @@
+# Build artifacts
 /requiem
 /bin/
 *.test
 *.out
+
+# Test/coverage output
+coverage.out
+coverage.html
+*.cover
+
+# Go workspace files (local-only unless the project adopts workspaces)
+go.work
+go.work.sum
+
+# requiem's own runtime cache (disposable, rebuildable index; not source of truth)
+.requiem/index.sqlite
+.requiem/index.sqlite-*
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
