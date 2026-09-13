@@ -935,3 +935,58 @@ func TestMove_RefusesExistingTarget(t *testing.T) {
 		t.Fatal("expected error moving onto an existing statement")
 	}
 }
+
+func TestMove_CarriesEmbeddingToNewID(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "target", Namespace: "auth/session", Kind: "rule", Body: "the body"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Embed("auth/session/target", "m", []float32{1, 0}, false); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if _, err := s.Commit("test setup: target"); err != nil {
+		t.Fatalf("commit setup: %v", err)
+	}
+
+	if _, err := s.Move("auth/session/target", "auth/shared/target", false); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+
+	// mv is what the workflow recommends after audit flags a duplicate, so
+	// losing the vector here would silently un-embed the surviving statement.
+	moved, err := s.Get("auth/shared/target")
+	if err != nil {
+		t.Fatalf("Get moved: %v", err)
+	}
+	if moved.EmbeddingStatus != "fresh" {
+		t.Fatalf("expected the moved statement to keep a fresh embedding, got %q", moved.EmbeddingStatus)
+	}
+}
+
+func TestCheck_DefaultLimitBoundsResultCount(t *testing.T) {
+	s := newTestService(t)
+	for i := 0; i < 15; i++ {
+		id := fmt.Sprintf("rule-%d", i)
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "shared wording across every statement " + id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+
+	// Every statement matches this text lexically; without a cap `check`
+	// hands back the whole corpus, which defeats its own purpose.
+	got, err := s.Check("ns", "shared wording across every statement", nil, nil, "", index.DefaultCheckLimit)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(got) != index.DefaultCheckLimit {
+		t.Fatalf("expected %d candidates, got %d", index.DefaultCheckLimit, len(got))
+	}
+
+	unlimited, err := s.Check("ns", "shared wording across every statement", nil, nil, "", 0)
+	if err != nil {
+		t.Fatalf("Check unlimited: %v", err)
+	}
+	if len(unlimited) != 15 {
+		t.Fatalf("expected all 15 with limit=0, got %d", len(unlimited))
+	}
+}

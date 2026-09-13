@@ -444,7 +444,7 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 // the agent gets a cheap short list instead of needing the whole spec in
 // context, and calls Get on whichever candidates actually warrant full
 // attention. Like Get/List, it reindexes first.
-func (s *Service) Check(namespace, text string, tags []string, vector []float32) ([]index.Candidate, error) {
+func (s *Service) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]index.Candidate, error) {
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, err
@@ -455,7 +455,7 @@ func (s *Service) Check(namespace, text string, tags []string, vector []float32)
 		return nil, fmt.Errorf("reindex before check: %w", err)
 	}
 
-	return ix.Check(namespace, text, tags, vector)
+	return ix.Check(namespace, text, tags, vector, embModel, limit)
 }
 
 // EmbedResult is Embed's output.
@@ -629,6 +629,17 @@ func (s *Service) Move(fromID, toID string, leaveLink bool) (*MoveResult, error)
 		}
 	}
 	touched = append(touched, oldRel)
+
+	// The body is unchanged by a move, so the vector computed for it is
+	// still valid — carry it to the new id. Without this the next reindex
+	// drops it (the old path is gone) and the statement silently reverts to
+	// unembedded, which matters because `mv` is exactly what the workflow
+	// recommends after `audit` flags a duplicate. With --leave-link this is
+	// also what detaches the vector from the stub, whose body is now just
+	// "Moved to ...".
+	if err := ix.RekeyEmbedding(fromID, toID); err != nil {
+		return nil, err
+	}
 
 	paths := make([]string, len(touched))
 	for i, rel := range touched {

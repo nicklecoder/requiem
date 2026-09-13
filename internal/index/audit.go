@@ -1,6 +1,7 @@
 package index
 
 import (
+	"fmt"
 	"sort"
 )
 
@@ -51,6 +52,18 @@ func (ix *Index) FindCandidatePairs(namespace string, minScore float64, limit in
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// An unembedded corpus would otherwise return an empty list — byte for
+	// byte what "swept everything, found no candidates" looks like. Audit
+	// is only meaningful over embeddings, so say so instead of handing back
+	// a false all-clear.
+	corpus, err := ix.EmbeddingCorpusInfo()
+	if err != nil {
+		return nil, err
+	}
+	if corpus.Count == 0 {
+		return nil, fmt.Errorf("no statements are embedded yet: audit compares statements by embedding, so it has nothing to sweep (see `requiem list --needs-embedding`)")
 	}
 
 	embeddings, err := ix.AllEmbeddings()

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/nicklecoder/requiem/internal/model"
+	"github.com/nicklecoder/requiem/internal/store"
 )
 
 func TestCheck_FindsRelevantStatementsAndRejections(t *testing.T) {
@@ -34,7 +35,7 @@ func TestCheck_FindsRelevantStatementsAndRejections(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("", "session token storage", nil, nil)
+	results, err := ix.Check("", "session token storage", nil, nil, "", 0)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestCheck_ScopedToNamespace(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("auth", "tokens", nil, nil)
+	results, err := ix.Check("auth", "tokens", nil, nil, "", 0)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestCheck_TagFilterNarrowsAndExcludesRejections(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("", "widgets validated", []string{"security"}, nil)
+	results, err := ix.Check("", "widgets validated", []string{"security"}, nil, "", 0)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestCheck_RankedBestFirst(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("", "rate limiting", nil, nil)
+	results, err := ix.Check("", "rate limiting", nil, nil, "", 0)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -184,7 +185,7 @@ func TestCheck_QuoteAndSpecialCharsDoNotErrorOrMisbehave(t *testing.T) {
 
 	// FTS5 query syntax characters (quotes, NOT, -, *, :) appearing in
 	// ordinary draft text must not cause a query error.
-	_, err := ix.Check("", `what about "strict" mode -config NOT:enabled *`, nil, nil)
+	_, err := ix.Check("", `what about "strict" mode -config NOT:enabled *`, nil, nil, "", 0)
 	if err != nil {
 		t.Fatalf("expected no error from FTS5 special characters in free text, got: %v", err)
 	}
@@ -192,11 +193,167 @@ func TestCheck_QuoteAndSpecialCharsDoNotErrorOrMisbehave(t *testing.T) {
 
 func TestCheck_EmptyTextReturnsNoResults(t *testing.T) {
 	ix := newTestIndex(t)
-	results, err := ix.Check("", "   ", nil, nil)
+	results, err := ix.Check("", "   ", nil, nil, "", 0)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("expected no results for blank text, got %+v", results)
+	}
+}
+
+// seedEmbeddedPair seeds two statements with deliberately opposed vectors so
+// a query vector can match one strongly and the other not at all, without
+// depending on any real embedding model.
+func seedEmbeddedPair(t *testing.T, s *store.Store, ix *Index) {
+	t.Helper()
+	seedStatement(t, s, model.Statement{
+		ID: "rotate-keys", Namespace: "auth/keys", Kind: model.KindRule,
+		Status:     model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Signing keys are rotated quarterly.",
+	})
+	seedStatement(t, s, model.Statement{
+		ID: "invoice-cents", Namespace: "billing", Kind: model.KindRule,
+		Status:     model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "All monetary amounts are stored as integer cents.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if err := ix.UpsertEmbedding("auth/keys/rotate-keys", "m", 2, []float32{1, 0}, "h1", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+	if err := ix.UpsertEmbedding("billing/invoice-cents", "m", 2, []float32{0, 1}, "h2", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+}
+
+// The semantic path exists specifically to find a statement worded so
+// differently that FTS can't reach it — so the query text here shares no
+// vocabulary with the statement the vector points at.
+func TestCheck_SemanticFindsWhatLexicalCannot(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedEmbeddedPair(t, s, ix)
+
+	lexicalOnly, err := ix.Check("", "credential cycling cadence", nil, nil, "", 0)
+	if err != nil {
+		t.Fatalf("Check lexical: %v", err)
+	}
+	if len(lexicalOnly) != 0 {
+		t.Fatalf("expected no lexical overlap for this phrasing, got %+v", lexicalOnly)
+	}
+
+	withVector, err := ix.Check("", "credential cycling cadence", nil, []float32{1, 0}, "m", 0)
+	if err != nil {
+		t.Fatalf("Check semantic: %v", err)
+	}
+	if len(withVector) != 1 {
+		t.Fatalf("expected exactly the semantically close statement, got %+v", withVector)
+	}
+	if withVector[0].FullID != "auth/keys/rotate-keys" {
+		t.Fatalf("expected auth/keys/rotate-keys, got %s", withVector[0].FullID)
+	}
+	if withVector[0].MatchKind != "semantic" {
+		t.Fatalf("expected match_kind=semantic, got %q", withVector[0].MatchKind)
+	}
+}
+
+func TestCheck_SemanticDoesNotDuplicateLexicalHits(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedEmbeddedPair(t, s, ix)
+
+	// "rotated" matches lexically *and* the vector matches semantically;
+	// the statement must appear once, attributed to the lexical path.
+	results, err := ix.Check("", "rotated", nil, []float32{1, 0}, "m", 0)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	seen := 0
+	for _, c := range results {
+		if c.FullID == "auth/keys/rotate-keys" {
+			seen++
+			if c.MatchKind != "lexical" {
+				t.Fatalf("expected the lexical hit to win attribution, got %q", c.MatchKind)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("expected auth/keys/rotate-keys exactly once, got %d times: %+v", seen, results)
+	}
+}
+
+func TestCheck_SemanticRejectsMismatchedModelAndDims(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedEmbeddedPair(t, s, ix)
+
+	// Same width, different model: cosine would produce a plausible-looking
+	// number that means nothing. This must fail loudly, not silently score.
+	if _, err := ix.Check("", "anything", nil, []float32{1, 0}, "other-model", 0); err == nil {
+		t.Fatal("expected a model-mismatch error, got nil")
+	}
+	// Wrong width scores 0 against everything, so it would otherwise look
+	// exactly like "nothing is semantically similar".
+	if _, err := ix.Check("", "anything", nil, []float32{1, 0, 0}, "m", 0); err == nil {
+		t.Fatal("expected a dims-mismatch error, got nil")
+	}
+}
+
+func TestCheck_SemanticErrorsWhenNothingIsEmbedded(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedStatement(t, s, model.Statement{
+		ID: "a", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Some rule.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	// Silently returning lexical-only results here is the false-all-clear
+	// this error exists to prevent.
+	if _, err := ix.Check("", "some rule", nil, []float32{1, 0}, "m", 0); err == nil {
+		t.Fatal("expected an error when no statements are embedded, got nil")
+	}
+}
+
+func TestCheck_LimitTruncatesLowestRankedFirst(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		seedStatement(t, s, model.Statement{
+			ID: id, Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: "shared filler wording for " + id,
+		})
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	all, err := ix.Check("", "shared filler wording", nil, nil, "", 0)
+	if err != nil {
+		t.Fatalf("Check unlimited: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("expected all 5 unlimited, got %d", len(all))
+	}
+
+	limited, err := ix.Check("", "shared filler wording", nil, nil, "", 2)
+	if err != nil {
+		t.Fatalf("Check limited: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("expected 2 with limit=2, got %d", len(limited))
+	}
+	for i := range limited {
+		if limited[i].FullID != all[i].FullID {
+			t.Fatalf("limit must keep the best-ranked prefix: got %+v, want prefix of %+v", limited, all)
+		}
 	}
 }

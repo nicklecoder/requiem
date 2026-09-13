@@ -207,3 +207,77 @@ func TestFindCandidatePairs_ExcludesAdjudicatedAndAppliesThreshold(t *testing.T)
 		t.Fatalf("expected the surfaced pair to be ns/a<->ns/b, got %+v", pairs[0])
 	}
 }
+
+func TestFindCandidatePairs_ErrorsWhenNothingIsEmbedded(t *testing.T) {
+	ix := newTestIndex(t)
+	// An empty result here would read as "swept the corpus, found no
+	// conflicts" — the exact false all-clear this error prevents.
+	if _, err := ix.FindCandidatePairs("", 0.5, 0); err == nil {
+		t.Fatal("expected an error when no statements are embedded, got nil")
+	}
+}
+
+func TestRekeyEmbedding_MovesVectorAndLeavesOldIDEmpty(t *testing.T) {
+	ix := newTestIndex(t)
+	vec := []float32{0.5, -0.25}
+	if err := ix.UpsertEmbedding("old/ns/id", "m", 2, vec, "hash", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+
+	if err := ix.RekeyEmbedding("old/ns/id", "new/ns/id"); err != nil {
+		t.Fatalf("RekeyEmbedding: %v", err)
+	}
+
+	moved, err := ix.GetEmbedding("new/ns/id")
+	if err != nil {
+		t.Fatalf("GetEmbedding new: %v", err)
+	}
+	if moved == nil {
+		t.Fatal("expected the vector at the new id")
+	}
+	if len(moved.Vector) != 2 || moved.Vector[0] != 0.5 || moved.Vector[1] != -0.25 {
+		t.Fatalf("vector did not survive the rekey: %+v", moved.Vector)
+	}
+	// The source hash must carry over too: a move doesn't change the body,
+	// so the embedding stays fresh rather than reading as stale.
+	if moved.SourceHash != "hash" {
+		t.Fatalf("expected source_hash to carry over, got %q", moved.SourceHash)
+	}
+
+	old, err := ix.GetEmbedding("old/ns/id")
+	if err != nil {
+		t.Fatalf("GetEmbedding old: %v", err)
+	}
+	if old != nil {
+		t.Fatalf("expected no embedding left at the old id, got %+v", old)
+	}
+}
+
+func TestRekeyEmbedding_MissingSourceIsNoOp(t *testing.T) {
+	ix := newTestIndex(t)
+	if err := ix.RekeyEmbedding("nope/a", "nope/b"); err != nil {
+		t.Fatalf("expected rekeying an unembedded statement to be a no-op, got %v", err)
+	}
+}
+
+func TestEmbeddingCorpusInfo_ReportsPinnedModelAndCount(t *testing.T) {
+	ix := newTestIndex(t)
+	empty, err := ix.EmbeddingCorpusInfo()
+	if err != nil {
+		t.Fatalf("EmbeddingCorpusInfo empty: %v", err)
+	}
+	if empty.Count != 0 || empty.Model != "" {
+		t.Fatalf("expected an empty corpus, got %+v", empty)
+	}
+
+	if err := ix.UpsertEmbedding("ns/a", "test-model", 3, []float32{1, 2, 3}, "h", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+	got, err := ix.EmbeddingCorpusInfo()
+	if err != nil {
+		t.Fatalf("EmbeddingCorpusInfo: %v", err)
+	}
+	if got.Model != "test-model" || got.Dims != 3 || got.Count != 1 {
+		t.Fatalf("expected test-model/3 with 1 vector, got %+v", got)
+	}
+}

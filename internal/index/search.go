@@ -41,12 +41,36 @@ const (
 	sourceKindRejection = "rejection"
 )
 
+// DefaultCheckLimit caps how many candidates Check returns by default.
+//
+// A cap is not a nicety here, it's load-bearing. buildMatchQuery OR-joins
+// every token in the draft text, stopwords included, so an ordinary English
+// sentence matches almost anything: measured on a synthetic 200-statement
+// corpus, one draft sentence matched 167 rows (84% of the corpus, ~45KB of
+// JSON). Returning that defeats the context economy this command exists to
+// provide. Because FTS5 clamps a common term's IDF to 1e-6 (see the
+// MatchKind comment), pure-stopword matches rank last and fall off the end
+// of the list first, so truncation drops noise before it drops signal.
+const DefaultCheckLimit = 10
+
 // Check surfaces compact candidates — statements and (unless tags is
 // non-empty, since rejections have no tags to match against) rejections —
 // relevant to text, optionally scoped to namespace and narrowed by tags
-// (all must match). Ranked best-first; full bodies are a deliberate
-// separate GetStatement call, not returned here.
-func (ix *Index) Check(namespace, text string, tags []string, vector []float32) ([]Candidate, error) {
+// (all must match). Ranked best-first and truncated to limit (0 =
+// unlimited); full bodies are a deliberate separate GetStatement call, not
+// returned here.
+//
+// When vector is supplied, embModel must name the model that produced it:
+// cosine similarity between two different models' vectors is a number that
+// looks plausible and means nothing, so it's validated against the corpus's
+// pinned model the same way UpsertEmbedding validates on write.
+func (ix *Index) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]Candidate, error) {
+	if len(vector) > 0 {
+		if err := ix.validateQueryVector(vector, embModel); err != nil {
+			return nil, err
+		}
+	}
+
 	var out []Candidate
 
 	if matchQuery := buildMatchQuery(text); matchQuery != "" {
@@ -89,7 +113,33 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32) 
 	// enough for surfacing candidates, exactly the looseness this project
 	// already accepts for mixing the two FTS tables above.
 	sort.Slice(out, func(i, j int) bool { return out[i].Rank < out[j].Rank })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
+}
+
+// validateQueryVector refuses a query vector that can't be meaningfully
+// compared against what's stored. Three distinct failures, all of which
+// otherwise degrade to silently-empty semantic results: nothing embedded at
+// all, a vector from a different model, or one of the wrong width (which
+// CosineSimilarity scores as 0 for every statement, so every hit falls below
+// minSemanticScore and vanishes).
+func (ix *Index) validateQueryVector(vector []float32, embModel string) error {
+	corpus, err := ix.EmbeddingCorpusInfo()
+	if err != nil {
+		return err
+	}
+	if corpus.Count == 0 {
+		return fmt.Errorf("--vector given but no statements are embedded yet: semantic matching has nothing to compare against (see `requiem list --needs-embedding`)")
+	}
+	if embModel != corpus.Model {
+		return fmt.Errorf("embedding model mismatch: corpus is pinned to %s/%d, query vector is from %s — cosine similarity across two models is meaningless", corpus.Model, corpus.Dims, embModel)
+	}
+	if len(vector) != corpus.Dims {
+		return fmt.Errorf("embedding dims mismatch: corpus is pinned to %s/%d, query vector has %d dims", corpus.Model, corpus.Dims, len(vector))
+	}
+	return nil
 }
 
 // checkSemantic finds active statements whose stored embedding is close to
