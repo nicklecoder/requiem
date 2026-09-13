@@ -33,6 +33,8 @@ requiem init                                               # sets up .requiem/, 
 requiem add --id no-plaintext-tokens --namespace auth/session --kind rule \
   --body "Session tokens are never stored in plaintext." --tags security \
   --modality must_not                                      # optional normative strength
+requiem add --id code-labels --namespace traceability --kind design \
+  --status proposed --body "..."                            # a decision still under consideration
 
 requiem check --namespace auth --text "should tokens expire on inactivity"  # surfaces related prior decisions
                                                            # top 10 by default; --limit to change
@@ -56,13 +58,38 @@ requiem review                                              # optional — inspe
 requiem commit                                               # the approval step
 requiem discard [namespace/id]                                # unstage + revert; all pending if no id given
 
+requiem trace auth/session/no-plaintext-tokens               # labelled code sites implementing it
+
 requiem reindex                                              # rarely needed explicitly — get/list/check already do this
+                                                             # (also rescans source labels; the read path never does)
 ```
 
 Every command writes bare JSON to stdout on success; failures go to stderr
 with a nonzero exit code. Diagnostics that don't belong in the payload —
 incomplete embedding coverage, for instance — also go to stderr, so `jq`
 pipelines stay clean while an agent reading combined output still sees them.
+
+## Linking decisions to code
+
+A marker comment names the statement a piece of code implements:
+
+```go
+// requiem: auth/session/no-plaintext-tokens
+func storeToken(...) { ... }
+```
+
+`requiem trace <id>` finds those sites, `update` reports which of them a body
+change affects, and `audit` flags code still referencing a superseded or
+rejected statement — the case where a decision changed and the code was never
+brought along, so the corpus reads as settled while the source still asserts
+the old position.
+
+Labels travel with code through refactors, which a stored line range cannot.
+Labelling a test is stronger than labelling an implementation: a passing
+labelled test is evidence a statement holds, where a comment only asserts
+intent. Scanning is one `git grep` — requiem keeps no index of your source.
+
+Entirely optional; a repository with no labels behaves exactly as before.
 
 ## Embeddings
 

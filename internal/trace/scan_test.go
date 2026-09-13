@@ -114,3 +114,25 @@ func TestParseLine_HandlesColonsInPathsAndMalformedInput(t *testing.T) {
 		}
 	}
 }
+
+// requiem writes AGENTS.md/CLAUDE.md, and the doc block it installs carries a
+// worked example label. Scanning them would hand every project a phantom
+// reference to the id in requiem's own documentation.
+func TestScan_SkipsRequiemsOwnGeneratedDocs(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "CLAUDE.md", "// requiem: auth/session/no-plaintext-tokens\n")
+	write(t, dir, "AGENTS.md", "// requiem: auth/session/no-plaintext-tokens\n")
+	write(t, dir, "src/real.go", "// requiem: ns/genuine\n")
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	counts := CountByID(refs)
+	if _, ok := counts["auth/session/no-plaintext-tokens"]; ok {
+		t.Fatalf("the doc block's example must not count as a reference: %+v", counts)
+	}
+	if counts["ns/genuine"] != 1 {
+		t.Fatalf("real labels must still be found: %+v", counts)
+	}
+}

@@ -45,11 +45,19 @@ type Ref struct {
 // and vendored dependencies never appear. `.requiem` is excluded because
 // statements reference each other by id and those are relationships, not code
 // references.
+//
+// AGENTS.md and CLAUDE.md are excluded because requiem writes them: the doc
+// block `init` installs carries a worked example label, so scanning them
+// would give every project a phantom reference to the id in requiem's own
+// documentation. The example has to stay concrete — a vague one is
+// unactionable, which is the lesson that produced it — so the scan gives
+// way instead.
 // requiem: traceability/no-code-index
 func Scan(root string) ([]Ref, error) {
 	cmd := exec.Command("git", "grep",
 		"--untracked", "--no-color", "-I", "-n", "-o", "-E", labelPattern,
-		"--", ".", ":(exclude).requiem")
+		"--", ".", ":(exclude).requiem",
+		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md")
 	cmd.Dir = root
 
 	out, err := cmd.Output()
