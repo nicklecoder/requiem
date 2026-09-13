@@ -37,6 +37,7 @@ CLI, JSON in/out. No long-running server or per-project MCP wiring required — 
 
 - **Files are canonical and git-tracked.** One file per statement, under a path that mirrors its namespace, e.g. `.requiem/statements/auth/session/<id>.md`. Deterministic frontmatter + body format so diffs are meaningful.
 - **SQLite is a disposable, rebuildable index** — gitignored, not committed. Exists purely to make queries (`get`, `list`, `check`) fast: full-text search (SQLite FTS5) plus namespace/tag filtering and relationship lookups. If deleted or corrupted, nothing is lost — rebuild from files via `reindex`.
+- **Embedding vectors live in that index too, and the disposability claim covers them only because the pipeline that produces them is itself committed.** A vector cannot be recovered by reparsing a statement file the way every other table can; it has to be recomputed. That is what `.requiem/config.yaml` (see Semantic Retrieval) exists to guarantee — the endpoint and model are version-controlled, so `reindex --embed` reproduces the vectors on any clone. Without a committed pipeline this bullet would be false for embeddings, which is the reason the config is a tracked file rather than a local setting.
 
 This direction (files canonical, DB derived) was chosen deliberately over the reverse, because it lets git carry all history/diff/blame responsibility, avoids a two-sources-of-truth consistency problem, and means cloning the project doesn't lose anything.
 
@@ -46,6 +47,7 @@ This direction (files canonical, DB derived) was chosen deliberately over the re
 - **Trigger 1 — lazy staleness check on read.** Before `get`/`list`/`check` answer a query, compare the manifest to disk and reindex anything stale first. Correct regardless of what caused the change (hand edit, git operation) and needs no extra infrastructure.
 - **Trigger 2 — git hooks** (`post-checkout`, `post-merge`, `post-rewrite`), installed automatically by `requiem init`, chaining after any pre-existing hook rather than clobbering it. These fire on bulk-change operations and run a plain `reindex`, keeping the index eagerly warm without a background process. A targeted `git diff --name-only`-scoped scan was considered instead of a full tree walk, but dropped: the manifest-diff skip logic (see above) already makes a full walk cheap when little changed, and `post-rewrite` doesn't cleanly offer a before/after ref pair the way `post-checkout`/`post-merge` do, so it would've needed a separate code path anyway.
 - No filesystem watcher / daemon — would require a long-running process per project, which fights the "no server, no lifecycle" goal, and isn't needed given the above two triggers.
+- **`reindex --embed`** additionally fills in any missing or stale vector by calling the configured embedding endpoint. It is separate from plain `reindex` because it is the one indexing operation that reaches the network: a bare `reindex` must stay fast, offline, and safe to run from a git hook. The installed hooks pass `--embed` only when `hooks.embed` is set in config, defaulting to off. A fresh clone can then self-heal its vectors without human involvement, but only for a project that has chosen that: hooks fire on the most routine git operations there are, and embedding on every checkout means `git` waits on a network call, invisibly, since hook output is silenced. Left as a default-off knob rather than a default because the cost is felt by everyone and the benefit is worth it only to some.
 
 ### History & Approval
 
@@ -64,6 +66,52 @@ A code-derived statement's provenance stores a hash of the referenced `line_rang
 
 Being agent-native only helps if an agent actually knows requiem exists in a given project and how to use it, without a human re-explaining it every session. `requiem init` writes (or appends to, chaining after any existing content rather than overwriting it — same idempotent marker-block approach as git hook installation) a concise workflow summary into `AGENTS.md` and `CLAUDE.md` at the project root: what requiem is for, when to reach for `check`, how `add`/`update`/`link`/`reject` map to real vs. rejected decisions, and that commit is the approval step. Any agent whose harness loads one of those files at session start picks this up automatically. These two files are the project's own, not requiem's data, so — unlike everything else `init`/`add`/`update`/`link`/`reject` touch — they're deliberately left unstaged, following the project's normal commit workflow rather than requiem's spec-approval one. `requiem --help` remains the full command reference; the doc block is intentionally short since it competes for context budget with everything else in those files.
 
+## Semantic Retrieval
+
+Lexical search has a structural blind spot: it cannot find a prior decision worded in vocabulary the draft doesn't share. That is precisely the *vocabulary drift* failure named in the Problem section, so full-text search alone cannot solve the problem this tool exists for. Embeddings close that gap.
+
+### Inference stance
+
+Requiem bundles no model, no inference runtime, and no ML dependency — `CGO_ENABLED=0` and the single static binary are preserved. It does, however, know *how to obtain* a vector: `.requiem/config.yaml` names an OpenAI-compatible `/v1/embeddings` endpoint, a model, and the *name* of an environment variable holding an API key (never the key itself). One client shape covers Ollama, LM Studio, llama.cpp, vLLM, LocalAI, and OpenAI.
+
+This is a deliberate narrowing of an earlier, broader rule — "requiem never computes embeddings itself" — which conflated two claims: *bundles no inference runtime* (worth defending) and *cannot obtain a vector* (which made the index's disposability guarantee false). Shelling out to a configured endpoint is the same posture as shelling out to `git`, which requiem already does. `embed --vector` remains as a manual escape hatch, so an agent with access to some exotic model can still supply one directly.
+
+### Model pinning
+
+Cosine similarity between vectors from two different models is a number that looks plausible and means nothing. `embedding_meta` pins the corpus to one model/dims pair; `embed` refuses a mismatch on write, and `check --vector` refuses one on read. Re-pinning requires an explicit force, which wipes every existing vector — mixing vector spaces is worse than having none.
+
+### Rank fusion
+
+`check` merges up to three ranked lists: statement FTS, rejection FTS, and semantic similarity. Their scores are not comparable, and the incomparability is not a constant bias that could be corrected with a scale factor. FTS5 clamps a term's IDF to `1e-6` whenever it appears in more than half the rows (`ext/fts5/fts5_aux.c`), so a *common*-term lexical hit scores near zero and sorts below every semantic hit, while a *rare*-term hit scores around −5 and sorts above. The direction flips per query term.
+
+Results are therefore fused by **Reciprocal Rank Fusion** — `Σ 1/(60 + position)` across the lists a candidate appears in, discarding raw scores in favour of rank position. RRF needs no tuning constants that would require recalibration per embedding model, and it resolves the statement-vs-rejection bm25 incomparability in the same stroke. The fused value is emitted negated, so the `rank` field keeps its documented "lower is more relevant" direction; only the scale changes, which was never specified.
+
+Fusion also changes what happens when both paths find the same statement. Previously the semantic pass skipped anything lexical search had already returned, so agreement between the two was invisible. Summing both contributions instead makes agreement *raise* a candidate — shared vocabulary and embedding proximity are independent signals, and a statement carrying both is a better answer than one carrying either. Such a candidate is marked `match_kind: both`.
+
+### Query embedding
+
+`reindex --embed` makes statement embedding automatic, but a *query* vector still has to come from somewhere. `check --semantic` embeds the query text through the same configured endpoint, so the caller never produces one by hand.
+
+Opt-in rather than automatic, for the reason `reindex --embed` is separate from `reindex`: `check` is the most-used command in the tool, and a plain one must stay fast and offline. `--semantic` trades that for a single round trip. `--vector`/`--model` remain for callers with their own embedding source, and the two are mutually exclusive — one asks requiem to compute the vector, the other supplies it.
+
+### Query construction
+
+`check` builds its FTS query by OR-joining the draft's tokens. Terms occurring in more than half the rows are dropped first, via an `fts5vocab` lookup — exactly where FTS5 clamps a term's IDF to `1e-6`, so these are the terms its own ranking already treats as carrying no information. Being frequency-driven rather than a fixed word list, this adapts to the corpus and catches domain stopwords (`token` in an auth-heavy namespace) that no English stoplist would. Frequencies are counted per FTS table, since a term saturating the statement corpus may still discriminate among rejections.
+
+Two limits on it, both deliberate.
+
+It is **more aggressive than the clamp it mirrors**: the clamp lowers a score, while dropping a term removes its documents from the result set entirely. That difference is harmless on a large corpus and destructive on a small one, where "more than half the rows" describes a handful of documents rather than the vocabulary — at the limit, every term in a single-document table saturates it. So no filtering happens below a floor of twenty rows, which costs nothing, because the blowup this exists to prevent needs a corpus large enough for a full-table match to be expensive. If every term would be dropped above that floor, all are kept: an empty query returns nothing, which reads as "no prior decisions" rather than "no discriminating terms".
+
+It **reduces broad matching without bounding it**. Measured on a 200-statement corpus, an ordinary draft sentence matched 86% of rows unfiltered and 66% filtered. The remainder is not a tuning failure: several terms that are each individually informative still union to most of the corpus, and no per-term threshold can bound a union. Lowering the threshold to chase that number would discard real signal. Bounding what reaches the caller is the result limit's job, which is why both exist.
+
+### Coverage honesty
+
+A statement with no vector is invisible to semantic search, and an empty result set is indistinguishable from "swept everything, found nothing" — a false all-clear on the one job this tool exists to do. So: zero coverage is an error, and partial coverage emits a warning on stderr naming the shortfall. Warnings go to stderr rather than into the payload so `stdout` stays bare JSON per the CLI output convention; agent harnesses surface combined output, so the warning still reaches its reader.
+
+### Corpus-wide audit
+
+Where `check` compares one draft against prior decisions, `audit` compares every active statement against every other, surfacing close pairs as conflict or duplicate candidates. Pairs with any recorded relationship are excluded, so an adjudicated pair stops resurfacing. The scan is O(n²) in memory; at the corpus sizes this tool targets (hundreds of statements, so tens of thousands of comparisons over a few hundred floats) that is milliseconds, and no ANN index is warranted. As everywhere else, requiem surfaces the candidate and the agent classifies it.
+
 ## Data Model
 
 **Statement**
@@ -71,20 +119,41 @@ Being agent-native only helps if an agent actually knows requiem exists in a giv
 |---|---|
 | `id` | namespace-relative slug, doubles as the filename; stable once other statements may reference it — renaming is a deliberate operation |
 | `namespace` | hierarchical path, mirrors directory structure |
-| `kind` | requirement / rule / design — plain string, not a hard-constrained enum, so new kinds can be added without a migration |
+| `kind` | requirement / rule / design — plain string, not a hard-constrained enum, so new kinds can be added without a migration. Deliberately **inert**: it exists for grouping and retrieval (`list --kind`), not semantics — see Modality below |
+| `modality` | optional, closed: `must` / `should` / `may` / `must_not` / `should_not`. The normative strength of the statement — see Modality below |
 | `body` | |
-| `status` | active / superseded / deprecated |
+| `status` | proposed / active / superseded / deprecated. One lifecycle, not two axes: `proposed` precedes `active` exactly as `superseded` and `deprecated` follow it. A proposal is searched and audited like an active statement — the question a proposal most needs answered is whether it conflicts with something already settled — but its status travels with every result so an agent can tell "under consideration" from "decided" |
 | `tags` | |
 | `provenance` | `dialogue` or `code-derived`. For `code-derived`: `file`, `line_range`, and a hash of that line range captured at write time — see Staleness below. |
 | `created_at` | |
 
-**Relationship**: `from`, `to`, `type` (`conflicts_with`, `supersedes`, `depends_on`, `refines`), `note`. (`scoped_to` was considered and dropped — namespace already expresses what a statement applies to; a redundant statement-to-statement edge for the same thing wasn't worth the extra relationship type.)
+Three fields are *derived at read time and never written to the file*: `stale` (code-derived provenance rehashed against current source), `embedding_status` (`missing` / `stale` / `fresh`, from comparing the stored vector's `source_hash` against the current body), and the `rank` returned by `check`. None is content, so none passes through the stage/commit flow — a fact about a statement is not an edit to it.
+
+Relationships are stored on the *owning* statement's frontmatter, but that is a storage decision, not a display one. `get` also returns **derived inbound edges**: statements whose relationships point here, and rejections naming this statement in `see_instead`. Both are computed from the index at read time and never written back, the same posture as `stale` and `embedding_status`. Without them the graph is only traversable in the direction it happened to be written — a principle cannot report the rules refining it, and a statement cannot report the alternatives rejected before it was adopted, which is the question that stops an agent re-proposing one.
+
+**Relationship**: `from`, `to`, `type` (`conflicts_with`, `supersedes`, `depends_on`, `refines`, `duplicates`, `not_related`, `moved_to`), `note`. The last three exist to service `audit` and `mv`: `duplicates` and `not_related` record an agent's verdict on a candidate pair so it stops resurfacing — `not_related` asserts no semantic relationship at all, only that the pair has been judged — and `moved_to` marks the stub `mv --leave-link` leaves behind. (`scoped_to` was considered and dropped — namespace already expresses what a statement applies to; a redundant statement-to-statement edge for the same thing wasn't worth the extra relationship type.)
 
 **Rejection** — a lighter-weight companion to Statement, for ideas explicitly considered and rejected (not abandoned mid-thought — those are just `discard`ed and leave no trace). Recorded so a future agent doesn't re-propose the same rejected idea.
 - Lives in a sister file per namespace: `.requiem/statements/<namespace>/_rejected.md`, an append-only list of entries alongside that namespace's statement files.
 - Each entry: the body of what was proposed, the reason it was rejected, and an optional pointer to the active statement that addresses the concern instead.
 - Indexed into SQLite alongside statements but tagged distinctly (`source_kind: rejection`), so `check` can surface them clearly labeled "previously rejected" rather than mixed in with active statements.
 - Follows the same stage → commit model as everything else — not permanent until committed.
+
+### Modality
+
+`kind` and normative strength are orthogonal, and only one of them can bear semantics.
+
+Category resists closure. ISO/IEC/IEEE 29148 splits requirements into functional, quality, usability, interface and more, and the boundary between functional and non-functional is famously unclear in practice — many requirements sit on both sides. Asking an agent to pick one value from a closed category set produces inconsistent answers across sessions, which splits statements that belong together. The Volere requirements shell is explicit that a requirement's Type exists "as an aid to discovering the requirements and to be able to group the requirements that are relevant to a specific expert specialty" — retrieval, not meaning. That is exactly the job `list --kind` already does, so `kind` stays open and inert.
+
+Normative strength is the opposite: small, closed, and settled decades ago. RFC 2119 fixes MUST / SHOULD / MAY / MUST NOT / SHOULD NOT, and deontic logic has formalised the same triad (obligation, permission, prohibition) since the 1950s. `modality` is therefore a closed enum, and it is the one field in the data model that carries machine-usable meaning.
+
+What it buys, precisely: `audit` can flag a pair whose modalities are incompatible — one `must` against one `must_not` on a similar subject — as a distinct, decidable signal rather than another similarity score. `check` surfaces it so an agent can weigh a MUST differently from a MAY.
+
+What it does not buy, and must not claim to: conflict detection. Contradiction research distinguishes negation, antonym, replacement, switch, scope, and latent contradictions, and current methods miss contraries and subalterns entirely — "must be red" and "must be blue" conflict while both are `must`. The state of the art combining formal logic with LLMs detects roughly 60% of contradictions. Modality gives requiem one narrow, cheap, decidable slice of that space, which suits a tool that surfaces candidates and leaves adjudication to the agent. It is not a contradiction checker and will not become one.
+
+`modality` is optional. Many `design` statements have no normative force at all — "we chose Postgres" is neither obligation nor permission — and forcing a value would produce noise. Statements written before this field existed simply have none, so there is no migration.
+
+**Validate on write, tolerate on read.** `add`/`update` reject an unknown modality; the reader treats one as unset rather than erroring. Without this asymmetry, adding a member later would make every older binary reject files that use it — turning a closed enum into a forward-compatibility trap, which is the usual reason people avoid closing an enum at all.
 
 ## CLI
 
@@ -93,18 +162,137 @@ Being agent-native only helps if an agent actually knows requiem exists in a giv
 | command | input | output |
 |---|---|---|
 | `init` | — | path, hooks installed, docs updated |
-| `add` | `--id --namespace --kind --body [--tags] [--provenance] [--source file:line]` | created statement |
-| `update` | `<id> --body [--status]` | updated statement |
+| `add` | `--id --namespace --kind --body [--modality] [--tags] [--provenance] [--source file:line]` | created statement |
+| `update` | `<id> --body [--status] [--modality]` | updated statement |
 | `link` | `<from-id> <to-id> --type [--note]` | confirmation |
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
-| `list` | `[--namespace] [--kind] [--status] [--tag]` | array of compact summaries |
-| `check` | `--namespace --text [--tags]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, relevance signal; statements and rejections included, distinctly tagged. Full bodies are a deliberate second `get` call, not inline, to keep `check` cheap regardless of match count. |
-| `reindex` | — | counts: added/updated/removed/unchanged |
+| `list` | `[--namespace] [--kind] [--status] [--tag] [--needs-embedding] [--unreferenced]` | array of compact summaries |
+| `check` | `--namespace --text [--tags] [--semantic] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
+| `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
+| `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
+| `mv` | `<from-id> <to-id> [--leave-link]` | from, to, rewritten inbound references, whether a stub was left |
+| `trace` | `<namespace/id>` | labelled source sites referencing this statement, each classified by what it resolves to |
+| `reindex` | `[--embed]` | counts: added/updated/removed/unchanged. Also rescans the source tree for labels — unlike the lazy reindex the read path performs, which never does. With `--embed`, also fills missing/stale vectors; partial failure persists progress and exits nonzero. |
 | `review` | — | human-readable description of staged changes |
 | `commit` | `[--message]` | commit sha |
 | `discard` | `[<id>]` | confirmation |
 
 ## Status
 
-Architecture, data model, and CLI surface are settled. Next: implementation planning.
+Everything specified above is implemented: the full CLI surface, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, the embedding pipeline, lexical and semantic retrieval with RRF fusion and frequency-filtered queries, modality, the proposed status, derived inbound edges, corpus-wide audit, and requirement–implementation traceability for the rewritable carriers.
+
+Deferred by decision, not oversight: commit trailers (`Requiem-Id:`). `mv` can rewrite a label in source but never one in published history, so trailers make every later rename permanently expensive. They wait for evidence that the label convention survives ordinary development.
+
+Open questions are tracked as `proposed` statements in this project's own `.requiem/` corpus — `requiem list --status proposed`.
+
+---
+
+## Requirement–Implementation Traceability
+
+**Status: decided for the rewritable carriers; commit trailers deferred.**
+
+Source comments (tests included), `requiem trace`, blast radius on `update`, and reference classification in `audit` are accepted. Commit trailers are deliberately held back: `mv` can rewrite a label in source but can never fix one in published history, so trailers make a rename permanently expensive. They wait until the label convention has proven it survives ordinary development. Everything below describes the whole design; the trailer parts are marked where they arise.
+
+### The gap
+
+Requiem can already point a statement *at* code: `provenance: code-derived` stores `file`, `line_range`, and a hash of that range, rehashed on read to flag drift. What it cannot do is answer the inverse question — *"this decision just changed; what code implements it?"* — which is the question that actually arises when a settled requirement is revisited.
+
+These are not the same edge reversed. Their causality differs, and so does their decay:
+
+| | `provenance: code-derived` | implementation label |
+|---|---|---|
+| means | this statement was reverse-engineered *from* existing code | this code was written *to satisfy* this statement |
+| direction | statement → code | code → statement |
+| survives refactor? | no — moving or reformatting the range breaks the hash | yes — the label lives inside the code that moved |
+| fan-out | one range per statement | one statement, many labelled sites |
+
+The second column is strictly better at the thing the first is worst at. A requirement satisfied across six files cannot be expressed as one `line_range`, but it is six comments. Conversely, a label asserts intent without verifying it, where a hash actually detects change. They are complements, not substitutes, and both should exist.
+
+### Mechanism
+
+Three carriers, chosen because they fail in non-overlapping ways:
+
+- **Source comments** — `// requiem: auth/session/no-plaintext-tokens`. A marker prefix rather than a bare id, so the reference doesn't collide with an ordinary file path appearing in prose. Travels with the code through refactors at zero maintenance cost.
+- **Commit trailers** — `Requiem-Id: auth/session/no-plaintext-tokens`, written by `requiem commit`. Git already has this convention (the same mechanism as `Co-Authored-By:`), it is parseable with `git interpret-trailers`, searchable with `git log --grep`, and immutable once written.
+- **Tests, labelled the same way.** This is the strongest of the three and the least obvious. An implementation comment *asserts* that code satisfies a requirement; a labelled test that passes is *evidence* of it. Labelling tests turns traceability from documentation into verification, and is the only one of the three a machine can check.
+
+### Scanning, not indexing
+
+Requiem must not acquire a second index. Indexing the source tree would mean another manifest, another staleness problem, and a large expansion of what this tool owns — the same expansion it already refuses for filesystem watchers.
+
+It does not need one. `git grep` is already available (requiem requires `git` on `PATH`) and answers the whole question in a single pass:
+
+```
+git grep --untracked -oh -E 'requiem: [a-z0-9/-]+' -- . ':(exclude).requiem'
+```
+
+That yields every referenced id with a count. Gitignored paths are skipped for free, so `node_modules` and build output never appear. `--untracked` means code an agent has just written counts before it is staged. The `:(exclude).requiem` pathspec keeps statements' own cross-references from registering as code references. No tree walking, no manifest, no binary-file handling, no dependency requiem does not already have.
+
+**Where the scan runs matters more than how.** Measured cost is roughly 200ms on a small repository, worst case, and it grows with tree size — far too expensive for Trigger 1, the lazy reindex that precedes *every* `get`/`list`/`check`. So the scan runs on explicit `reindex` and on the installed git hooks (Trigger 2), never on the read path. The resulting counts therefore lag reality slightly between those points, which is acceptable precisely because this is a hint and not a claim; a stale hint costs an unnecessary glance, where a stale *assertion* would cost a wrong decision.
+
+Commit-trailer references are deliberately *not* scanned. Walking history with `git log --grep` is far more expensive than one working-tree grep and has no place in an indexing path, so those stay an on-demand `trace` lookup. Code references are cheap and proactive; history references are expensive and pull-only.
+
+### Why a count, surfaced by default
+
+The obvious design is a boolean on `trace`, fetched when asked. Both halves of that are wrong.
+
+*Pull-only is out of step with the rest of the tool.* `check` surfaces prior decisions before anyone thinks to look for them; `stale` and `embedding_status` appear on `get` and `list` unbidden. A reference hint belongs in that family — requiring an agent to know to ask for it is exactly the failure the rest of the design avoids.
+
+*A boolean overstates what is known.* `code_refs: 3` invites a look at three specific places. `implemented: true` invites trust the data cannot support: a label records intent, not verification, and nothing checks that the labelled code does what the statement says. The field is named for what it counts, never for what it might imply.
+
+**The ambiguity of zero is the real design problem.** No references can mean not implemented, implemented but unlabelled, or not implementable at all — "we chose Postgres" has no code site to point at. An agent that reads zero as "not implemented" has manufactured a confident answer out of missing data, which is the same failure as an `audit` that returns an empty list because nothing was embedded.
+
+It takes the same answer, too. Below a threshold of adoption, labelling is uninitialised rather than informative, and `code_refs` reads as *unknown* rather than `0`. Only once a corpus genuinely uses labels does a zero begin to carry signal. The value's asymmetry should be assumed throughout: a nonzero count is useful evidence, and a zero is weak evidence at best.
+
+### Classifying a reference
+
+A scanned id is a bare string. Resolving it says what the reference *means*, and the resolution has to consult both statements and rejections — not statements alone.
+
+That is not a completeness nicety. Resolve against statements only, and a rejection id found in source matches nothing and gets reported as a **dangling label**: "this points at something that no longer exists." The truthful report is the opposite in character — "this code implements an idea this project explicitly rejected." Same input, inverted meaning, and the only difference is one extra lookup. Getting it wrong turns the most interesting signal in the system into routine cleanup noise.
+
+Five outcomes, of which two matter:
+
+| resolves to | reading |
+|---|---|
+| active statement, refs > 0 | normal; nothing to say |
+| active statement, refs 0 | weak — unbuilt, unlabelled, or unimplementable (see the ambiguity of zero above) |
+| **non-active statement, refs > 0** | **code implements a rescinded decision** |
+| **rejection, refs > 0** | **code implements an explicitly rejected idea** |
+| nothing | dangling label; the reference rotted |
+
+The two bold rows are the ones worth raising unprompted, and neither is expressible today. They describe the same underlying hazard: a decision was made and the code was never brought along, so the corpus reads as settled while the source still asserts the superseded position. The requirements look internally consistent precisely because the contradiction has been pushed into the code, where none of requiem's other checks can see it. This is the *undeclared prior constraint* from the Problem section, manufactured by the tool's own workflow rather than inherited from legacy code.
+
+Note the asymmetry with staleness: the commit-date heuristic below would catch a superseded statement only incidentally, because a status change happens to be a commit to that file. Classifying by the target's status catches it directly and can say *why* it is suspect, which a date comparison never can.
+
+### Cached for hints, scanned for answers
+
+Two consumers with different tolerances, so two sources.
+
+`get`, `list` and `check` read a **cached** count, refreshed on explicit `reindex` and on the git hooks. It lags between runs, which is affordable because it is a hint — an invitation to look, not a claim.
+
+`trace`, `update`'s blast radius, `audit`'s classification, and `mv`'s orphan report **scan live**. Each answers a direct question at a moment that matters, and each is a deliberate command rather than a hot path, so one `git grep` is affordable. A stale answer to "what does this change affect" is worse than a slow one, and a contradiction reported from a stale cache is worse than none, since the reader goes looking for code that has already been fixed.
+
+### Derived staleness, again
+
+A labelled site is suspect when the statement changed *after* the code did. Both dates are already in git: compare the statement file's last commit against each referencing file's last commit. Nothing is stored, nothing needs invalidating — the same read-time-comparison posture as `stale` and `embedding_status`. It is a heuristic (a file changes for unrelated reasons too), which is acceptable for the same reason the code-derived hash is: cheap for an agent to glance at and dismiss, versus the cost of a silently wrong assumption.
+
+### Surface
+
+- `code_refs` on `get`/`list`/`check` — how many labelled source sites reference this statement, or *unknown* where labelling is not yet in use. Derived, held only in the disposable index, never written back to the statement file: the same posture as `stale` and `embedding_status`, and for the same reason — a fact about a statement is not an edit to it.
+- `requiem trace <namespace/id>` — the labelled source sites themselves, plus commits referencing this statement (the latter searched on demand, see above).
+- **`update` reports the blast radius automatically.** This is the payoff, and it should not require remembering a separate command: changing a statement's body prints the sites and commits that referenced it, flagging those that predate the change. Everything else here is plumbing for this one behaviour.
+- `audit` additionally surfaces the two strong signals above: code referencing a non-active statement, and code referencing a rejection. Both describe the same hazard — a decision was made and the code was never brought along.
+- Dangling labels are deliberately *not* raised by `audit`. They were specified as cleanup alongside the contradictions, and implementing the scanner showed why that is wrong: the marker matches anywhere in a tracked file, so prose explaining the label format reads as a label. Documentation describing traceability generates dangling references by existing, and an audit that reports them trains its reader to skim past its own output. They remain visible through `trace`, where someone is asking about one specific id and can judge for themselves.
+- `list --unreferenced` returns statements no labelled site points at — the closest thing this model has to an undefined symbol: something declared and never linked to anything. It returns nothing where labelling is not in use, rather than reporting an entire unlabelled corpus as unimplemented, which is the ambiguity of zero at corpus scale.
+- `mv` reports code references it cannot rewrite. This is the sharpest cost of the proposal: an id is already "stable once other statements may reference it", and once ids also live in source and in *immutable commit history*, renaming gets materially more expensive. `mv` can rewrite source comments; it can never fix a trailer in a published commit.
+
+### Boundary
+
+Traceability tooling has a strong pull toward compliance bureaucracy — this is the established shape of requirements-traceability practice in regulated software (DO-178C, IEC 62304, ISO 26262), and it is not the shape this should take. The existing principle holds the line: **infrastructure and retrieval, not a judge.** `trace` surfaces candidates. It must never enforce coverage, block a commit for an unlabelled change, or report a traceability percentage. The moment it scores you, it has become a different product.
+
+That last prohibition constrains how the ambiguity-of-zero problem above is solved, and the constraint is worth stating because the two nearly collide. Making a zero interpretable requires knowing whether labelling is in use at all — but emitting "coverage: 43%" would be a traceability score in everything but name, and someone would start managing it. So adoption is expressed as a *state* that decides whether `code_refs` is meaningful, never as a number to move. The distinction is between calibrating a signal and grading the user.
+
+These stay reports, and the distinction is sharper now that some of them look like violations. Code referencing a superseded statement is frequently a legitimate in-progress state: the decision landed on Tuesday, the migration ships on Friday, and both facts are true in the meantime. Surfacing that is useful. Refusing a commit over it would make requiem something developers route around, and a tool that gets routed around reports on a corpus nobody maintains.
+
+Wholly optional and additive: a repository with zero labels behaves exactly as it does today.

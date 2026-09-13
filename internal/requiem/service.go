@@ -5,6 +5,7 @@
 package requiem
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,11 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nicklecoder/requiem/internal/config"
+	"github.com/nicklecoder/requiem/internal/embed"
 	"github.com/nicklecoder/requiem/internal/git"
 	"github.com/nicklecoder/requiem/internal/hash"
 	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/model"
 	"github.com/nicklecoder/requiem/internal/store"
+	"github.com/nicklecoder/requiem/internal/trace"
 )
 
 // indexFile is gitignored (see the .requiem/.gitignore Init writes) — it's
@@ -88,6 +92,10 @@ var hookedEvents = []string{"post-checkout", "post-merge", "post-rewrite"}
 // misconfigured or missing requiem binary never disrupts normal git use.
 const hookCommand = "requiem reindex >/dev/null 2>&1 || true"
 
+// hookCommandEmbed is installed instead when config sets hooks.embed — see
+// config.Hooks.Embed for why that is opt-in.
+const hookCommandEmbed = "requiem reindex --embed >/dev/null 2>&1 || true"
+
 // Init creates .requiem/statements (and an empty, schema-ready index) if
 // they don't already exist, and installs reindex hooks for post-checkout/
 // post-merge/post-rewrite — see hookedEvents.
@@ -111,6 +119,22 @@ func (s *Service) Init() (*InitResult, error) {
 		return nil, err
 	}
 
+	// A commented-out template, staged like every other requiem write. It
+	// turns nothing on by itself — its job is discoverability, since an
+	// agent reading the project has no other way to learn that embedding is
+	// available at all.
+	configPath := filepath.Join(s.Store.Root, config.FileName)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if err := os.WriteFile(configPath, []byte(config.Template), 0o644); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if err := s.stagePath(config.FileName); err != nil {
+		return nil, err
+	}
+
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, err
@@ -119,8 +143,18 @@ func (s *Service) Init() (*InitResult, error) {
 		return nil, err
 	}
 
+	// Read after the config template is written, so a project that has
+	// already opted in keeps its choice when init is re-run.
+	cfg, err := config.Load(s.Store.Root)
+	if err != nil {
+		return nil, err
+	}
+	command := hookCommand
+	if cfg.HooksEmbed() {
+		command = hookCommandEmbed
+	}
 	for _, name := range hookedEvents {
-		if err := s.Git.InstallHook(name, hookCommand); err != nil {
+		if err := s.Git.InstallHook(name, command); err != nil {
 			return nil, fmt.Errorf("install %s hook: %w", name, err)
 		}
 	}
@@ -139,9 +173,13 @@ func (s *Service) Init() (*InitResult, error) {
 
 // AddParams are the inputs to Add.
 type AddParams struct {
-	ID         string
-	Namespace  string
-	Kind       string
+	ID        string
+	Namespace string
+	Kind      string
+	Modality  string
+	// Status defaults to active. Set it to create a proposal directly,
+	// rather than adding a decision and immediately demoting it.
+	Status     string
 	Body       string
 	Tags       []string
 	Provenance string // "dialogue" (default) or "code-derived"
@@ -182,7 +220,8 @@ func (s *Service) Add(p AddParams) (*model.Statement, error) {
 		ID:         p.ID,
 		Namespace:  p.Namespace,
 		Kind:       model.Kind(p.Kind),
-		Status:     model.StatusActive,
+		Modality:   model.Modality(p.Modality),
+		Status:     model.Status(defaultStr(p.Status, string(model.StatusActive))),
 		Tags:       p.Tags,
 		Provenance: provenance,
 		CreatedAt:  time.Now().UTC(),
@@ -237,6 +276,22 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 		return nil, err
 	}
 	st.EmbeddingStatus = embeddingStatus(emb, st.Body)
+
+	counts, adopted, err := ix.CodeRefCounts()
+	if err != nil {
+		return nil, err
+	}
+	if adopted {
+		n := counts[fullID]
+		st.CodeRefs = &n
+	}
+
+	if st.ReferencedBy, err = ix.InboundRelationships(fullID); err != nil {
+		return nil, err
+	}
+	if st.RejectedAlternatives, err = ix.RejectionsPointingAt(fullID); err != nil {
+		return nil, err
+	}
 	return &st, nil
 }
 
@@ -270,13 +325,21 @@ func computeStale(root string, p model.Provenance) bool {
 
 func boolPtr(b bool) *bool { return &b }
 
-// UpdateParams are the inputs to Update. Empty fields are left unchanged.
-type UpdateParams struct {
-	Body   string
-	Status string
+func defaultStr(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
 }
 
-// Update edits an existing statement's body and/or status.
+// UpdateParams are the inputs to Update. Empty fields are left unchanged.
+type UpdateParams struct {
+	Body     string
+	Status   string
+	Modality string
+}
+
+// Update edits an existing statement's body, status and/or modality.
 func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error) {
 	st, err := s.Store.ReadStatement(fullID)
 	if err != nil {
@@ -288,6 +351,15 @@ func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error
 	if p.Status != "" {
 		st.Status = model.Status(p.Status)
 	}
+	// "none" clears it: an empty flag value has to mean "leave alone" for
+	// every other field here, so removing a modality needs a word of its own.
+	switch p.Modality {
+	case "":
+	case "none":
+		st.Modality = ""
+	default:
+		st.Modality = model.Modality(p.Modality)
+	}
 	if err := s.Store.WriteStatement(st); err != nil {
 		return nil, err
 	}
@@ -295,6 +367,40 @@ func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error
 		return nil, err
 	}
 	return &st, nil
+}
+
+// UpdateBlastRadius reports the labelled code sites referencing a statement
+// whose body just changed.
+//
+// Scans live rather than reading the cached counts: this is the payoff of the
+// whole traceability mechanism, delivered at the one moment it matters, and a
+// stale answer to "what does this change affect" is worse than a slow one.
+// Update is a deliberate write, not a hot path, so one scan is affordable.
+func (s *Service) UpdateBlastRadius(fullID string) ([]ClassifiedRef, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer ix.Close()
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, err
+	}
+
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	classified, err := classifyRefs(ix, refs)
+	if err != nil {
+		return nil, err
+	}
+	var out []ClassifiedRef
+	for _, c := range classified {
+		if c.FullID == fullID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // Link adds a typed relationship from one statement to another. Both ends
@@ -350,13 +456,15 @@ func (s *Service) Reject(p RejectParams) (*model.Rejection, error) {
 // Check) — excerpt only, never the full body, so scanning many candidates
 // stays cheap regardless of corpus size.
 type StatementSummary struct {
-	FullID          string       `json:"full_id"`
-	Namespace       string       `json:"namespace"`
-	Kind            model.Kind   `json:"kind"`
-	Status          model.Status `json:"status"`
-	Tags            []string     `json:"tags,omitempty"`
-	Excerpt         string       `json:"excerpt"`
-	EmbeddingStatus string       `json:"embedding_status,omitempty"`
+	FullID          string         `json:"full_id"`
+	Namespace       string         `json:"namespace"`
+	Kind            model.Kind     `json:"kind"`
+	Modality        model.Modality `json:"modality,omitempty"`
+	CodeRefs        *int           `json:"code_refs,omitempty"`
+	Status          model.Status   `json:"status"`
+	Tags            []string       `json:"tags,omitempty"`
+	Excerpt         string         `json:"excerpt"`
+	EmbeddingStatus string         `json:"embedding_status,omitempty"`
 }
 
 func summarize(st model.Statement, emb *index.Embedding) StatementSummary {
@@ -364,6 +472,7 @@ func summarize(st model.Statement, emb *index.Embedding) StatementSummary {
 		FullID:          st.FullID(),
 		Namespace:       st.Namespace,
 		Kind:            st.Kind,
+		Modality:        st.Modality,
 		Status:          st.Status,
 		Tags:            st.Tags,
 		Excerpt:         excerpt(st.Body),
@@ -394,6 +503,15 @@ type ListFilter struct {
 	// embedding is missing or stale — the batch-discovery path an agent
 	// uses before running `embed` in bulk, without a dedicated subcommand.
 	NeedsEmbedding bool
+	// Unreferenced, when true, narrows results to statements no labelled
+	// code site points at — the closest thing this model has to an undefined
+	// symbol: something declared and never linked to anything.
+	//
+	// Returns nothing at all where labelling is not in use, rather than
+	// returning everything. A corpus with no labels would otherwise report
+	// its entire contents as unimplemented, which is the ambiguity-of-zero
+	// problem at corpus scale: an answer manufactured from missing data.
+	Unreferenced bool
 }
 
 // List returns compact summaries of every statement matching filter. Like
@@ -424,6 +542,11 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 		return nil, err
 	}
 
+	counts, adopted, err := ix.CodeRefCounts()
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]StatementSummary, 0, len(statements))
 	for _, st := range statements {
 		var emb *index.Embedding
@@ -431,7 +554,14 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			emb = &e
 		}
 		summary := summarize(st, emb)
+		if adopted {
+			n := counts[st.FullID()]
+			summary.CodeRefs = &n
+		}
 		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
+			continue
+		}
+		if filter.Unreferenced && (!adopted || counts[st.FullID()] > 0) {
 			continue
 		}
 		out = append(out, summary)
@@ -444,18 +574,101 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 // the agent gets a cheap short list instead of needing the whole spec in
 // context, and calls Get on whichever candidates actually warrant full
 // attention. Like Get/List, it reindexes first.
-func (s *Service) Check(namespace, text string, tags []string, vector []float32) ([]index.Candidate, error) {
+// CheckParams are the inputs to Check. A struct rather than positional
+// arguments because this is the third optional input the signature has
+// grown, and a call site reading Check(ns, text, nil, nil, "", 10) says
+// nothing about what those blanks are.
+type CheckParams struct {
+	Namespace string
+	Text      string
+	Tags      []string
+	Limit     int
+
+	// Vector and Model carry a query embedding the caller computed itself.
+	Vector []float32
+	Model  string
+
+	// Semantic asks requiem to fetch the query vector from the configured
+	// endpoint instead, so the caller does not have to produce one by hand.
+	// Opt-in rather than automatic: `check` is the most-used command in the
+	// tool and must stay fast and offline by default, which is the same
+	// reason `reindex --embed` is separate from a plain `reindex`.
+	Semantic bool
+}
+
+// resolveVector supplies the query vector when Semantic is set, leaving a
+// caller-supplied one untouched otherwise.
+func (s *Service) resolveVector(p CheckParams) ([]float32, string, error) {
+	if !p.Semantic {
+		return p.Vector, p.Model, nil
+	}
+	if len(p.Vector) > 0 {
+		return nil, "", fmt.Errorf("--semantic and --vector are mutually exclusive: one asks requiem to compute the query vector, the other supplies one")
+	}
+	if strings.TrimSpace(p.Text) == "" {
+		return nil, "", fmt.Errorf("--semantic needs --text to embed")
+	}
+
+	cfg, err := config.Load(s.Store.Root)
+	if err != nil {
+		return nil, "", err
+	}
+	if !cfg.EmbeddingConfigured() {
+		return nil, "", fmt.Errorf("--semantic needs an embedding endpoint: set `embedding.endpoint` and `embedding.model` in %s, or pass --vector/--model yourself",
+			filepath.Join(requiemDir, config.FileName))
+	}
+	client, err := embed.New(*cfg.Embedding)
+	if err != nil {
+		return nil, "", err
+	}
+	timeout, err := cfg.Embedding.ResolvedTimeout()
+	if err != nil {
+		return nil, "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	vecs, err := client.Embed(ctx, []string{p.Text})
+	if err != nil {
+		return nil, "", fmt.Errorf("embed query text: %w", err)
+	}
+	// The model comes from the same config the corpus was embedded under, so
+	// the mismatch guard in the index has nothing to catch here — but it
+	// still runs, and would catch a config edited since the last embed run.
+	return vecs[0], client.Model(), nil
+}
+
+// Coverage is only computed when a query vector is in play: without one the
+// semantic path never runs, so an unembedded corpus costs the caller nothing
+// and a warning about it would be noise on the common path.
+func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
+	vector, embModel, err := s.resolveVector(p)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+
 	ix, err := s.openIndex()
 	if err != nil {
-		return nil, err
+		return nil, Coverage{}, err
 	}
 	defer ix.Close()
 
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, fmt.Errorf("reindex before check: %w", err)
+		return nil, Coverage{}, fmt.Errorf("reindex before check: %w", err)
 	}
 
-	return ix.Check(namespace, text, tags, vector)
+	candidates, err := ix.Check(p.Namespace, p.Text, p.Tags, vector, embModel, p.Limit)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	if len(vector) == 0 {
+		return candidates, Coverage{}, nil
+	}
+	cov, err := embeddingCoverage(ix, p.Namespace)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	return candidates, cov, nil
 }
 
 // EmbedResult is Embed's output.
@@ -503,18 +716,78 @@ func (s *Service) Embed(fullID, embModel string, vec []float32, force bool) (*Em
 // Get/List/Check, requiem only surfaces the candidate — classifying it as a
 // real conflict, a duplicate, or a false positive is the calling agent's
 // job (recorded afterward via Link).
-func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.PairCandidate, error) {
+//
+// Coverage is returned alongside the candidates rather than folded into
+// them: SPEC's output convention keeps stdout as bare data with no envelope
+// to unwrap, so the shortfall travels as a second return value and reaches
+// the user on stderr. A Go signature is not the JSON payload.
+func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.PairCandidate, Coverage, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	defer ix.Close()
+
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
+	}
+
+	pairs, err := ix.FindCandidatePairs(namespace, minScore, limit)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	cov, err := embeddingCoverage(ix, namespace)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+	return pairs, cov, nil
+}
+
+// AuditRefs reports labelled code contradicting a recorded decision: sites
+// referencing a retired statement or a rejected idea.
+//
+// Scans live, like Trace and UpdateBlastRadius. Audit is a deliberate,
+// occasional sweep already doing an O(n^2) embedding comparison, so one git
+// grep is noise beside it — and a contradiction reported from a stale cache
+// would be worse than none, since the reader would go looking for code that
+// has already been fixed.
+func (s *Service) AuditRefs() ([]ClassifiedRef, error) {
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, err
 	}
 	defer ix.Close()
-
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, fmt.Errorf("reindex before audit: %w", err)
+		return nil, err
 	}
 
-	return ix.FindCandidatePairs(namespace, minScore, limit)
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	classified, err := classifyRefs(ix, refs)
+	if err != nil {
+		return nil, err
+	}
+	return ContradictingRefs(classified), nil
+}
+
+func (s *Service) refsTo(ix *index.Index, fullID string) ([]ClassifiedRef, error) {
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	classified, err := classifyRefs(ix, refs)
+	if err != nil {
+		return nil, err
+	}
+	var out []ClassifiedRef
+	for _, c := range classified {
+		if c.FullID == fullID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // MoveResult is Move's output.
@@ -523,6 +796,9 @@ type MoveResult struct {
 	To                string   `json:"to"`
 	UpdatedReferences []string `json:"updated_references"`
 	StubLeft          bool     `json:"stub_left"`
+	// OrphanedCodeRefs are labelled source sites still naming the old id.
+	// Reported, not rewritten — see Move.
+	OrphanedCodeRefs []ClassifiedRef `json:"orphaned_code_refs,omitempty"`
 }
 
 // Move relocates a statement to a new namespace/id, rewriting every inbound
@@ -630,6 +906,17 @@ func (s *Service) Move(fromID, toID string, leaveLink bool) (*MoveResult, error)
 	}
 	touched = append(touched, oldRel)
 
+	// The body is unchanged by a move, so the vector computed for it is
+	// still valid — carry it to the new id. Without this the next reindex
+	// drops it (the old path is gone) and the statement silently reverts to
+	// unembedded, which matters because `mv` is exactly what the workflow
+	// recommends after `audit` flags a duplicate. With --leave-link this is
+	// also what detaches the vector from the stub, whose body is now just
+	// "Moved to ...".
+	if err := ix.RekeyEmbedding(fromID, toID); err != nil {
+		return nil, err
+	}
+
 	paths := make([]string, len(touched))
 	for i, rel := range touched {
 		paths[i] = filepath.ToSlash(filepath.Join(requiemDir, rel))
@@ -638,7 +925,17 @@ func (s *Service) Move(fromID, toID string, leaveLink bool) (*MoveResult, error)
 		return nil, err
 	}
 
-	return &MoveResult{From: fromID, To: toID, UpdatedReferences: updated, StubLeft: leaveLink}, nil
+	// Report labelled code pointing at the old id rather than rewriting it.
+	// Rewriting would mean requiem editing source files outside .requiem,
+	// which is a materially larger claim on a project than anything else it
+	// does, and is recorded as an open question rather than decided here.
+	orphaned, err := s.refsTo(ix, fromID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MoveResult{From: fromID, To: toID, UpdatedReferences: updated,
+		StubLeft: leaveLink, OrphanedCodeRefs: orphaned}, nil
 }
 
 // Reindex incrementally syncs the index with the statement files on disk —
@@ -652,7 +949,32 @@ func (s *Service) Reindex() (index.ReindexStats, error) {
 		return index.ReindexStats{}, err
 	}
 	defer ix.Close()
-	return ix.Reindex(s.Store)
+	stats, err := ix.Reindex(s.Store)
+	if err != nil {
+		return stats, err
+	}
+	// The source scan runs here and on the git hooks, never on the lazy
+	// reindex that precedes every get/list/check. Measured around 200ms and
+	// growing with tree size, it is far too expensive for the read path. The
+	// cached counts therefore lag slightly between explicit runs, which is
+	// affordable precisely because they are a hint and not a claim.
+	if err := s.scanCodeRefs(ix); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+// requiem: embedding/read-path-offline
+func (s *Service) scanCodeRefs(ix *index.Index) error {
+	refs, err := trace.Scan(s.Root)
+	if err != nil {
+		return err
+	}
+	stored := make([]index.CodeRef, len(refs))
+	for i, r := range refs {
+		stored[i] = index.CodeRef{FullID: r.FullID, File: r.File, Line: r.Line}
+	}
+	return ix.ReplaceCodeRefs(stored)
 }
 
 // ReviewResult is Review's output: which files have pending changes, plus

@@ -787,7 +787,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Embed b: %v", err)
 	}
 
-	pairs, err := s.Audit("", 0.5, 0)
+	pairs, _, err := s.Audit("", 0.5, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Link: %v", err)
 	}
 
-	pairs, err = s.Audit("", 0.5, 0)
+	pairs, _, err = s.Audit("", 0.5, 0)
 	if err != nil {
 		t.Fatalf("second Audit: %v", err)
 	}
@@ -933,5 +933,209 @@ func TestMove_RefusesExistingTarget(t *testing.T) {
 	}
 	if _, err := s.Move("ns/a", "ns/b", false); err == nil {
 		t.Fatal("expected error moving onto an existing statement")
+	}
+}
+
+func TestMove_CarriesEmbeddingToNewID(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "target", Namespace: "auth/session", Kind: "rule", Body: "the body"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Embed("auth/session/target", "m", []float32{1, 0}, false); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if _, err := s.Commit("test setup: target"); err != nil {
+		t.Fatalf("commit setup: %v", err)
+	}
+
+	if _, err := s.Move("auth/session/target", "auth/shared/target", false); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+
+	// mv is what the workflow recommends after audit flags a duplicate, so
+	// losing the vector here would silently un-embed the surviving statement.
+	moved, err := s.Get("auth/shared/target")
+	if err != nil {
+		t.Fatalf("Get moved: %v", err)
+	}
+	if moved.EmbeddingStatus != "fresh" {
+		t.Fatalf("expected the moved statement to keep a fresh embedding, got %q", moved.EmbeddingStatus)
+	}
+}
+
+func TestCheck_DefaultLimitBoundsResultCount(t *testing.T) {
+	s := newTestService(t)
+	for i := 0; i < 15; i++ {
+		id := fmt.Sprintf("rule-%d", i)
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "shared wording across every statement " + id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+
+	// Every statement matches this text lexically; without a cap `check`
+	// hands back the whole corpus, which defeats its own purpose.
+	got, _, err := s.Check(CheckParams{Namespace: "ns", Text: "shared wording across every statement", Limit: index.DefaultCheckLimit})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(got) != index.DefaultCheckLimit {
+		t.Fatalf("expected %d candidates, got %d", index.DefaultCheckLimit, len(got))
+	}
+
+	unlimited, _, err := s.Check(CheckParams{Namespace: "ns", Text: "shared wording across every statement", Limit: 0})
+	if err != nil {
+		t.Fatalf("Check unlimited: %v", err)
+	}
+	if len(unlimited) != 15 {
+		t.Fatalf("expected all 15 with limit=0, got %d", len(unlimited))
+	}
+}
+
+// Storing relationships on the owning statement's frontmatter is a storage
+// decision; it must not leave the graph traversable in only one direction.
+func TestGet_SurfacesInboundEdges(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"principle", "rule-one", "rule-two"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "body " + id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Link("ns/rule-one", "ns/principle", model.RelRefines, "serves it"); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if _, err := s.Link("ns/rule-two", "ns/principle", model.RelRefines, ""); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if _, err := s.Reject(RejectParams{ID: "other-way", Namespace: "ns",
+		Body: "considered and turned down", SeeInstead: "ns/principle"}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	got, err := s.Get("ns/principle")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Relationships) != 0 {
+		t.Fatalf("the principle declares no outbound edges: %+v", got.Relationships)
+	}
+	if len(got.ReferencedBy) != 2 {
+		t.Fatalf("expected both refining rules surfaced, got %+v", got.ReferencedBy)
+	}
+	if got.ReferencedBy[0].From != "ns/rule-one" || got.ReferencedBy[0].Type != model.RelRefines {
+		t.Fatalf("unexpected inbound edge: %+v", got.ReferencedBy[0])
+	}
+	// The note travels with the edge, so a reader sees why it exists without
+	// a second lookup.
+	if got.ReferencedBy[0].Note != "serves it" {
+		t.Fatalf("expected the note carried through, got %q", got.ReferencedBy[0].Note)
+	}
+	// The question that stops an agent re-proposing a rejected idea.
+	if len(got.RejectedAlternatives) != 1 || got.RejectedAlternatives[0] != "ns/other-way" {
+		t.Fatalf("expected the rejected alternative surfaced, got %+v", got.RejectedAlternatives)
+	}
+
+	// Derived, never stored: nothing may leak into the file on disk.
+	raw, err := os.ReadFile(filepath.Join(s.Store.StatementsDir(), "ns", "principle.md"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for _, leak := range []string{"referenced_by", "rejected_alternatives", "rule-one"} {
+		if strings.Contains(string(raw), leak) {
+			t.Fatalf("derived field %q must never be written to the statement file:\n%s", leak, raw)
+		}
+	}
+}
+
+// A proposal is searched and audited like a decision, because whether it
+// conflicts with something settled is what it most needs answered — but its
+// status travels with the result so the two never read alike.
+func TestProposedStatus_ParticipatesInCheckAndAudit(t *testing.T) {
+	s := newTestService(t)
+	srv, _ := embedServer(t, 4, nil)
+	writeConfig(t, s, srv.URL, "test-model", "")
+
+	if _, err := s.Add(AddParams{ID: "settled", Namespace: "ns", Kind: "rule",
+		Modality: "must", Body: "vectors are committed to the repository"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "under-consideration", Namespace: "ns", Kind: "rule",
+		Status: "proposed", Modality: "must_not", Body: "vectors are committed to the repository"}); err != nil {
+		t.Fatalf("Add proposed: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "retired", Namespace: "ns", Kind: "rule",
+		Body: "vectors are committed to the repository"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Update("ns/retired", UpdateParams{Status: "deprecated"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, err := s.EmbedAll(false); err != nil {
+		t.Fatalf("EmbedAll: %v", err)
+	}
+
+	got, _, err := s.Check(CheckParams{Namespace: "ns", Text: "committed vectors", Semantic: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	var sawProposed, sawDeprecated bool
+	for _, c := range got {
+		switch c.FullID {
+		case "ns/under-consideration":
+			sawProposed = true
+			if c.Status != model.StatusProposed {
+				t.Errorf("status must travel with the result, got %q", c.Status)
+			}
+		case "ns/retired":
+			sawDeprecated = true
+		}
+	}
+	if !sawProposed {
+		t.Fatalf("a proposal must be searchable, got %+v", got)
+	}
+	if sawDeprecated {
+		t.Fatalf("a deprecated statement must not surface as a live candidate, got %+v", got)
+	}
+
+	// The payoff: audit can tell a proposal it opposes a settled decision.
+	pairs, _, err := s.Audit("", 0.5, 0)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, p := range pairs {
+		if p.ModalityConflict && (p.A == "ns/under-consideration" || p.B == "ns/under-consideration") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected audit to oppose the proposal against the settled rule, got %+v", pairs)
+	}
+}
+
+func TestInit_InstallsEmbeddingHooksOnlyWhenOptedIn(t *testing.T) {
+	read := func(t *testing.T, s *Service) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(s.Root, ".git", "hooks", "post-merge"))
+		if err != nil {
+			t.Fatalf("read hook: %v", err)
+		}
+		return string(b)
+	}
+
+	s := newTestService(t)
+	if got := read(t, s); strings.Contains(got, "--embed") {
+		t.Fatalf("a default install must not embed on checkout:\n%s", got)
+	}
+
+	// Opt in, re-init, and the installed command changes.
+	if err := os.WriteFile(filepath.Join(s.Store.Root, "config.yaml"),
+		[]byte("embedding:\n  endpoint: http://127.0.0.1:1/v1/embeddings\n  model: m\nhooks:\n  embed: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := s.Init(); err != nil {
+		t.Fatalf("re-Init: %v", err)
+	}
+	if got := read(t, s); !strings.Contains(got, "reindex --embed") {
+		t.Fatalf("expected the opted-in hook to embed:\n%s", got)
 	}
 }

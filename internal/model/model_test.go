@@ -74,9 +74,15 @@ func TestStatementValidate_ArbitraryKindAccepted(t *testing.T) {
 
 func TestStatementValidate_InvalidStatus(t *testing.T) {
 	s := validStatement()
-	s.Status = Status("proposed")
+	s.Status = Status("pending-review")
 	if err := s.Validate(); err == nil {
 		t.Fatal("expected error for invalid status")
+	}
+	// "proposed" was this test's example of an invalid status until the
+	// lifecycle gained a pre-active stage.
+	s.Status = StatusProposed
+	if err := s.Validate(); err != nil {
+		t.Fatalf("proposed is a valid status: %v", err)
 	}
 }
 
@@ -169,5 +175,85 @@ func TestRejectionValidate_EmptyBodyRejected(t *testing.T) {
 	r.Body = "   "
 	if err := r.Validate(); err == nil {
 		t.Fatal("expected error for empty body")
+	}
+}
+
+func TestModality_ConflictIsPolarityOpposition(t *testing.T) {
+	opposed := [][2]Modality{
+		{ModalityMust, ModalityMustNot},
+		{ModalityShould, ModalityShouldNot},
+		{ModalityMay, ModalityMustNot},
+		{ModalityMust, ModalityShouldNot},
+		{ModalityShould, ModalityMustNot},
+	}
+	for _, p := range opposed {
+		if !p[0].ConflictsWith(p[1]) || !p[1].ConflictsWith(p[0]) {
+			t.Errorf("%s vs %s should conflict in both directions", p[0], p[1])
+		}
+	}
+
+	// Same direction, differing only in strength — not a contradiction.
+	compatible := [][2]Modality{
+		{ModalityMust, ModalityShould},
+		{ModalityMust, ModalityMay},
+		{ModalityShould, ModalityMay},
+		{ModalityMustNot, ModalityShouldNot},
+		{ModalityMust, ModalityMust},
+	}
+	for _, p := range compatible {
+		if p[0].ConflictsWith(p[1]) {
+			t.Errorf("%s vs %s differ in strength, not direction — should not conflict", p[0], p[1])
+		}
+	}
+
+	// An absent modality asserts nothing, so it can contradict nothing.
+	if ModalityMust.ConflictsWith("") || Modality("").ConflictsWith(ModalityMustNot) {
+		t.Error("an unset modality must never register a conflict")
+	}
+	if Modality("bogus").ConflictsWith(ModalityMustNot) {
+		t.Error("an unrecognized modality must never register a conflict")
+	}
+}
+
+func TestStatement_ValidateRejectsUnknownModalityButAllowsAbsent(t *testing.T) {
+	base := Statement{
+		ID: "a", Namespace: "ns", Kind: KindRule, Status: StatusActive,
+		Provenance: Provenance{Type: ProvenanceDialogue},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("modality is optional: %v", err)
+	}
+	base.Modality = ModalityMustNot
+	if err := base.Validate(); err != nil {
+		t.Fatalf("a known modality must validate: %v", err)
+	}
+	base.Modality = "sort-of-maybe"
+	if err := base.Validate(); err == nil {
+		t.Fatal("expected an unknown modality rejected on the write path")
+	}
+}
+
+func TestModality_KnownGovernsReadTolerance(t *testing.T) {
+	if !Modality("").Known() || !ModalityMay.Known() {
+		t.Fatal("empty and recognized values are both known")
+	}
+	if Modality("shall").Known() {
+		t.Fatal("an unrecognized value must not read as known")
+	}
+}
+
+// Proposals are searched so a conflict check can run at the moment it is most
+// needed; superseded and deprecated statements are not, because surfacing
+// what used to be true as a live candidate is a false all-clear in reverse.
+func TestStatus_SearchableCoversProposedButNotRetired(t *testing.T) {
+	for _, s := range []Status{StatusActive, StatusProposed} {
+		if !s.Searchable() {
+			t.Errorf("%s should participate in search and audit", s)
+		}
+	}
+	for _, s := range []Status{StatusSuperseded, StatusDeprecated} {
+		if s.Searchable() {
+			t.Errorf("%s records what used to be true and must not surface as a candidate", s)
+		}
 	}
 }

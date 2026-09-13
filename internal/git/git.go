@@ -153,16 +153,34 @@ func (c *Client) InstallHook(name, command string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if strings.Contains(string(existing), hookMarkerBegin) {
-		return nil
+	block := hookMarkerBegin + "\n" + command + "\n" + hookMarkerEnd + "\n"
+	content := string(existing)
+
+	// Replace our own block in place when the command has changed, rather
+	// than treating any existing marker as done. Bailing out on the marker
+	// alone made an installed hook permanently unupdatable: a project that
+	// later opted into embedding on checkout would keep running the old
+	// command forever, with re-running init reporting success. Content
+	// outside the markers belongs to whoever put it there and is untouched.
+	if start := strings.Index(content, hookMarkerBegin); start >= 0 {
+		if rel := strings.Index(content[start:], hookMarkerEnd); rel >= 0 {
+			end := start + rel + len(hookMarkerEnd)
+			if end < len(content) && content[end] == '\n' {
+				end++
+			}
+			if content[start:end] == block {
+				return nil
+			}
+			return os.WriteFile(path, []byte(content[:start]+block+content[end:]), 0o755)
+		}
+		// Opening marker with no close: hand-edited or truncated. Appending
+		// a clean block is safer than guessing where the damaged one ends.
 	}
 
-	block := hookMarkerBegin + "\n" + command + "\n" + hookMarkerEnd + "\n"
 	var out []byte
 	if len(existing) == 0 {
 		out = []byte("#!/bin/sh\n" + block)
 	} else {
-		content := string(existing)
 		if !strings.HasSuffix(content, "\n") {
 			content += "\n"
 		}

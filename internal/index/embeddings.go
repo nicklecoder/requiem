@@ -65,6 +65,7 @@ func CosineSimilarity(a, b []float32) float64 {
 // case every existing embedding is wiped and the corpus is re-pinned to the
 // new model — mixing vector spaces would otherwise produce cosine-similarity
 // scores that look plausible but are meaningless.
+// requiem: embedding/model-pinning
 func (ix *Index) UpsertEmbedding(fullID, model string, dims int, vec []float32, sourceHash string, computedAt time.Time, force bool) error {
 	tx, err := ix.db.Begin()
 	if err != nil {
@@ -106,6 +107,58 @@ func (ix *Index) UpsertEmbedding(fullID, model string, dims int, vec []float32, 
 	)
 	if err != nil {
 		return fmt.Errorf("upsert embedding %s: %w", fullID, err)
+	}
+	return tx.Commit()
+}
+
+// EmbeddingCorpus describes what the embeddings table currently holds: the
+// model/dims every vector in it is pinned to (see embedding_meta) and how
+// many vectors are on record. Count is 0 — and Model empty — when nothing
+// has been embedded yet.
+type EmbeddingCorpus struct {
+	Model string
+	Dims  int
+	Count int
+}
+
+// EmbeddingCorpusInfo reports the pinned model/dims and vector count, so
+// callers can tell "no vectors on record" apart from "swept everything and
+// found nothing" — the two are otherwise indistinguishable in audit/check
+// output, which is the worst possible failure for a tool whose whole job is
+// surfacing what you'd otherwise miss.
+func (ix *Index) EmbeddingCorpusInfo() (EmbeddingCorpus, error) {
+	var c EmbeddingCorpus
+	err := ix.db.QueryRow(`SELECT model, dims FROM embedding_meta WHERE id = 1`).Scan(&c.Model, &c.Dims)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return EmbeddingCorpus{}, err
+	}
+	if err := ix.db.QueryRow(`SELECT COUNT(*) FROM embeddings`).Scan(&c.Count); err != nil {
+		return EmbeddingCorpus{}, err
+	}
+	return c, nil
+}
+
+// RekeyEmbedding moves an embedding row from one full_id to another so a
+// relocated statement (see Service.Move) keeps the vector already computed
+// for its body, which the move doesn't change. Without this, `mv` — the
+// remedy requiem's own docs recommend after `audit` finds a duplicate —
+// would silently drop the vector, since reindex's file-removal path deletes
+// embeddings for the vacated path. No-op when from has no embedding.
+func (ix *Index) RekeyEmbedding(from, to string) error {
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Move refuses to overwrite an existing statement, so a row already at
+	// `to` can only be a leftover from one previously removed — replacing
+	// it is correct, and the PRIMARY KEY would reject the UPDATE otherwise.
+	if _, err := tx.Exec(`DELETE FROM embeddings WHERE full_id = ?`, to); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE embeddings SET full_id = ? WHERE full_id = ?`, to, from); err != nil {
+		return fmt.Errorf("rekey embedding %s -> %s: %w", from, to, err)
 	}
 	return tx.Commit()
 }

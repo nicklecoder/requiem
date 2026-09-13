@@ -25,10 +25,16 @@ func newAuditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, err := svc.Audit(namespace, minScore, limit)
+			candidates, coverage, err := svc.Audit(namespace, minScore, limit)
 			if err != nil {
 				return err
 			}
+			warnCoverage(coverage)
+			contradicting, err := svc.AuditRefs()
+			if err != nil {
+				return err
+			}
+			warnContradictingRefs(contradicting)
 			if candidates == nil {
 				candidates = []index.PairCandidate{}
 			}

@@ -18,21 +18,24 @@ type rowScanner interface {
 
 // statementColumns is the column list every SELECT against the statements
 // table (aliased "s") uses, in the order scanStatement expects.
-const statementColumns = `s.namespace, s.id, s.kind, s.body, s.status, s.provenance_type,
+const statementColumns = `s.namespace, s.id, s.kind, s.modality, s.body, s.status, s.provenance_type,
 	s.source_file, s.source_line_start, s.source_line_end, s.source_hash, s.created_at`
 
 func scanStatement(row rowScanner) (model.Statement, error) {
 	var st model.Statement
 	var kind, status, provenanceType, createdAt string
-	var sourceFile, sourceHash sql.NullString
+	var modality, sourceFile, sourceHash sql.NullString
 	var lineStart, lineEnd sql.NullInt64
 
-	if err := row.Scan(&st.Namespace, &st.ID, &kind, &st.Body, &status, &provenanceType,
+	if err := row.Scan(&st.Namespace, &st.ID, &kind, &modality, &st.Body, &status, &provenanceType,
 		&sourceFile, &lineStart, &lineEnd, &sourceHash, &createdAt); err != nil {
 		return model.Statement{}, err
 	}
 
 	st.Kind = model.Kind(kind)
+	if modality.Valid {
+		st.Modality = model.Modality(modality.String)
+	}
 	st.Status = model.Status(status)
 	st.Provenance.Type = model.ProvenanceType(provenanceType)
 	if sourceFile.Valid {
@@ -94,6 +97,82 @@ func (ix *Index) relationshipsFor(fullID string) ([]model.Relationship, error) {
 // pointing at fullID — the reverse direction from relationshipsFor, backed
 // by idx_relationships_to. Used by Move to find every file that needs its
 // Relationships[].To rewritten when a statement relocates.
+// InboundRelationships returns every statement pointing at fullID, with the
+// type and note that explain why. Derived at read time from the same rows
+// `mv` uses to rewrite inbound references; nothing is stored.
+// searchableStatuses is the SQL counterpart of model.Status.Searchable — the
+// statuses that participate in semantic search and audit. Kept as one
+// constant because it appears in several queries and a filter missed in one
+// of them would silently change what a sweep can see.
+const searchableStatuses = `status IN ('active', 'proposed')`
+
+// searchableStatusesCol is the same predicate for a query that aliases the
+// statements table.
+const searchableStatusesCol = `s.status IN ('active', 'proposed')`
+
+// AllRejectionIDs lists every rejection's full_id. Used when resolving a
+// scanned code label: a label naming a rejection must not be misreported as
+// a dangling reference.
+func (ix *Index) AllRejectionIDs() ([]string, error) {
+	rows, err := ix.db.Query(`SELECT full_id FROM rejections ORDER BY full_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (ix *Index) InboundRelationships(fullID string) ([]model.InboundRef, error) {
+	rows, err := ix.db.Query(
+		`SELECT from_id, type, COALESCE(note, '') FROM relationships WHERE to_id = ? ORDER BY from_id, type`, fullID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.InboundRef
+	for rows.Next() {
+		var r model.InboundRef
+		var relType string
+		if err := rows.Scan(&r.From, &relType, &r.Note); err != nil {
+			return nil, err
+		}
+		r.Type = model.RelationshipType(relType)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RejectionsPointingAt returns rejections naming fullID in see_instead — the
+// alternatives turned down in favour of this statement.
+func (ix *Index) RejectionsPointingAt(fullID string) ([]string, error) {
+	rows, err := ix.db.Query(
+		`SELECT full_id FROM rejections WHERE see_instead = ? ORDER BY full_id`, fullID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (ix *Index) ReferrersOf(fullID string) ([]string, error) {
 	rows, err := ix.db.Query(`SELECT DISTINCT from_id FROM relationships WHERE to_id = ? ORDER BY from_id`, fullID)
 	if err != nil {
@@ -200,4 +279,70 @@ func (ix *Index) ListStatements(filter ListFilter) ([]model.Statement, error) {
 		}
 	}
 	return out, nil
+}
+
+// ReplaceCodeRefs swaps the cached scan for a fresh one, wholesale. Wholesale
+// because a scan is a complete picture of the tree at one moment; merging
+// would leave behind references to labels that have since been deleted.
+func (ix *Index) ReplaceCodeRefs(refs []CodeRef) error {
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM code_refs`); err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO code_refs (full_id, file, line) VALUES (?, ?, ?)`,
+			r.FullID, r.File, r.Line); err != nil {
+			return fmt.Errorf("store code ref %s %s:%d: %w", r.FullID, r.File, r.Line, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// CodeRef mirrors trace.Ref for storage, so the index package does not depend
+// on the scanner.
+type CodeRef struct {
+	FullID string
+	File   string
+	Line   int
+}
+
+// CodeRefCounts returns the cached reference count per statement, and whether
+// labelling is in use at all.
+//
+// The second return value is what keeps a zero honest. No references can mean
+// unimplemented, implemented but unlabelled, or unimplementable — "we chose
+// Postgres" has no code site to point at. An agent reading zero as "not
+// implemented" would manufacture a confident answer out of missing data. So
+// below any adoption at all, a count is not reported rather than reported as
+// zero.
+//
+// Adoption is a state, never a percentage. A traceability score is a number
+// people manage toward, which is the failure mode of every requirements
+// traceability tool and is forbidden outright in SPEC's Boundary section.
+func (ix *Index) CodeRefCounts() (map[string]int, bool, error) {
+	rows, err := ix.db.Query(`SELECT full_id, COUNT(*) FROM code_refs GROUP BY full_id`)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, false, err
+		}
+		out[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return out, len(out) > 0, nil
 }

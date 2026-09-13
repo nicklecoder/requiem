@@ -1,0 +1,4 @@
+embedding:
+  endpoint: http://127.0.0.1:8771/v1/embeddings
+  model: fake-embed
+  batch_size: 8

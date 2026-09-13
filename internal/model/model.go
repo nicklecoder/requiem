@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// requiem: model/kind-inert
 // Kind categorizes a statement. It's deliberately a plain string rather than
 // a closed enum, so new kinds can be introduced without a schema migration —
 // these three are just the known starting set.
@@ -21,11 +22,77 @@ const (
 	KindDesign      Kind = "design"
 )
 
+// requiem: model/modality-closed
+// Modality is a statement's normative strength — the one field in this model
+// that carries machine-usable meaning.
+//
+// Closed, unlike Kind, and the asymmetry is deliberate. Category resists
+// closure: 29148 splits requirements into five-plus classes and the
+// functional/non-functional boundary is unclear in practice, so agents asked
+// to pick one value answer inconsistently across sessions. Normative strength
+// was settled decades ago by RFC 2119 and by deontic logic before it
+// (obligation, permission, prohibition), and has stayed settled.
+//
+// Optional: many design statements carry no normative force at all — "we
+// chose Postgres" is neither obligation nor permission — and forcing a value
+// would manufacture noise.
+type Modality string
+
+const (
+	ModalityMust      Modality = "must"
+	ModalityShould    Modality = "should"
+	ModalityMay       Modality = "may"
+	ModalityMustNot   Modality = "must_not"
+	ModalityShouldNot Modality = "should_not"
+)
+
+func (m Modality) valid() bool {
+	switch m {
+	case ModalityMust, ModalityShould, ModalityMay, ModalityMustNot, ModalityShouldNot:
+		return true
+	}
+	return false
+}
+
+// Known reports whether m is a recognized value. Used by the store's read
+// path, which downgrades anything unrecognized to unset rather than failing:
+// validating on write but tolerating on read is what keeps a closed enum from
+// becoming a forward-compatibility trap, where adding a member later would
+// make an older binary reject files a newer one wrote.
+// requiem: model/validate-write-tolerate-read
+func (m Modality) Known() bool { return m == "" || m.valid() }
+
+// Negative reports whether m prohibits rather than requires or permits.
+// Conflict is polarity opposition: an obligation or a permission set against
+// a prohibition on the same subject. must/should, must/may and
+// must_not/should_not differ only in strength, which is not a contradiction.
+func (m Modality) Negative() bool {
+	return m == ModalityMustNot || m == ModalityShouldNot
+}
+
+// ConflictsWith reports opposed normative direction. Both must be set — an
+// absent modality asserts nothing, so it can contradict nothing.
+//
+// This is a narrow, decidable signal, not conflict detection. Contraries
+// defeat it entirely: "must be red" and "must be blue" contradict each other
+// while both are ModalityMust. See SPEC.md's Modality section.
+// requiem: model/modality-is-not-conflict-detection
+func (m Modality) ConflictsWith(other Modality) bool {
+	if !m.valid() || !other.valid() {
+		return false
+	}
+	return m.Negative() != other.Negative()
+}
+
 // Status is a statement's current lifecycle state. Unlike Kind, this set is
 // closed: query/index behavior (e.g. filtering to active-only) depends on it.
 type Status string
 
 const (
+	// StatusProposed is a decision under consideration — not yet in force,
+	// but not rejected either. One lifecycle rather than two axes: proposed
+	// precedes active exactly as superseded and deprecated follow it.
+	StatusProposed   Status = "proposed"
 	StatusActive     Status = "active"
 	StatusSuperseded Status = "superseded"
 	StatusDeprecated Status = "deprecated"
@@ -33,10 +100,27 @@ const (
 
 func (s Status) valid() bool {
 	switch s {
-	case StatusActive, StatusSuperseded, StatusDeprecated:
+	case StatusProposed, StatusActive, StatusSuperseded, StatusDeprecated:
 		return true
 	}
 	return false
+}
+
+// Searchable reports whether a statement in this status participates in
+// semantic search and audit.
+//
+// Proposals do, deliberately: whether a proposal conflicts with something
+// already settled is the question a proposal most needs answered, and
+// excluding them would mean the one moment you most want a conflict check is
+// the one moment requiem stays quiet. Superseded and deprecated statements do
+// not — they record what used to be true, and surfacing them as live
+// candidates would be the false all-clear in reverse.
+//
+// Callers must keep status visible in their output so a reader can tell a
+// proposal from a decision; the two are searched alike but must never read
+// alike.
+func (s Status) Searchable() bool {
+	return s == StatusActive || s == StatusProposed
 }
 
 // RelationshipType is closed — each type drives specific index/query behavior.
@@ -107,12 +191,22 @@ type Relationship struct {
 	Note string           `yaml:"note,omitempty" json:"note,omitempty"`
 }
 
+// InboundRef is one statement pointing at another — the reverse of a
+// Relationship, carrying the same type and note so a reader sees why the
+// edge exists without a second lookup.
+type InboundRef struct {
+	From string           `json:"from"`
+	Type RelationshipType `json:"type"`
+	Note string           `json:"note,omitempty"`
+}
+
 // Statement is the atomic unit requiem tracks: a requirement, rule, or
 // design decision, addressed by the composite "<namespace>/<id>".
 type Statement struct {
 	ID            string         `yaml:"id" json:"id"`
 	Namespace     string         `yaml:"namespace" json:"namespace"`
 	Kind          Kind           `yaml:"kind" json:"kind"`
+	Modality      Modality       `yaml:"modality,omitempty" json:"modality,omitempty"`
 	Status        Status         `yaml:"status" json:"status"`
 	Tags          []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Provenance    Provenance     `yaml:"provenance" json:"provenance"`
@@ -125,6 +219,28 @@ type Statement struct {
 	// computes it for a code-derived statement by rehashing its source
 	// range live and comparing to Provenance.Hash.
 	Stale *bool `yaml:"-" json:"stale,omitempty"`
+
+	// ReferencedBy and RejectedAlternatives are derived inbound edges, and
+	// like Stale they are never written to the file. Relationships live on
+	// the *owning* statement's frontmatter to avoid a merge-conflict
+	// hotspot, which is a storage decision — but it had quietly become a
+	// display one too, leaving the graph traversable only in the direction
+	// it happened to be written. A principle could not report the rules
+	// refining it, and a statement could not report the alternatives
+	// rejected before it was adopted.
+	ReferencedBy []InboundRef `yaml:"-" json:"referenced_by,omitempty"`
+	// RejectedAlternatives are rejections naming this statement in
+	// see_instead — the ideas turned down in favour of this one. This is the
+	// question that stops an agent re-proposing a rejected idea, which is
+	// the stated reason rejections are recorded at all.
+	RejectedAlternatives []string `yaml:"-" json:"rejected_alternatives,omitempty"`
+
+	// CodeRefs is how many labelled source sites reference this statement,
+	// or nil where labelling is not in use in this project at all. Nil
+	// rather than zero on purpose: no references can mean unimplemented,
+	// implemented but unlabelled, or unimplementable, and a zero would invite
+	// reading missing data as an answer.
+	CodeRefs *int `yaml:"-" json:"code_refs,omitempty"`
 
 	// EmbeddingStatus is another derived, never-stored fact: "missing" (no
 	// vector on record), "stale" (body has changed since the vector was
@@ -183,6 +299,11 @@ func (s Statement) Validate() error {
 	}
 	if !s.Status.valid() {
 		return fmt.Errorf("invalid status %q: must be one of active, superseded, deprecated", s.Status)
+	}
+	// Write-path only: the reader downgrades an unknown modality to unset
+	// instead of erroring (see Modality.Known).
+	if s.Modality != "" && !s.Modality.valid() {
+		return fmt.Errorf("invalid modality %q: must be one of must, should, may, must_not, should_not", s.Modality)
 	}
 	if strings.TrimSpace(string(s.Provenance.Type)) == "" {
 		return fmt.Errorf("provenance.type must not be empty")

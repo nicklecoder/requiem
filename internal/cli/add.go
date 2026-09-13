@@ -7,7 +7,7 @@ import (
 )
 
 func newAddCmd() *cobra.Command {
-	var id, namespace, kind, body, provenance, source string
+	var id, namespace, kind, modality, status, body, provenance, source string
 	var tags []string
 
 	cmd := &cobra.Command{
@@ -23,6 +23,8 @@ func newAddCmd() *cobra.Command {
 				ID:         id,
 				Namespace:  namespace,
 				Kind:       kind,
+				Modality:   modality,
+				Status:     status,
 				Body:       body,
 				Tags:       tags,
 				Provenance: provenance,
@@ -38,6 +40,8 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&id, "id", "", "namespace-relative slug, e.g. no-plaintext-tokens (required)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "hierarchical namespace, e.g. auth/session (required)")
 	cmd.Flags().StringVar(&kind, "kind", "", "statement kind, e.g. requirement, rule, design (required)")
+	cmd.Flags().StringVar(&status, "status", "", "proposed for a decision under consideration (default: active)")
+	cmd.Flags().StringVar(&modality, "modality", "", "normative strength: must, should, may, must_not, should_not (optional)")
 	cmd.Flags().StringVar(&body, "body", "", "statement body text (required)")
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags")
 	cmd.Flags().StringVar(&provenance, "provenance", "dialogue", "dialogue or code-derived")
