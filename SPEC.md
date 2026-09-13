@@ -198,9 +198,33 @@ Three carriers, chosen because they fail in non-overlapping ways:
 - **Commit trailers** — `Requiem-Id: auth/session/no-plaintext-tokens`, written by `requiem commit`. Git already has this convention (the same mechanism as `Co-Authored-By:`), it is parseable with `git interpret-trailers`, searchable with `git log --grep`, and immutable once written.
 - **Tests, labelled the same way.** This is the strongest of the three and the least obvious. An implementation comment *asserts* that code satisfies a requirement; a labelled test that passes is *evidence* of it. Labelling tests turns traceability from documentation into verification, and is the only one of the three a machine can check.
 
-### No code index
+### Scanning, not indexing
 
-Requiem walks `.requiem/` and nothing else. Indexing the source tree would mean a second manifest, a second staleness problem, and a large expansion of what this tool owns. Instead, `trace` greps on demand: ripgrep over a large repository is milliseconds, "what implements this?" is an occasional query rather than a hot path, and a live grep is never stale. This is a deliberate refusal to build the more "complete" design.
+Requiem must not acquire a second index. Indexing the source tree would mean another manifest, another staleness problem, and a large expansion of what this tool owns — the same expansion it already refuses for filesystem watchers.
+
+It does not need one. `git grep` is already available (requiem requires `git` on `PATH`) and answers the whole question in a single pass:
+
+```
+git grep --untracked -oh -E 'requiem: [a-z0-9/-]+' -- . ':(exclude).requiem'
+```
+
+That yields every referenced id with a count. Gitignored paths are skipped for free, so `node_modules` and build output never appear. `--untracked` means code an agent has just written counts before it is staged. The `:(exclude).requiem` pathspec keeps statements' own cross-references from registering as code references. No tree walking, no manifest, no binary-file handling, no dependency requiem does not already have.
+
+**Where the scan runs matters more than how.** Measured cost is roughly 200ms on a small repository, worst case, and it grows with tree size — far too expensive for Trigger 1, the lazy reindex that precedes *every* `get`/`list`/`check`. So the scan runs on explicit `reindex` and on the installed git hooks (Trigger 2), never on the read path. The resulting counts therefore lag reality slightly between those points, which is acceptable precisely because this is a hint and not a claim; a stale hint costs an unnecessary glance, where a stale *assertion* would cost a wrong decision.
+
+Commit-trailer references are deliberately *not* scanned. Walking history with `git log --grep` is far more expensive than one working-tree grep and has no place in an indexing path, so those stay an on-demand `trace` lookup. Code references are cheap and proactive; history references are expensive and pull-only.
+
+### Why a count, surfaced by default
+
+The obvious design is a boolean on `trace`, fetched when asked. Both halves of that are wrong.
+
+*Pull-only is out of step with the rest of the tool.* `check` surfaces prior decisions before anyone thinks to look for them; `stale` and `embedding_status` appear on `get` and `list` unbidden. A reference hint belongs in that family — requiring an agent to know to ask for it is exactly the failure the rest of the design avoids.
+
+*A boolean overstates what is known.* `code_refs: 3` invites a look at three specific places. `implemented: true` invites trust the data cannot support: a label records intent, not verification, and nothing checks that the labelled code does what the statement says. The field is named for what it counts, never for what it might imply.
+
+**The ambiguity of zero is the real design problem.** No references can mean not implemented, implemented but unlabelled, or not implementable at all — "we chose Postgres" has no code site to point at. An agent that reads zero as "not implemented" has manufactured a confident answer out of missing data, which is the same failure as an `audit` that returns an empty list because nothing was embedded.
+
+It takes the same answer, too. Below a threshold of adoption, labelling is uninitialised rather than informative, and `code_refs` reads as *unknown* rather than `0`. Only once a corpus genuinely uses labels does a zero begin to carry signal. The value's asymmetry should be assumed throughout: a nonzero count is useful evidence, and a zero is weak evidence at best.
 
 ### Derived staleness, again
 
@@ -208,13 +232,17 @@ A labelled site is suspect when the statement changed *after* the code did. Both
 
 ### Surface
 
-- `requiem trace <namespace/id>` — labelled source sites and commits referencing this statement.
+- `code_refs` on `get`/`list`/`check` — how many labelled source sites reference this statement, or *unknown* where labelling is not yet in use. Derived, held only in the disposable index, never written back to the statement file: the same posture as `stale` and `embedding_status`, and for the same reason — a fact about a statement is not an edit to it.
+- `requiem trace <namespace/id>` — the labelled source sites themselves, plus commits referencing this statement (the latter searched on demand, see above).
 - **`update` reports the blast radius automatically.** This is the payoff, and it should not require remembering a separate command: changing a statement's body prints the sites and commits that referenced it, flagging those that predate the change. Everything else here is plumbing for this one behaviour.
 - `audit` additionally surfaces dangling labels — references to deleted or renamed statements. Without this the labels rot into decoration.
+- Listing statements with no references, in a corpus where labelling is well covered, becomes possible for the first time. This is the closest thing the model has to an undefined symbol: something declared and never linked to anything. It is not expressible today at all.
 - `mv` reports code references it cannot rewrite. This is the sharpest cost of the proposal: an id is already "stable once other statements may reference it", and once ids also live in source and in *immutable commit history*, renaming gets materially more expensive. `mv` can rewrite source comments; it can never fix a trailer in a published commit.
 
 ### Boundary
 
 Traceability tooling has a strong pull toward compliance bureaucracy — this is the established shape of requirements-traceability practice in regulated software (DO-178C, IEC 62304, ISO 26262), and it is not the shape this should take. The existing principle holds the line: **infrastructure and retrieval, not a judge.** `trace` surfaces candidates. It must never enforce coverage, block a commit for an unlabelled change, or report a traceability percentage. The moment it scores you, it has become a different product.
+
+That last prohibition constrains how the ambiguity-of-zero problem above is solved, and the constraint is worth stating because the two nearly collide. Making a zero interpretable requires knowing whether labelling is in use at all — but emitting "coverage: 43%" would be a traceability score in everything but name, and someone would start managing it. So adoption is expressed as a *state* that decides whether `code_refs` is meaningful, never as a number to move. The distinction is between calibrating a signal and grading the user.
 
 Wholly optional and additive: a repository with zero labels behaves exactly as it does today.
