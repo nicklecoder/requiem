@@ -143,11 +143,33 @@ func TestAgentDocBlock_IsWellFormedMarkdown(t *testing.T) {
 			t.Fatalf("line %d has unbalanced backticks: %q", i+1, line)
 		}
 	}
-	// The recipe is the whole point of the embedding section: without a
-	// concrete way to obtain a vector, the guidance is unactionable.
-	for _, want := range []string{"/api/embed", "requiem embed", "list --needs-embedding", "--limit"} {
+	// The block must describe the pipeline that exists, not the manual
+	// workflow it replaced.
+	for _, want := range []string{
+		"reindex --embed", // the normal path for obtaining vectors
+		"config.yaml",     // where the endpoint is configured
+		"--modality",      // the one field requiem reasons with
+		"--limit",         // check's result cap
+		"list --needs-embedding",
+		"requiem commit", // approval is the whole history model
+	} {
 		if !strings.Contains(agentDocBlock, want) {
-			t.Fatalf("expected the doc block to mention %q", want)
+			t.Errorf("expected the doc block to mention %q", want)
+		}
+	}
+
+	// Guard against the specific drift that produced v3. Requiem gained an
+	// embedding pipeline, which made the block's central claim false, and
+	// nothing failed — the marker versioning could refresh a stale block but
+	// nothing noticed the content had gone stale. These assertions are cheap
+	// and catch the claim reverting.
+	for _, stale := range []string{
+		"computes no embeddings itself",
+		"never computes embeddings",
+		"vectors you supply",
+	} {
+		if strings.Contains(agentDocBlock, stale) {
+			t.Errorf("doc block still carries the pre-pipeline claim %q — requiem fetches vectors itself now", stale)
 		}
 	}
 }

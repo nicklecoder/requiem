@@ -31,9 +31,11 @@ session start learns requiem exists and how to use it automatically:
 requiem init                                               # sets up .requiem/, installs reindex hooks
 
 requiem add --id no-plaintext-tokens --namespace auth/session --kind rule \
-  --body "Session tokens are never stored in plaintext." --tags security
+  --body "Session tokens are never stored in plaintext." --tags security \
+  --modality must_not                                      # optional normative strength
 
 requiem check --namespace auth --text "should tokens expire on inactivity"  # surfaces related prior decisions
+                                                           # top 10 by default; --limit to change
                                                            # add --vector/--model to also match by meaning
 
 requiem get auth/session/no-plaintext-tokens
@@ -44,8 +46,9 @@ requiem reject --id sliding-session-expiration --namespace auth/session \
   --body "Proposed sliding expiration. Rejected: unbounded blast radius on leak." \
   --see-instead auth/session/no-plaintext-tokens
 
+requiem reindex --embed                                     # fetch every missing/stale vector
 requiem embed auth/session/no-plaintext-tokens \
-  --model all-minilm --vector "$(...)"                      # manual vector; reindex --embed is the normal path
+  --model all-minilm --vector "$(...)"                      # manual fallback when no endpoint is configured
 requiem audit --namespace auth                              # sweep for conflicting/duplicate pairs
 requiem mv auth/session/old auth/shared/new                 # relocate, rewriting inbound references
 
@@ -57,7 +60,31 @@ requiem reindex                                              # rarely needed exp
 ```
 
 Every command writes bare JSON to stdout on success; failures go to stderr
-with a nonzero exit code.
+with a nonzero exit code. Diagnostics that don't belong in the payload —
+incomplete embedding coverage, for instance — also go to stderr, so `jq`
+pipelines stay clean while an agent reading combined output still sees them.
+
+## Embeddings
+
+Lexical search can't find a prior decision worded in vocabulary your draft
+doesn't share, which is exactly the drift this tool exists to catch. Point
+`.requiem/config.yaml` at any OpenAI-compatible `/v1/embeddings` endpoint —
+Ollama, LM Studio, llama.cpp, vLLM, LocalAI, or OpenAI — and `reindex --embed`
+fills in the rest:
+
+```yaml
+embedding:
+  endpoint: http://localhost:11434/v1/embeddings
+  model: nomic-embed-text
+  api_key_env: OPENAI_API_KEY   # the variable's name, never the key itself
+```
+
+That file is committed on purpose. Vectors live in the gitignored index and
+can't be rebuilt by reparsing statement files the way every other table can —
+so the index is only genuinely disposable because the pipeline that
+reproduces it is in version control. `requiem init` writes a commented-out
+template; requiem bundles no model and no inference runtime, so the binary
+stays static and dependency-free.
 
 ## Test
 
