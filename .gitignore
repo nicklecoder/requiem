@@ -31,3 +31,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Temporary working notes (not part of the project record)
+/OPEN-QUESTIONS.md
