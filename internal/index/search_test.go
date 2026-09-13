@@ -261,13 +261,14 @@ func TestCheck_SemanticFindsWhatLexicalCannot(t *testing.T) {
 	}
 }
 
-func TestCheck_SemanticDoesNotDuplicateLexicalHits(t *testing.T) {
+func TestCheck_AgreementAcrossPathsIsMergedAndBoosted(t *testing.T) {
 	s := newTestStore(t)
 	ix := newTestIndex(t)
 	seedEmbeddedPair(t, s, ix)
 
-	// "rotated" matches lexically *and* the vector matches semantically;
-	// the statement must appear once, attributed to the lexical path.
+	// "rotated" matches auth/keys/rotate-keys lexically, and the vector
+	// matches it semantically. It must appear once — but marked as found by
+	// both paths, not with one of them suppressed.
 	results, err := ix.Check("", "rotated", nil, []float32{1, 0}, "m", 0)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
@@ -276,13 +277,94 @@ func TestCheck_SemanticDoesNotDuplicateLexicalHits(t *testing.T) {
 	for _, c := range results {
 		if c.FullID == "auth/keys/rotate-keys" {
 			seen++
-			if c.MatchKind != "lexical" {
-				t.Fatalf("expected the lexical hit to win attribution, got %q", c.MatchKind)
+			if c.MatchKind != "both" {
+				t.Fatalf("expected match_kind=both when the two paths agree, got %q", c.MatchKind)
 			}
 		}
 	}
 	if seen != 1 {
 		t.Fatalf("expected auth/keys/rotate-keys exactly once, got %d times: %+v", seen, results)
+	}
+}
+
+// Agreement between vocabulary overlap and embedding proximity is a stronger
+// signal than either alone, and fusion must express that in the ordering —
+// not merely label it.
+func TestCheck_BothPathsOutrankASinglePathHit(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	// "shared" puts both statements in the lexical list; only the first is
+	// close to the query vector, so only it also appears in the semantic list.
+	seedStatement(t, s, model.Statement{
+		ID: "agreed", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "shared wording here",
+	})
+	seedStatement(t, s, model.Statement{
+		ID: "lexical-only", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "shared wording too",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if err := ix.UpsertEmbedding("ns/agreed", "m", 2, []float32{1, 0}, "h1", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+	if err := ix.UpsertEmbedding("ns/lexical-only", "m", 2, []float32{0, 1}, "h2", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+
+	results, err := ix.Check("", "shared wording", nil, []float32{1, 0}, "m", 0)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected both statements, got %+v", results)
+	}
+	if results[0].FullID != "ns/agreed" || results[0].MatchKind != "both" {
+		t.Fatalf("expected the doubly-matched statement first, got %+v", results)
+	}
+	if results[0].Rank >= results[1].Rank {
+		t.Fatalf("fused rank must place agreement ahead: %v vs %v", results[0].Rank, results[1].Rank)
+	}
+}
+
+// RRF reads rank position, so the fused score must be independent of the raw
+// bm25 and cosine magnitudes — which is the whole reason for adopting it.
+func TestFuse_UsesPositionNotScore(t *testing.T) {
+	wild := []Candidate{
+		{FullID: "a", SourceKind: sourceKindStatement, Rank: -9999, MatchKind: matchLexical},
+		{FullID: "b", SourceKind: sourceKindStatement, Rank: -0.000001, MatchKind: matchLexical},
+	}
+	tame := []Candidate{
+		{FullID: "a", SourceKind: sourceKindStatement, Rank: -0.9, MatchKind: matchLexical},
+		{FullID: "b", SourceKind: sourceKindStatement, Rank: -0.8, MatchKind: matchLexical},
+	}
+
+	fusedWild, fusedTame := fuse([][]Candidate{wild}), fuse([][]Candidate{tame})
+	for i := range fusedWild {
+		if fusedWild[i].FullID != fusedTame[i].FullID || fusedWild[i].Rank != fusedTame[i].Rank {
+			t.Fatalf("identical positions must fuse identically regardless of input scale: %+v vs %+v", fusedWild, fusedTame)
+		}
+	}
+	// First position scores 1/(60+1); lower is more relevant, so negated.
+	if want := -1.0 / 61.0; fusedWild[0].Rank != want {
+		t.Fatalf("expected rank %v for position 1, got %v", want, fusedWild[0].Rank)
+	}
+}
+
+// A statement and a rejection may legitimately share a full_id; fusing them
+// into one row would silently merge two different things.
+func TestFuse_KeepsStatementAndRejectionWithSameIDDistinct(t *testing.T) {
+	out := fuse([][]Candidate{{
+		{FullID: "ns/x", SourceKind: sourceKindStatement, MatchKind: matchLexical},
+	}, {
+		{FullID: "ns/x", SourceKind: sourceKindRejection, MatchKind: matchLexical},
+	}})
+	if len(out) != 2 {
+		t.Fatalf("expected the statement and the rejection kept separate, got %+v", out)
 	}
 }
 

@@ -19,12 +19,15 @@ type Candidate struct {
 	Kind       model.Kind   `json:"kind,omitempty"`
 	Status     model.Status `json:"status,omitempty"`
 	Excerpt    string       `json:"excerpt"`
-	Rank       float64      `json:"rank"` // lower is more relevant — see MatchKind
+	// Rank is the negated Reciprocal Rank Fusion score: lower is more
+	// relevant. The direction is part of the contract; the scale is not, and
+	// values are comparable only within a single Check result.
+	Rank float64 `json:"rank"`
 	// MatchKind distinguishes how this candidate was found: "lexical" (FTS5
-	// term overlap) or "semantic" (embedding cosine similarity, present only
-	// when the caller supplied a query vector) — a semantic hit can surface
-	// a related statement worded completely differently, which lexical
-	// search structurally cannot.
+	// term overlap), "semantic" (embedding cosine similarity, present only
+	// when the caller supplied a query vector), or "both" when the two paths
+	// agreed. A semantic hit can surface a related statement worded
+	// completely differently, which lexical search structurally cannot.
 	MatchKind string `json:"match_kind,omitempty"`
 }
 
@@ -71,52 +74,119 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32, 
 		}
 	}
 
-	var out []Candidate
+	var lists [][]Candidate
 
 	if matchQuery := buildMatchQuery(text); matchQuery != "" {
 		statementCandidates, err := ix.checkStatements(matchQuery, namespace, tags)
 		if err != nil {
 			return nil, fmt.Errorf("check statements: %w", err)
 		}
-		for i := range statementCandidates {
-			statementCandidates[i].MatchKind = "lexical"
-		}
-		out = append(out, statementCandidates...)
+		lists = append(lists, markKind(statementCandidates, matchLexical))
 
 		if len(tags) == 0 {
 			rejectionCandidates, err := ix.checkRejections(matchQuery, namespace)
 			if err != nil {
 				return nil, fmt.Errorf("check rejections: %w", err)
 			}
-			for i := range rejectionCandidates {
-				rejectionCandidates[i].MatchKind = "lexical"
-			}
-			out = append(out, rejectionCandidates...)
+			lists = append(lists, markKind(rejectionCandidates, matchLexical))
 		}
 	}
 
 	if len(vector) > 0 {
-		seen := make(map[string]bool, len(out))
-		for _, c := range out {
-			seen[c.FullID] = true
-		}
-		semantic, err := ix.checkSemantic(namespace, vector, seen)
+		semantic, err := ix.checkSemantic(namespace, vector)
 		if err != nil {
 			return nil, fmt.Errorf("check semantic: %w", err)
 		}
-		out = append(out, semantic...)
+		lists = append(lists, markKind(semantic, matchSemantic))
 	}
 
-	// bm25 scores from the two FTS tables aren't calibrated against each
-	// other, and semantic Rank (-cosine) isn't calibrated against bm25
-	// either — but lower-is-better holds within each source, which is good
-	// enough for surfacing candidates, exactly the looseness this project
-	// already accepts for mixing the two FTS tables above.
-	sort.Slice(out, func(i, j int) bool { return out[i].Rank < out[j].Rank })
+	out := fuse(lists)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// rrfK is the conventional Reciprocal Rank Fusion constant. Its only job is
+// to damp the advantage of the top position so a single list cannot
+// dominate the fused order; 60 is the value the original paper used and
+// every mainstream implementation kept, and it needs no per-corpus or
+// per-model tuning — which is much of the point of choosing RRF.
+const rrfK = 60.0
+
+const (
+	matchLexical  = "lexical"
+	matchSemantic = "semantic"
+	// matchBoth marks a candidate both paths found independently. Worth
+	// distinguishing: agreement between vocabulary overlap and embedding
+	// proximity is a stronger signal than either alone, and RRF already
+	// ranks such a candidate above its position in either list.
+	matchBoth = "both"
+)
+
+// fuse combines any number of ranked lists by Reciprocal Rank Fusion:
+// each candidate scores Σ 1/(rrfK + position) over the lists it appears in,
+// using rank position and discarding the original scores entirely.
+//
+// Discarding them is the point. bm25 and cosine are not comparable, and the
+// mismatch is not a constant bias that a scale factor could fix: FTS5 clamps
+// a term's IDF to 1e-6 once it appears in more than half the rows, so a
+// common-term lexical hit scores near zero and sorts below every semantic
+// hit, while a rare-term hit scores around -5 and sorts above. The direction
+// flips per query term. Position is the one thing the two sources express
+// compatibly.
+//
+// The fused value is emitted negated so Rank keeps its documented
+// lower-is-more-relevant direction; only the scale changes, which was never
+// specified.
+func fuse(lists [][]Candidate) []Candidate {
+	type entry struct {
+		candidate Candidate
+		score     float64
+		kinds     map[string]bool
+	}
+	// Keyed by source kind as well as id: a statement and a rejection may
+	// legitimately share a full_id, and merging them would fuse two
+	// different things into one row.
+	type key struct{ sourceKind, fullID string }
+
+	merged := map[key]*entry{}
+	var order []key
+	for _, list := range lists {
+		for position, c := range list {
+			k := key{c.SourceKind, c.FullID}
+			e, ok := merged[k]
+			if !ok {
+				e = &entry{candidate: c, kinds: map[string]bool{}}
+				merged[k] = e
+				order = append(order, k)
+			}
+			e.kinds[c.MatchKind] = true
+			e.score += 1.0 / (rrfK + float64(position+1))
+		}
+	}
+
+	out := make([]Candidate, 0, len(merged))
+	for _, k := range order {
+		e := merged[k]
+		c := e.candidate
+		c.Rank = -e.score
+		if e.kinds[matchLexical] && e.kinds[matchSemantic] {
+			c.MatchKind = matchBoth
+		}
+		out = append(out, c)
+	}
+
+	// full_id breaks ties so the order is stable across runs: distinct
+	// candidates can land on identical fused scores (top of two lists, for
+	// instance), and map iteration order must never leak into output.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rank != out[j].Rank {
+			return out[i].Rank < out[j].Rank
+		}
+		return out[i].FullID < out[j].FullID
+	})
+	return out
 }
 
 // validateQueryVector refuses a query vector that can't be meaningfully
@@ -142,11 +212,24 @@ func (ix *Index) validateQueryVector(vector []float32, embModel string) error {
 	return nil
 }
 
+func markKind(candidates []Candidate, kind string) []Candidate {
+	for i := range candidates {
+		candidates[i].MatchKind = kind
+	}
+	return candidates
+}
+
 // checkSemantic finds active statements whose stored embedding is close to
-// vector, skipping anything already surfaced lexically (in exclude) or
-// lacking an embedding altogether. Rejections aren't embedded (Embed only
-// applies to statements), so this only ever searches statements.
-func (ix *Index) checkSemantic(namespace string, vector []float32, exclude map[string]bool) ([]Candidate, error) {
+// vector, skipping anything lacking an embedding. Rejections aren't embedded
+// (Embed only applies to statements), so this only ever searches statements.
+//
+// Candidates a lexical search also found are deliberately *not* excluded:
+// fusion merges them and adds both contributions, so appearing in both lists
+// raises a candidate rather than being suppressed in one of them.
+//
+// Returned in its own best-first order, because RRF reads position — an
+// unsorted list would hand arbitrary positions to the fusion step.
+func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate, error) {
 	query := `SELECT full_id, namespace, kind, status, body FROM statements WHERE status = 'active'`
 	args := []interface{}{}
 	if namespace != "" {
@@ -181,9 +264,6 @@ func (ix *Index) checkSemantic(namespace string, vector []float32, exclude map[s
 
 	var out []Candidate
 	for _, s := range stmts {
-		if exclude[s.fullID] {
-			continue
-		}
 		emb, ok := embeddings[s.fullID]
 		if !ok {
 			continue
@@ -200,9 +280,10 @@ func (ix *Index) checkSemantic(namespace string, vector []float32, exclude map[s
 			Status:     model.Status(s.status),
 			Excerpt:    searchExcerpt(s.body),
 			Rank:       -score,
-			MatchKind:  "semantic",
+			MatchKind:  matchSemantic,
 		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Rank < out[j].Rank })
 	return out, nil
 }
 

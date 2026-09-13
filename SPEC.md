@@ -86,6 +86,8 @@ Cosine similarity between vectors from two different models is a number that loo
 
 Results are therefore fused by **Reciprocal Rank Fusion** — `Σ 1/(60 + position)` across the lists a candidate appears in, discarding raw scores in favour of rank position. RRF needs no tuning constants that would require recalibration per embedding model, and it resolves the statement-vs-rejection bm25 incomparability in the same stroke. The fused value is emitted negated, so the `rank` field keeps its documented "lower is more relevant" direction; only the scale changes, which was never specified.
 
+Fusion also changes what happens when both paths find the same statement. Previously the semantic pass skipped anything lexical search had already returned, so agreement between the two was invisible. Summing both contributions instead makes agreement *raise* a candidate — shared vocabulary and embedding proximity are independent signals, and a statement carrying both is a better answer than one carrying either. Such a candidate is marked `match_kind: both`.
+
 ### Query construction
 
 `check` builds its FTS query by OR-joining the draft's tokens. Terms occurring in more than half the corpus are dropped first, via an `fts5vocab` lookup — these are exactly the terms FTS5 already scores as carrying no information. Being frequency-driven rather than a fixed word list, this adapts to the corpus and catches domain stopwords (`token` in an auth-heavy namespace) that no English stoplist would. If *every* term would be dropped, all are kept: arbitrary results beat none.
@@ -152,7 +154,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
 | `list` | `[--namespace] [--kind] [--status] [--tag]` | array of compact summaries |
-| `check` | `--namespace --text [--tags] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`), `rank` (lower is more relevant; scale unspecified). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
+| `check` | `--namespace --text [--tags] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
 | `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
 | `mv` | `<from-id> <to-id> [--leave-link]` | from, to, rewritten inbound references, whether a stub was left |
