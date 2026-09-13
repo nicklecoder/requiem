@@ -272,7 +272,7 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 // Returned in its own best-first order, because RRF reads position — an
 // unsorted list would hand arbitrary positions to the fusion step.
 func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate, error) {
-	query := `SELECT full_id, namespace, kind, modality, status, body FROM statements WHERE status = 'active'`
+	query := `SELECT full_id, namespace, kind, modality, status, body FROM statements WHERE ` + searchableStatuses
 	args := []interface{}{}
 	if namespace != "" {
 		query += ` AND (namespace = ? OR namespace LIKE ?)`
@@ -334,10 +334,22 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 }
 
 func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, scanCap int) ([]Candidate, error) {
+	// The status filter matches checkSemantic's. Without it the two paths
+	// disagreed about what exists: a deprecated statement surfaced
+	// lexically and was invisible semantically, so whether requiem showed
+	// you a retired decision depended on which words you happened to use.
+	//
+	// Excluded rather than included because retired statements accumulate
+	// without bound in a long-lived corpus, and every one of them would
+	// compete for the same ten result slots and require an embedding it can
+	// never make use of. Rejections are the deliberate exception — SPEC
+	// makes them a lighter-weight companion precisely so the record of what
+	// was turned down can accumulate cheaply. A retired statement is still
+	// reachable through `list --status deprecated`.
 	query := `SELECT s.full_id, s.namespace, s.kind, s.modality, s.status, s.body, fts.rank
 		FROM statements_fts fts
 		JOIN statements s ON s.full_id = fts.full_id
-		WHERE statements_fts MATCH ?`
+		WHERE statements_fts MATCH ? AND ` + searchableStatusesCol
 	args := []interface{}{matchQuery}
 
 	if namespace != "" {

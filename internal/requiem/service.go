@@ -91,6 +91,10 @@ var hookedEvents = []string{"post-checkout", "post-merge", "post-rewrite"}
 // misconfigured or missing requiem binary never disrupts normal git use.
 const hookCommand = "requiem reindex >/dev/null 2>&1 || true"
 
+// hookCommandEmbed is installed instead when config sets hooks.embed — see
+// config.Hooks.Embed for why that is opt-in.
+const hookCommandEmbed = "requiem reindex --embed >/dev/null 2>&1 || true"
+
 // Init creates .requiem/statements (and an empty, schema-ready index) if
 // they don't already exist, and installs reindex hooks for post-checkout/
 // post-merge/post-rewrite — see hookedEvents.
@@ -138,8 +142,18 @@ func (s *Service) Init() (*InitResult, error) {
 		return nil, err
 	}
 
+	// Read after the config template is written, so a project that has
+	// already opted in keeps its choice when init is re-run.
+	cfg, err := config.Load(s.Store.Root)
+	if err != nil {
+		return nil, err
+	}
+	command := hookCommand
+	if cfg.HooksEmbed() {
+		command = hookCommandEmbed
+	}
 	for _, name := range hookedEvents {
-		if err := s.Git.InstallHook(name, hookCommand); err != nil {
+		if err := s.Git.InstallHook(name, command); err != nil {
 			return nil, fmt.Errorf("install %s hook: %w", name, err)
 		}
 	}
@@ -158,10 +172,13 @@ func (s *Service) Init() (*InitResult, error) {
 
 // AddParams are the inputs to Add.
 type AddParams struct {
-	ID         string
-	Namespace  string
-	Kind       string
-	Modality   string
+	ID        string
+	Namespace string
+	Kind      string
+	Modality  string
+	// Status defaults to active. Set it to create a proposal directly,
+	// rather than adding a decision and immediately demoting it.
+	Status     string
 	Body       string
 	Tags       []string
 	Provenance string // "dialogue" (default) or "code-derived"
@@ -203,7 +220,7 @@ func (s *Service) Add(p AddParams) (*model.Statement, error) {
 		Namespace:  p.Namespace,
 		Kind:       model.Kind(p.Kind),
 		Modality:   model.Modality(p.Modality),
-		Status:     model.StatusActive,
+		Status:     model.Status(defaultStr(p.Status, string(model.StatusActive))),
 		Tags:       p.Tags,
 		Provenance: provenance,
 		CreatedAt:  time.Now().UTC(),
@@ -258,6 +275,13 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 		return nil, err
 	}
 	st.EmbeddingStatus = embeddingStatus(emb, st.Body)
+
+	if st.ReferencedBy, err = ix.InboundRelationships(fullID); err != nil {
+		return nil, err
+	}
+	if st.RejectedAlternatives, err = ix.RejectionsPointingAt(fullID); err != nil {
+		return nil, err
+	}
 	return &st, nil
 }
 
@@ -290,6 +314,13 @@ func computeStale(root string, p model.Provenance) bool {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func defaultStr(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
+}
 
 // UpdateParams are the inputs to Update. Empty fields are left unchanged.
 type UpdateParams struct {

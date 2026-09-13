@@ -41,7 +41,7 @@ type PairCandidate struct {
 // ...), it stops resurfacing. Corpus sizes here are small enough that an
 // in-memory O(n^2) scan is fine; no ANN index is needed.
 func (ix *Index) FindCandidatePairs(namespace string, minScore float64, limit int) ([]PairCandidate, error) {
-	query := `SELECT full_id, body, modality FROM statements WHERE status = 'active'`
+	query := `SELECT full_id, body, modality FROM statements WHERE ` + searchableStatuses
 	args := []interface{}{}
 	if namespace != "" {
 		query += ` AND (namespace = ? OR namespace LIKE ?)`

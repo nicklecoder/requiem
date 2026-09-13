@@ -74,9 +74,15 @@ func TestStatementValidate_ArbitraryKindAccepted(t *testing.T) {
 
 func TestStatementValidate_InvalidStatus(t *testing.T) {
 	s := validStatement()
-	s.Status = Status("proposed")
+	s.Status = Status("pending-review")
 	if err := s.Validate(); err == nil {
 		t.Fatal("expected error for invalid status")
+	}
+	// "proposed" was this test's example of an invalid status until the
+	// lifecycle gained a pre-active stage.
+	s.Status = StatusProposed
+	if err := s.Validate(); err != nil {
+		t.Fatalf("proposed is a valid status: %v", err)
 	}
 }
 
@@ -233,5 +239,21 @@ func TestModality_KnownGovernsReadTolerance(t *testing.T) {
 	}
 	if Modality("shall").Known() {
 		t.Fatal("an unrecognized value must not read as known")
+	}
+}
+
+// Proposals are searched so a conflict check can run at the moment it is most
+// needed; superseded and deprecated statements are not, because surfacing
+// what used to be true as a live candidate is a false all-clear in reverse.
+func TestStatus_SearchableCoversProposedButNotRetired(t *testing.T) {
+	for _, s := range []Status{StatusActive, StatusProposed} {
+		if !s.Searchable() {
+			t.Errorf("%s should participate in search and audit", s)
+		}
+	}
+	for _, s := range []Status{StatusSuperseded, StatusDeprecated} {
+		if s.Searchable() {
+			t.Errorf("%s records what used to be true and must not surface as a candidate", s)
+		}
 	}
 }

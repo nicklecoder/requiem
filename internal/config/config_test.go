@@ -109,3 +109,32 @@ func TestLoad_MalformedYAMLIsAnError(t *testing.T) {
 		t.Fatal("expected a parse error")
 	}
 }
+
+func TestHooksEmbed_OffByDefaultAndRequiresAnEndpoint(t *testing.T) {
+	// Default: a config with an endpoint but no hooks section.
+	c, err := Load(write(t, "embedding:\n  endpoint: http://x\n  model: m\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.HooksEmbed() {
+		t.Fatal("hook embedding must be off unless asked for")
+	}
+
+	c, err = Load(write(t, "embedding:\n  endpoint: http://x\n  model: m\nhooks:\n  embed: true\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.HooksEmbed() {
+		t.Fatal("expected opt-in to take effect")
+	}
+
+	// Opting in without an endpoint would make every checkout attempt a call
+	// it cannot place.
+	c, err = Load(write(t, "hooks:\n  embed: true\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.HooksEmbed() {
+		t.Fatal("hook embedding needs an endpoint to be meaningful")
+	}
+}

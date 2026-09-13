@@ -279,3 +279,52 @@ func TestAdd_NotAGitRepo_ReturnsClearError(t *testing.T) {
 		t.Fatal("expected an error adding in a non-git directory")
 	}
 }
+
+// An installed hook must remain updatable. Bailing out on the marker alone
+// meant a project that later changed its hook configuration kept running the
+// old command forever, while init reported success.
+func TestInstallHook_UpdatesItsOwnBlockAndPreservesForeignContent(t *testing.T) {
+	c := newTestRepo(t)
+	dir := c.Dir
+
+	preexisting := "#!/bin/sh\necho \"someone else's hook\"\n"
+	path := filepath.Join(dir, ".git", "hooks", "post-merge")
+	if err := os.WriteFile(path, []byte(preexisting), 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := c.InstallHook("post-merge", "requiem reindex"); err != nil {
+		t.Fatalf("InstallHook: %v", err)
+	}
+	if err := c.InstallHook("post-merge", "requiem reindex --embed"); err != nil {
+		t.Fatalf("second InstallHook: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "requiem reindex --embed") {
+		t.Fatalf("expected the command updated:\n%s", s)
+	}
+	if strings.Contains(s, "requiem reindex\n") {
+		t.Fatalf("expected the old command replaced, not duplicated:\n%s", s)
+	}
+	if strings.Count(s, hookMarkerBegin) != 1 {
+		t.Fatalf("expected exactly one requiem block:\n%s", s)
+	}
+	if !strings.Contains(s, "someone else's hook") {
+		t.Fatalf("content outside the markers must survive:\n%s", s)
+	}
+
+	// Re-installing the same command is a no-op.
+	before, _ := os.ReadFile(path)
+	if err := c.InstallHook("post-merge", "requiem reindex --embed"); err != nil {
+		t.Fatalf("third InstallHook: %v", err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("re-installing an unchanged command must not rewrite the file")
+	}
+}

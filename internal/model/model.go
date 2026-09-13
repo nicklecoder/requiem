@@ -85,6 +85,10 @@ func (m Modality) ConflictsWith(other Modality) bool {
 type Status string
 
 const (
+	// StatusProposed is a decision under consideration — not yet in force,
+	// but not rejected either. One lifecycle rather than two axes: proposed
+	// precedes active exactly as superseded and deprecated follow it.
+	StatusProposed   Status = "proposed"
 	StatusActive     Status = "active"
 	StatusSuperseded Status = "superseded"
 	StatusDeprecated Status = "deprecated"
@@ -92,10 +96,27 @@ const (
 
 func (s Status) valid() bool {
 	switch s {
-	case StatusActive, StatusSuperseded, StatusDeprecated:
+	case StatusProposed, StatusActive, StatusSuperseded, StatusDeprecated:
 		return true
 	}
 	return false
+}
+
+// Searchable reports whether a statement in this status participates in
+// semantic search and audit.
+//
+// Proposals do, deliberately: whether a proposal conflicts with something
+// already settled is the question a proposal most needs answered, and
+// excluding them would mean the one moment you most want a conflict check is
+// the one moment requiem stays quiet. Superseded and deprecated statements do
+// not — they record what used to be true, and surfacing them as live
+// candidates would be the false all-clear in reverse.
+//
+// Callers must keep status visible in their output so a reader can tell a
+// proposal from a decision; the two are searched alike but must never read
+// alike.
+func (s Status) Searchable() bool {
+	return s == StatusActive || s == StatusProposed
 }
 
 // RelationshipType is closed — each type drives specific index/query behavior.
@@ -166,6 +187,15 @@ type Relationship struct {
 	Note string           `yaml:"note,omitempty" json:"note,omitempty"`
 }
 
+// InboundRef is one statement pointing at another — the reverse of a
+// Relationship, carrying the same type and note so a reader sees why the
+// edge exists without a second lookup.
+type InboundRef struct {
+	From string           `json:"from"`
+	Type RelationshipType `json:"type"`
+	Note string           `json:"note,omitempty"`
+}
+
 // Statement is the atomic unit requiem tracks: a requirement, rule, or
 // design decision, addressed by the composite "<namespace>/<id>".
 type Statement struct {
@@ -185,6 +215,21 @@ type Statement struct {
 	// computes it for a code-derived statement by rehashing its source
 	// range live and comparing to Provenance.Hash.
 	Stale *bool `yaml:"-" json:"stale,omitempty"`
+
+	// ReferencedBy and RejectedAlternatives are derived inbound edges, and
+	// like Stale they are never written to the file. Relationships live on
+	// the *owning* statement's frontmatter to avoid a merge-conflict
+	// hotspot, which is a storage decision — but it had quietly become a
+	// display one too, leaving the graph traversable only in the direction
+	// it happened to be written. A principle could not report the rules
+	// refining it, and a statement could not report the alternatives
+	// rejected before it was adopted.
+	ReferencedBy []InboundRef `yaml:"-" json:"referenced_by,omitempty"`
+	// RejectedAlternatives are rejections naming this statement in
+	// see_instead — the ideas turned down in favour of this one. This is the
+	// question that stops an agent re-proposing a rejected idea, which is
+	// the stated reason rejections are recorded at all.
+	RejectedAlternatives []string `yaml:"-" json:"rejected_alternatives,omitempty"`
 
 	// EmbeddingStatus is another derived, never-stored fact: "missing" (no
 	// vector on record), "stale" (body has changed since the vector was

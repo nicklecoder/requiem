@@ -97,6 +97,61 @@ func (ix *Index) relationshipsFor(fullID string) ([]model.Relationship, error) {
 // pointing at fullID — the reverse direction from relationshipsFor, backed
 // by idx_relationships_to. Used by Move to find every file that needs its
 // Relationships[].To rewritten when a statement relocates.
+// InboundRelationships returns every statement pointing at fullID, with the
+// type and note that explain why. Derived at read time from the same rows
+// `mv` uses to rewrite inbound references; nothing is stored.
+// searchableStatuses is the SQL counterpart of model.Status.Searchable — the
+// statuses that participate in semantic search and audit. Kept as one
+// constant because it appears in several queries and a filter missed in one
+// of them would silently change what a sweep can see.
+const searchableStatuses = `status IN ('active', 'proposed')`
+
+// searchableStatusesCol is the same predicate for a query that aliases the
+// statements table.
+const searchableStatusesCol = `s.status IN ('active', 'proposed')`
+
+func (ix *Index) InboundRelationships(fullID string) ([]model.InboundRef, error) {
+	rows, err := ix.db.Query(
+		`SELECT from_id, type, COALESCE(note, '') FROM relationships WHERE to_id = ? ORDER BY from_id, type`, fullID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.InboundRef
+	for rows.Next() {
+		var r model.InboundRef
+		var relType string
+		if err := rows.Scan(&r.From, &relType, &r.Note); err != nil {
+			return nil, err
+		}
+		r.Type = model.RelationshipType(relType)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RejectionsPointingAt returns rejections naming fullID in see_instead — the
+// alternatives turned down in favour of this statement.
+func (ix *Index) RejectionsPointingAt(fullID string) ([]string, error) {
+	rows, err := ix.db.Query(
+		`SELECT full_id FROM rejections WHERE see_instead = ? ORDER BY full_id`, fullID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (ix *Index) ReferrersOf(fullID string) ([]string, error) {
 	rows, err := ix.db.Query(`SELECT DISTINCT from_id FROM relationships WHERE to_id = ? ORDER BY from_id`, fullID)
 	if err != nil {

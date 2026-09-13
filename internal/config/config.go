@@ -46,10 +46,30 @@ type Embedding struct {
 	Concurrency int    `yaml:"concurrency,omitempty"`
 }
 
+// Hooks configures the git hooks `init` installs.
+type Hooks struct {
+	// Embed makes the installed hooks run `reindex --embed` rather than a
+	// plain `reindex`, so a fresh clone self-heals its vectors with no human
+	// involvement. Off by default, and deliberately a knob rather than a
+	// default: hooks fire on the most routine git operations there are, and
+	// embedding on checkout makes git wait on a network call invisibly,
+	// since hook output is silenced. That cost lands on everyone; the
+	// benefit is worth it only to some.
+	Embed bool `yaml:"embed,omitempty"`
+}
+
 // Config is the whole file. Every section is optional: a project that never
 // configures embedding is fully functional, just lexical-only.
 type Config struct {
 	Embedding *Embedding `yaml:"embedding,omitempty"`
+	Hooks     *Hooks     `yaml:"hooks,omitempty"`
+}
+
+// HooksEmbed reports whether installed hooks should embed. Requires an
+// endpoint: asking hooks to embed without one configured would make every
+// checkout attempt a call it cannot place.
+func (c *Config) HooksEmbed() bool {
+	return c.Hooks != nil && c.Hooks.Embed && c.EmbeddingConfigured()
 }
 
 // Load reads requiemDir/config.yaml. A missing file is not an error — it
@@ -149,6 +169,15 @@ const Template = `# requiem configuration — committed on purpose.
 #   timeout: 30s      # per request
 #   batch_size: 32    # inputs per request
 #   concurrency: 4    # requests in flight
+#
+# Uncomment to make the git hooks "requiem init" installed run
+# "reindex --embed" instead of a plain reindex, so a fresh clone rebuilds its
+# vectors without being asked. Off by default: hooks fire on ordinary git
+# operations, and this makes checkout wait on a network call with its output
+# silenced.
+#
+# hooks:
+#   embed: true
 #
 # Every vector in a project must come from one model: cosine similarity
 # across two models is a plausible-looking number that means nothing.

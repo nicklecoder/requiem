@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/nicklecoder/requiem/internal/index"
-	"github.com/nicklecoder/requiem/internal/model"
 )
 
 // Coverage reports how much of a scope semantic search can actually see.
@@ -45,14 +44,11 @@ func (c Coverage) Warning() string {
 // there is exactly one definition of what "stale" means — the same one
 // `get`, `list --needs-embedding`, and `reindex --embed` all answer with.
 //
-// Scoped to active statements because that is precisely what the semantic
+// Scoped to searchable statements because that is precisely what the semantic
 // paths search: counting superseded or deprecated statements here would
 // report a shortfall that no amount of embedding could close.
 func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
-	statements, err := ix.ListStatements(index.ListFilter{
-		Namespace: namespace,
-		Status:    string(model.StatusActive),
-	})
+	statements, err := ix.ListStatements(index.ListFilter{Namespace: namespace})
 	if err != nil {
 		return Coverage{}, err
 	}
@@ -63,6 +59,12 @@ func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
 
 	var c Coverage
 	for _, st := range statements {
+		// Count exactly what the semantic paths search, via the same
+		// predicate they use: counting a deprecated statement would report a
+		// shortfall no amount of embedding could ever close.
+		if !st.Status.Searchable() {
+			continue
+		}
 		c.Total++
 		var existing *index.Embedding
 		if e, ok := embeddings[st.FullID()]; ok {
