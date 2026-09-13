@@ -47,7 +47,7 @@ This direction (files canonical, DB derived) was chosen deliberately over the re
 - **Trigger 1 — lazy staleness check on read.** Before `get`/`list`/`check` answer a query, compare the manifest to disk and reindex anything stale first. Correct regardless of what caused the change (hand edit, git operation) and needs no extra infrastructure.
 - **Trigger 2 — git hooks** (`post-checkout`, `post-merge`, `post-rewrite`), installed automatically by `requiem init`, chaining after any pre-existing hook rather than clobbering it. These fire on bulk-change operations and run a plain `reindex`, keeping the index eagerly warm without a background process. A targeted `git diff --name-only`-scoped scan was considered instead of a full tree walk, but dropped: the manifest-diff skip logic (see above) already makes a full walk cheap when little changed, and `post-rewrite` doesn't cleanly offer a before/after ref pair the way `post-checkout`/`post-merge` do, so it would've needed a separate code path anyway.
 - No filesystem watcher / daemon — would require a long-running process per project, which fights the "no server, no lifecycle" goal, and isn't needed given the above two triggers.
-- **`reindex --embed`** additionally fills in any missing or stale vector by calling the configured embedding endpoint. It is separate from plain `reindex` because it is the one indexing operation that reaches the network: a bare `reindex` must stay fast, offline, and safe to run from a git hook. Whether the installed hooks should pass `--embed` when an endpoint is configured — making a fresh clone self-heal its vectors — is deliberately left open; it would make `git checkout` perform network I/O, which is surprising enough to want a decision rather than a default.
+- **`reindex --embed`** additionally fills in any missing or stale vector by calling the configured embedding endpoint. It is separate from plain `reindex` because it is the one indexing operation that reaches the network: a bare `reindex` must stay fast, offline, and safe to run from a git hook. The installed hooks pass `--embed` only when `hooks.embed` is set in config, defaulting to off. A fresh clone can then self-heal its vectors without human involvement, but only for a project that has chosen that: hooks fire on the most routine git operations there are, and embedding on every checkout means `git` waits on a network call, invisibly, since hook output is silenced. Left as a default-off knob rather than a default because the cost is felt by everyone and the benefit is worth it only to some.
 
 ### History & Approval
 
@@ -122,12 +122,14 @@ Where `check` compares one draft against prior decisions, `audit` compares every
 | `kind` | requirement / rule / design — plain string, not a hard-constrained enum, so new kinds can be added without a migration. Deliberately **inert**: it exists for grouping and retrieval (`list --kind`), not semantics — see Modality below |
 | `modality` | optional, closed: `must` / `should` / `may` / `must_not` / `should_not`. The normative strength of the statement — see Modality below |
 | `body` | |
-| `status` | active / superseded / deprecated |
+| `status` | proposed / active / superseded / deprecated. One lifecycle, not two axes: `proposed` precedes `active` exactly as `superseded` and `deprecated` follow it. A proposal is searched and audited like an active statement — the question a proposal most needs answered is whether it conflicts with something already settled — but its status travels with every result so an agent can tell "under consideration" from "decided" |
 | `tags` | |
 | `provenance` | `dialogue` or `code-derived`. For `code-derived`: `file`, `line_range`, and a hash of that line range captured at write time — see Staleness below. |
 | `created_at` | |
 
 Three fields are *derived at read time and never written to the file*: `stale` (code-derived provenance rehashed against current source), `embedding_status` (`missing` / `stale` / `fresh`, from comparing the stored vector's `source_hash` against the current body), and the `rank` returned by `check`. None is content, so none passes through the stage/commit flow — a fact about a statement is not an edit to it.
+
+Relationships are stored on the *owning* statement's frontmatter, but that is a storage decision, not a display one. `get` also returns **derived inbound edges**: statements whose relationships point here, and rejections naming this statement in `see_instead`. Both are computed from the index at read time and never written back, the same posture as `stale` and `embedding_status`. Without them the graph is only traversable in the direction it happened to be written — a principle cannot report the rules refining it, and a statement cannot report the alternatives rejected before it was adopted, which is the question that stops an agent re-proposing one.
 
 **Relationship**: `from`, `to`, `type` (`conflicts_with`, `supersedes`, `depends_on`, `refines`, `duplicates`, `not_related`, `moved_to`), `note`. The last three exist to service `audit` and `mv`: `duplicates` and `not_related` record an agent's verdict on a candidate pair so it stops resurfacing — `not_related` asserts no semantic relationship at all, only that the pair has been judged — and `moved_to` marks the stub `mv --leave-link` leaves behind. (`scoped_to` was considered and dropped — namespace already expresses what a statement applies to; a redundant statement-to-statement edge for the same thing wasn't worth the extra relationship type.)
 
@@ -185,9 +187,11 @@ Proposed, not yet decided: requirement–implementation traceability (see below)
 
 ---
 
-## Proposed: Requirement–Implementation Traceability
+## Requirement–Implementation Traceability
 
-**Status: proposed, not decided.** Recorded here because it is cheap to change on paper and expensive to change once identifiers are baked into commit history.
+**Status: decided for the rewritable carriers; commit trailers deferred.**
+
+Source comments (tests included), `requiem trace`, blast radius on `update`, and reference classification in `audit` are accepted. Commit trailers are deliberately held back: `mv` can rewrite a label in source but can never fix one in published history, so trailers make a rename permanently expensive. They wait until the label convention has proven it survives ordinary development. Everything below describes the whole design; the trailer parts are marked where they arise.
 
 ### The gap
 
