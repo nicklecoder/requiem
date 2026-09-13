@@ -37,7 +37,7 @@ CLI, JSON in/out. No long-running server or per-project MCP wiring required — 
 
 - **Files are canonical and git-tracked.** One file per statement, under a path that mirrors its namespace, e.g. `.requiem/statements/auth/session/<id>.md`. Deterministic frontmatter + body format so diffs are meaningful.
 - **SQLite is a disposable, rebuildable index** — gitignored, not committed. Exists purely to make queries (`get`, `list`, `check`) fast: full-text search (SQLite FTS5) plus namespace/tag filtering and relationship lookups. If deleted or corrupted, nothing is lost — rebuild from files via `reindex`.
-- **Embedding vectors live in that index too, and the disposability claim covers them only because the pipeline that produces them is itself committed.** A vector cannot be recovered by reparsing a statement file the way every other table can; it has to be recomputed. That is what `.requiem/config.toml` (see Semantic Retrieval) exists to guarantee — the endpoint and model are version-controlled, so `reindex --embed` reproduces the vectors on any clone. Without a committed pipeline this bullet would be false for embeddings, which is the reason the config is a tracked file rather than a local setting.
+- **Embedding vectors live in that index too, and the disposability claim covers them only because the pipeline that produces them is itself committed.** A vector cannot be recovered by reparsing a statement file the way every other table can; it has to be recomputed. That is what `.requiem/config.yaml` (see Semantic Retrieval) exists to guarantee — the endpoint and model are version-controlled, so `reindex --embed` reproduces the vectors on any clone. Without a committed pipeline this bullet would be false for embeddings, which is the reason the config is a tracked file rather than a local setting.
 
 This direction (files canonical, DB derived) was chosen deliberately over the reverse, because it lets git carry all history/diff/blame responsibility, avoids a two-sources-of-truth consistency problem, and means cloning the project doesn't lose anything.
 
@@ -72,7 +72,7 @@ Lexical search has a structural blind spot: it cannot find a prior decision word
 
 ### Inference stance
 
-Requiem bundles no model, no inference runtime, and no ML dependency — `CGO_ENABLED=0` and the single static binary are preserved. It does, however, know *how to obtain* a vector: `.requiem/config.toml` names an OpenAI-compatible `/v1/embeddings` endpoint, a model, and the *name* of an environment variable holding an API key (never the key itself). One client shape covers Ollama, LM Studio, llama.cpp, vLLM, LocalAI, and OpenAI.
+Requiem bundles no model, no inference runtime, and no ML dependency — `CGO_ENABLED=0` and the single static binary are preserved. It does, however, know *how to obtain* a vector: `.requiem/config.yaml` names an OpenAI-compatible `/v1/embeddings` endpoint, a model, and the *name* of an environment variable holding an API key (never the key itself). One client shape covers Ollama, LM Studio, llama.cpp, vLLM, LocalAI, and OpenAI.
 
 This is a deliberate narrowing of an earlier, broader rule — "requiem never computes embeddings itself" — which conflated two claims: *bundles no inference runtime* (worth defending) and *cannot obtain a vector* (which made the index's disposability guarantee false). Shelling out to a configured endpoint is the same posture as shelling out to `git`, which requiem already does. `embed --vector` remains as a manual escape hatch, so an agent with access to some exotic model can still supply one directly.
 
@@ -165,7 +165,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 
 Implemented and in use: the full CLI surface above, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, lexical and semantic retrieval, and corpus-wide audit.
 
-Decided and specified above, not yet built: the embedding pipeline (`.requiem/config.toml`, `reindex --embed`), RRF rank fusion, frequency-driven query-term filtering, partial-coverage warnings, and the `modality` field. Until the pipeline lands, vectors must be supplied via `embed --vector`.
+Decided and specified above, not yet built: the embedding pipeline (`.requiem/config.yaml`, `reindex --embed`), RRF rank fusion, frequency-driven query-term filtering, partial-coverage warnings, and the `modality` field. Until the pipeline lands, vectors must be supplied via `embed --vector`.
 
 Proposed, not yet decided: requirement–implementation traceability (see below).
 

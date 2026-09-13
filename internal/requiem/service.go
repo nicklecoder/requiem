@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nicklecoder/requiem/internal/config"
 	"github.com/nicklecoder/requiem/internal/git"
 	"github.com/nicklecoder/requiem/internal/hash"
 	"github.com/nicklecoder/requiem/internal/index"
@@ -108,6 +109,22 @@ func (s *Service) Init() (*InitResult, error) {
 		return nil, err
 	}
 	if err := s.stagePath(".gitignore"); err != nil {
+		return nil, err
+	}
+
+	// A commented-out template, staged like every other requiem write. It
+	// turns nothing on by itself — its job is discoverability, since an
+	// agent reading the project has no other way to learn that embedding is
+	// available at all.
+	configPath := filepath.Join(s.Store.Root, config.FileName)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if err := os.WriteFile(configPath, []byte(config.Template), 0o644); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if err := s.stagePath(config.FileName); err != nil {
 		return nil, err
 	}
 
