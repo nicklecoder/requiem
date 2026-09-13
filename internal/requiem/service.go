@@ -503,6 +503,15 @@ type ListFilter struct {
 	// embedding is missing or stale — the batch-discovery path an agent
 	// uses before running `embed` in bulk, without a dedicated subcommand.
 	NeedsEmbedding bool
+	// Unreferenced, when true, narrows results to statements no labelled
+	// code site points at — the closest thing this model has to an undefined
+	// symbol: something declared and never linked to anything.
+	//
+	// Returns nothing at all where labelling is not in use, rather than
+	// returning everything. A corpus with no labels would otherwise report
+	// its entire contents as unimplemented, which is the ambiguity-of-zero
+	// problem at corpus scale: an answer manufactured from missing data.
+	Unreferenced bool
 }
 
 // List returns compact summaries of every statement matching filter. Like
@@ -550,6 +559,9 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			summary.CodeRefs = &n
 		}
 		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
+			continue
+		}
+		if filter.Unreferenced && (!adopted || counts[st.FullID()] > 0) {
 			continue
 		}
 		out = append(out, summary)
@@ -952,6 +964,7 @@ func (s *Service) Reindex() (index.ReindexStats, error) {
 	return stats, nil
 }
 
+// requiem: embedding/read-path-offline
 func (s *Service) scanCodeRefs(ix *index.Index) error {
 	refs, err := trace.Scan(s.Root)
 	if err != nil {

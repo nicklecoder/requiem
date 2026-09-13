@@ -225,3 +225,39 @@ func TestMove_ReportsOrphanedCodeRefs(t *testing.T) {
 		t.Fatalf("mv must not edit source files, got %q", body)
 	}
 }
+
+// An unlabelled corpus must not report its entire contents as unimplemented:
+// that is the ambiguity of zero at corpus scale, an answer manufactured from
+// missing data.
+func TestListUnreferenced_EmptyUntilLabellingIsInUse(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"linked", "orphan"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "body " + id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	got, err := s.List(ListFilter{Unreferenced: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("with no labels anywhere, --unreferenced must return nothing, got %+v", got)
+	}
+
+	// Once labelling is in use, the unlabelled statement is a real finding.
+	writeCode(t, s, "src/a.go", "// requiem: ns/linked\n")
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	got, err = s.List(ListFilter{Unreferenced: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].FullID != "ns/orphan" {
+		t.Fatalf("expected only the unreferenced statement, got %+v", got)
+	}
+}

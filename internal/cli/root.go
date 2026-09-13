@@ -5,7 +5,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -14,11 +13,6 @@ import (
 
 // version is set via -ldflags at release build time (see M7); "dev" locally.
 var version = "dev"
-
-// errNotImplemented is returned by verbs not yet built for the current
-// milestone. Distinct from a normal usage/runtime error so it's obvious in
-// output during incremental development.
-var errNotImplemented = errors.New("not yet implemented")
 
 // NewRootCmd builds the full requiem command tree.
 func NewRootCmd() *cobra.Command {

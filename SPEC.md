@@ -167,7 +167,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | `link` | `<from-id> <to-id> --type [--note]` | confirmation |
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
-| `list` | `[--namespace] [--kind] [--status] [--tag]` | array of compact summaries |
+| `list` | `[--namespace] [--kind] [--status] [--tag] [--needs-embedding] [--unreferenced]` | array of compact summaries |
 | `check` | `--namespace --text [--tags] [--semantic] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
 | `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
@@ -180,11 +180,11 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 
 ## Status
 
-Implemented and in use: the full CLI surface above, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, the embedding pipeline, lexical and semantic retrieval with RRF fusion and frequency-filtered queries, modality, and corpus-wide audit.
+Everything specified above is implemented: the full CLI surface, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, the embedding pipeline, lexical and semantic retrieval with RRF fusion and frequency-filtered queries, modality, the proposed status, derived inbound edges, corpus-wide audit, and requirement–implementation traceability for the rewritable carriers.
 
-Decided and specified above, not yet built: the embedding pipeline (`.requiem/config.yaml`, `reindex --embed`), RRF rank fusion, frequency-driven query-term filtering, partial-coverage warnings, and the `modality` field. Until the pipeline lands, vectors must be supplied via `embed --vector`.
+Deferred by decision, not oversight: commit trailers (`Requiem-Id:`). `mv` can rewrite a label in source but never one in published history, so trailers make every later rename permanently expensive. They wait for evidence that the label convention survives ordinary development.
 
-Proposed, not yet decided: requirement–implementation traceability (see below).
+Open questions are tracked as `proposed` statements in this project's own `.requiem/` corpus — `requiem list --status proposed`.
 
 ---
 
@@ -282,8 +282,9 @@ A labelled site is suspect when the statement changed *after* the code did. Both
 - `code_refs` on `get`/`list`/`check` — how many labelled source sites reference this statement, or *unknown* where labelling is not yet in use. Derived, held only in the disposable index, never written back to the statement file: the same posture as `stale` and `embedding_status`, and for the same reason — a fact about a statement is not an edit to it.
 - `requiem trace <namespace/id>` — the labelled source sites themselves, plus commits referencing this statement (the latter searched on demand, see above).
 - **`update` reports the blast radius automatically.** This is the payoff, and it should not require remembering a separate command: changing a statement's body prints the sites and commits that referenced it, flagging those that predate the change. Everything else here is plumbing for this one behaviour.
-- `audit` additionally surfaces the two strong signals above — code referencing a non-active statement, and code referencing a rejection — alongside dangling labels pointing at ids that resolve to nothing. Dangling labels are cleanup; the other two are contradictions between what the project has decided and what it currently does.
-- Listing statements with no references, in a corpus where labelling is well covered, becomes possible for the first time. This is the closest thing the model has to an undefined symbol: something declared and never linked to anything. It is not expressible today at all.
+- `audit` additionally surfaces the two strong signals above: code referencing a non-active statement, and code referencing a rejection. Both describe the same hazard — a decision was made and the code was never brought along.
+- Dangling labels are deliberately *not* raised by `audit`. They were specified as cleanup alongside the contradictions, and implementing the scanner showed why that is wrong: the marker matches anywhere in a tracked file, so prose explaining the label format reads as a label. Documentation describing traceability generates dangling references by existing, and an audit that reports them trains its reader to skim past its own output. They remain visible through `trace`, where someone is asking about one specific id and can judge for themselves.
+- `list --unreferenced` returns statements no labelled site points at — the closest thing this model has to an undefined symbol: something declared and never linked to anything. It returns nothing where labelling is not in use, rather than reporting an entire unlabelled corpus as unimplemented, which is the ambiguity of zero at corpus scale.
 - `mv` reports code references it cannot rewrite. This is the sharpest cost of the proposal: an id is already "stable once other statements may reference it", and once ids also live in source and in *immutable commit history*, renaming gets materially more expensive. `mv` can rewrite source comments; it can never fix a trailer in a published commit.
 
 ### Boundary

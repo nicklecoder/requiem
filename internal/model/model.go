@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// requiem: model/kind-inert
 // Kind categorizes a statement. It's deliberately a plain string rather than
 // a closed enum, so new kinds can be introduced without a schema migration —
 // these three are just the known starting set.
@@ -21,6 +22,7 @@ const (
 	KindDesign      Kind = "design"
 )
 
+// requiem: model/modality-closed
 // Modality is a statement's normative strength — the one field in this model
 // that carries machine-usable meaning.
 //

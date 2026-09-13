@@ -22,6 +22,7 @@ type Candidate struct {
 	Modality   model.Modality `json:"modality,omitempty"`
 	Status     model.Status   `json:"status,omitempty"`
 	Excerpt    string         `json:"excerpt"`
+	// requiem: retrieval/rank-direction
 	// Rank is the negated Reciprocal Rank Fusion score: lower is more
 	// relevant. The direction is part of the contract; the scale is not, and
 	// values are comparable only within a single Check result.
@@ -160,6 +161,7 @@ const rrfK = 60.0
 const (
 	matchLexical  = "lexical"
 	matchSemantic = "semantic"
+	// requiem: retrieval/agreement-boosts
 	// matchBoth marks a candidate both paths found independently. Worth
 	// distinguishing: agreement between vocabulary overlap and embedding
 	// proximity is a stronger signal than either alone, and RRF already
