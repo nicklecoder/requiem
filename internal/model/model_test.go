@@ -171,3 +171,67 @@ func TestRejectionValidate_EmptyBodyRejected(t *testing.T) {
 		t.Fatal("expected error for empty body")
 	}
 }
+
+func TestModality_ConflictIsPolarityOpposition(t *testing.T) {
+	opposed := [][2]Modality{
+		{ModalityMust, ModalityMustNot},
+		{ModalityShould, ModalityShouldNot},
+		{ModalityMay, ModalityMustNot},
+		{ModalityMust, ModalityShouldNot},
+		{ModalityShould, ModalityMustNot},
+	}
+	for _, p := range opposed {
+		if !p[0].ConflictsWith(p[1]) || !p[1].ConflictsWith(p[0]) {
+			t.Errorf("%s vs %s should conflict in both directions", p[0], p[1])
+		}
+	}
+
+	// Same direction, differing only in strength — not a contradiction.
+	compatible := [][2]Modality{
+		{ModalityMust, ModalityShould},
+		{ModalityMust, ModalityMay},
+		{ModalityShould, ModalityMay},
+		{ModalityMustNot, ModalityShouldNot},
+		{ModalityMust, ModalityMust},
+	}
+	for _, p := range compatible {
+		if p[0].ConflictsWith(p[1]) {
+			t.Errorf("%s vs %s differ in strength, not direction — should not conflict", p[0], p[1])
+		}
+	}
+
+	// An absent modality asserts nothing, so it can contradict nothing.
+	if ModalityMust.ConflictsWith("") || Modality("").ConflictsWith(ModalityMustNot) {
+		t.Error("an unset modality must never register a conflict")
+	}
+	if Modality("bogus").ConflictsWith(ModalityMustNot) {
+		t.Error("an unrecognized modality must never register a conflict")
+	}
+}
+
+func TestStatement_ValidateRejectsUnknownModalityButAllowsAbsent(t *testing.T) {
+	base := Statement{
+		ID: "a", Namespace: "ns", Kind: KindRule, Status: StatusActive,
+		Provenance: Provenance{Type: ProvenanceDialogue},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("modality is optional: %v", err)
+	}
+	base.Modality = ModalityMustNot
+	if err := base.Validate(); err != nil {
+		t.Fatalf("a known modality must validate: %v", err)
+	}
+	base.Modality = "sort-of-maybe"
+	if err := base.Validate(); err == nil {
+		t.Fatal("expected an unknown modality rejected on the write path")
+	}
+}
+
+func TestModality_KnownGovernsReadTolerance(t *testing.T) {
+	if !Modality("").Known() || !ModalityMay.Known() {
+		t.Fatal("empty and recognized values are both known")
+	}
+	if Modality("shall").Known() {
+		t.Fatal("an unrecognized value must not read as known")
+	}
+}

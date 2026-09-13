@@ -21,6 +21,65 @@ const (
 	KindDesign      Kind = "design"
 )
 
+// Modality is a statement's normative strength — the one field in this model
+// that carries machine-usable meaning.
+//
+// Closed, unlike Kind, and the asymmetry is deliberate. Category resists
+// closure: 29148 splits requirements into five-plus classes and the
+// functional/non-functional boundary is unclear in practice, so agents asked
+// to pick one value answer inconsistently across sessions. Normative strength
+// was settled decades ago by RFC 2119 and by deontic logic before it
+// (obligation, permission, prohibition), and has stayed settled.
+//
+// Optional: many design statements carry no normative force at all — "we
+// chose Postgres" is neither obligation nor permission — and forcing a value
+// would manufacture noise.
+type Modality string
+
+const (
+	ModalityMust      Modality = "must"
+	ModalityShould    Modality = "should"
+	ModalityMay       Modality = "may"
+	ModalityMustNot   Modality = "must_not"
+	ModalityShouldNot Modality = "should_not"
+)
+
+func (m Modality) valid() bool {
+	switch m {
+	case ModalityMust, ModalityShould, ModalityMay, ModalityMustNot, ModalityShouldNot:
+		return true
+	}
+	return false
+}
+
+// Known reports whether m is a recognized value. Used by the store's read
+// path, which downgrades anything unrecognized to unset rather than failing:
+// validating on write but tolerating on read is what keeps a closed enum from
+// becoming a forward-compatibility trap, where adding a member later would
+// make an older binary reject files a newer one wrote.
+func (m Modality) Known() bool { return m == "" || m.valid() }
+
+// Negative reports whether m prohibits rather than requires or permits.
+// Conflict is polarity opposition: an obligation or a permission set against
+// a prohibition on the same subject. must/should, must/may and
+// must_not/should_not differ only in strength, which is not a contradiction.
+func (m Modality) Negative() bool {
+	return m == ModalityMustNot || m == ModalityShouldNot
+}
+
+// ConflictsWith reports opposed normative direction. Both must be set — an
+// absent modality asserts nothing, so it can contradict nothing.
+//
+// This is a narrow, decidable signal, not conflict detection. Contraries
+// defeat it entirely: "must be red" and "must be blue" contradict each other
+// while both are ModalityMust. See SPEC.md's Modality section.
+func (m Modality) ConflictsWith(other Modality) bool {
+	if !m.valid() || !other.valid() {
+		return false
+	}
+	return m.Negative() != other.Negative()
+}
+
 // Status is a statement's current lifecycle state. Unlike Kind, this set is
 // closed: query/index behavior (e.g. filtering to active-only) depends on it.
 type Status string
@@ -113,6 +172,7 @@ type Statement struct {
 	ID            string         `yaml:"id" json:"id"`
 	Namespace     string         `yaml:"namespace" json:"namespace"`
 	Kind          Kind           `yaml:"kind" json:"kind"`
+	Modality      Modality       `yaml:"modality,omitempty" json:"modality,omitempty"`
 	Status        Status         `yaml:"status" json:"status"`
 	Tags          []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Provenance    Provenance     `yaml:"provenance" json:"provenance"`
@@ -183,6 +243,11 @@ func (s Statement) Validate() error {
 	}
 	if !s.Status.valid() {
 		return fmt.Errorf("invalid status %q: must be one of active, superseded, deprecated", s.Status)
+	}
+	// Write-path only: the reader downgrades an unknown modality to unset
+	// instead of erroring (see Modality.Known).
+	if s.Modality != "" && !s.Modality.valid() {
+		return fmt.Errorf("invalid modality %q: must be one of must, should, may, must_not, should_not", s.Modality)
 	}
 	if strings.TrimSpace(string(s.Provenance.Type)) == "" {
 		return fmt.Errorf("provenance.type must not be empty")

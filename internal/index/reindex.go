@@ -269,6 +269,12 @@ func upsertManifest(tx *sql.Tx, relPath string, modTime time.Time, size int64) e
 	return err
 }
 
+// nullableString keeps an unset optional field out of the column as NULL
+// rather than storing an empty string, so "absent" and "empty" stay distinct.
+func nullableString(v string) sql.NullString {
+	return sql.NullString{String: v, Valid: v != ""}
+}
+
 func insertStatement(tx *sql.Tx, st model.Statement, relPath string) error {
 	fullID := st.FullID()
 	var sourceFile, sourceHash sql.NullString
@@ -286,11 +292,12 @@ func insertStatement(tx *sql.Tx, st model.Statement, relPath string) error {
 
 	_, err := tx.Exec(
 		`INSERT INTO statements
-			(full_id, id, namespace, kind, body, status, provenance_type,
+			(full_id, id, namespace, kind, modality, body, status, provenance_type,
 			 source_file, source_line_start, source_line_end, source_hash,
 			 created_at, file_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		fullID, st.ID, st.Namespace, string(st.Kind), st.Body, string(st.Status), string(st.Provenance.Type),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		fullID, st.ID, st.Namespace, string(st.Kind), nullableString(string(st.Modality)),
+		st.Body, string(st.Status), string(st.Provenance.Type),
 		sourceFile, lineStart, lineEnd, sourceHash,
 		st.CreatedAt.Format(timeFormat), relPath,
 	)

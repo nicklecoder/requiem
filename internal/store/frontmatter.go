@@ -56,6 +56,14 @@ func parseStatement(data []byte) (model.Statement, error) {
 		return model.Statement{}, fmt.Errorf("parse statement frontmatter: %w", err)
 	}
 	st.Body = body
+	// Tolerate on read what Validate rejects on write: a modality this
+	// binary doesn't recognize reads as unset rather than failing the whole
+	// file. Without this, adding a member to the closed set would make every
+	// older binary reject statements a newer one wrote — the trap that
+	// usually argues against closing an enum at all.
+	if !st.Modality.Known() {
+		st.Modality = ""
+	}
 	return st, nil
 }
 

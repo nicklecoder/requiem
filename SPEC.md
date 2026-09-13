@@ -171,7 +171,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 
 ## Status
 
-Implemented and in use: the full CLI surface above, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, lexical and semantic retrieval, and corpus-wide audit.
+Implemented and in use: the full CLI surface above, incremental indexing, git hook installation, the stage/commit approval flow, agent doc generation, the embedding pipeline, lexical and semantic retrieval with RRF fusion and frequency-filtered queries, modality, and corpus-wide audit.
 
 Decided and specified above, not yet built: the embedding pipeline (`.requiem/config.yaml`, `reindex --embed`), RRF rank fusion, frequency-driven query-term filtering, partial-coverage warnings, and the `modality` field. Until the pipeline lands, vectors must be supplied via `embed --vector`.
 

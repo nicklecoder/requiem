@@ -1,6 +1,7 @@
 package index
 
 import (
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,12 +15,13 @@ import (
 // both without the caller needing to know which table something came from.
 // Excerpt only, never the full body — see StatementSummary for why.
 type Candidate struct {
-	FullID     string       `json:"full_id"`
-	Namespace  string       `json:"namespace"`
-	SourceKind string       `json:"source_kind"` // "statement" | "rejection"
-	Kind       model.Kind   `json:"kind,omitempty"`
-	Status     model.Status `json:"status,omitempty"`
-	Excerpt    string       `json:"excerpt"`
+	FullID     string         `json:"full_id"`
+	Namespace  string         `json:"namespace"`
+	SourceKind string         `json:"source_kind"` // "statement" | "rejection"
+	Kind       model.Kind     `json:"kind,omitempty"`
+	Modality   model.Modality `json:"modality,omitempty"`
+	Status     model.Status   `json:"status,omitempty"`
+	Excerpt    string         `json:"excerpt"`
 	// Rank is the negated Reciprocal Rank Fusion score: lower is more
 	// relevant. The direction is part of the contract; the scale is not, and
 	// values are comparable only within a single Check result.
@@ -270,7 +272,7 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 // Returned in its own best-first order, because RRF reads position — an
 // unsorted list would hand arbitrary positions to the fusion step.
 func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate, error) {
-	query := `SELECT full_id, namespace, kind, status, body FROM statements WHERE status = 'active'`
+	query := `SELECT full_id, namespace, kind, modality, status, body FROM statements WHERE status = 'active'`
 	args := []interface{}{}
 	if namespace != "" {
 		query += ` AND (namespace = ? OR namespace LIKE ?)`
@@ -280,11 +282,14 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 	if err != nil {
 		return nil, err
 	}
-	type stmt struct{ fullID, namespace, kind, status, body string }
+	type stmt struct {
+		fullID, namespace, kind, status, body string
+		modality                              sql.NullString
+	}
 	var stmts []stmt
 	for rows.Next() {
 		var s stmt
-		if err := rows.Scan(&s.fullID, &s.namespace, &s.kind, &s.status, &s.body); err != nil {
+		if err := rows.Scan(&s.fullID, &s.namespace, &s.kind, &s.modality, &s.status, &s.body); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -317,6 +322,7 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 			Namespace:  s.namespace,
 			SourceKind: sourceKindStatement,
 			Kind:       model.Kind(s.kind),
+			Modality:   model.Modality(s.modality.String),
 			Status:     model.Status(s.status),
 			Excerpt:    searchExcerpt(s.body),
 			Rank:       -score,
@@ -328,7 +334,7 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 }
 
 func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, scanCap int) ([]Candidate, error) {
-	query := `SELECT s.full_id, s.namespace, s.kind, s.status, s.body, fts.rank
+	query := `SELECT s.full_id, s.namespace, s.kind, s.modality, s.status, s.body, fts.rank
 		FROM statements_fts fts
 		JOIN statements s ON s.full_id = fts.full_id
 		WHERE statements_fts MATCH ?`
@@ -358,11 +364,13 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 	for rows.Next() {
 		var c Candidate
 		var kind, status, body string
-		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &status, &body, &c.Rank); err != nil {
+		var modality sql.NullString
+		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body, &c.Rank); err != nil {
 			return nil, err
 		}
 		c.SourceKind = sourceKindStatement
 		c.Kind = model.Kind(kind)
+		c.Modality = model.Modality(modality.String)
 		c.Status = model.Status(status)
 		c.Excerpt = searchExcerpt(body)
 		out = append(out, c)

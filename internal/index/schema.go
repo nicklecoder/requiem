@@ -18,6 +18,7 @@ var schema = []string{
 		id                TEXT NOT NULL,
 		namespace         TEXT NOT NULL,
 		kind              TEXT NOT NULL,
+		modality          TEXT,
 		body              TEXT NOT NULL,
 		status            TEXT NOT NULL,
 		provenance_type   TEXT NOT NULL,

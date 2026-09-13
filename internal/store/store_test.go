@@ -2,7 +2,9 @@ package store
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -269,5 +271,63 @@ func TestReadRejections_MissingNamespaceReturnsEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty slice, got %v", got)
+	}
+}
+
+// Validate on write, tolerate on read. Without the read-side tolerance,
+// adding a member to the closed set later would make every older binary
+// reject statement files a newer one wrote — the trap that usually argues
+// against closing an enum at all.
+func TestReadStatement_UnknownModalityReadsAsUnsetNotAnError(t *testing.T) {
+	s := New(t.TempDir())
+	if err := s.EnsureLayout(); err != nil {
+		t.Fatalf("EnsureLayout: %v", err)
+	}
+	st := model.Statement{
+		ID: "a", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue},
+		CreatedAt:  time.Now().UTC(), Body: "something",
+	}
+	if err := s.WriteStatement(st); err != nil {
+		t.Fatalf("WriteStatement: %v", err)
+	}
+
+	// Simulate a file written by a future version carrying a modality this
+	// binary has never heard of.
+	path := filepath.Join(s.StatementsDir(), "ns", "a.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	patched := strings.Replace(string(raw), "kind: rule", "kind: rule\nmodality: shall", 1)
+	if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := s.ReadStatement("ns/a")
+	if err != nil {
+		t.Fatalf("an unknown modality must not fail the read: %v", err)
+	}
+	if got.Modality != "" {
+		t.Fatalf("expected the unknown value downgraded to unset, got %q", got.Modality)
+	}
+	if got.Body != "something" {
+		t.Fatalf("the rest of the statement must survive intact, got %q", got.Body)
+	}
+}
+
+func TestWriteStatement_RejectsUnknownModality(t *testing.T) {
+	s := New(t.TempDir())
+	if err := s.EnsureLayout(); err != nil {
+		t.Fatalf("EnsureLayout: %v", err)
+	}
+	err := s.WriteStatement(model.Statement{
+		ID: "a", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+		Modality:   "shall",
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue},
+		CreatedAt:  time.Now().UTC(), Body: "x",
+	})
+	if err == nil {
+		t.Fatal("expected the write path to reject an unknown modality")
 	}
 }

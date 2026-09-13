@@ -159,6 +159,7 @@ type AddParams struct {
 	ID         string
 	Namespace  string
 	Kind       string
+	Modality   string
 	Body       string
 	Tags       []string
 	Provenance string // "dialogue" (default) or "code-derived"
@@ -199,6 +200,7 @@ func (s *Service) Add(p AddParams) (*model.Statement, error) {
 		ID:         p.ID,
 		Namespace:  p.Namespace,
 		Kind:       model.Kind(p.Kind),
+		Modality:   model.Modality(p.Modality),
 		Status:     model.StatusActive,
 		Tags:       p.Tags,
 		Provenance: provenance,
@@ -289,11 +291,12 @@ func boolPtr(b bool) *bool { return &b }
 
 // UpdateParams are the inputs to Update. Empty fields are left unchanged.
 type UpdateParams struct {
-	Body   string
-	Status string
+	Body     string
+	Status   string
+	Modality string
 }
 
-// Update edits an existing statement's body and/or status.
+// Update edits an existing statement's body, status and/or modality.
 func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error) {
 	st, err := s.Store.ReadStatement(fullID)
 	if err != nil {
@@ -304,6 +307,15 @@ func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error
 	}
 	if p.Status != "" {
 		st.Status = model.Status(p.Status)
+	}
+	// "none" clears it: an empty flag value has to mean "leave alone" for
+	// every other field here, so removing a modality needs a word of its own.
+	switch p.Modality {
+	case "":
+	case "none":
+		st.Modality = ""
+	default:
+		st.Modality = model.Modality(p.Modality)
 	}
 	if err := s.Store.WriteStatement(st); err != nil {
 		return nil, err
@@ -367,13 +379,14 @@ func (s *Service) Reject(p RejectParams) (*model.Rejection, error) {
 // Check) — excerpt only, never the full body, so scanning many candidates
 // stays cheap regardless of corpus size.
 type StatementSummary struct {
-	FullID          string       `json:"full_id"`
-	Namespace       string       `json:"namespace"`
-	Kind            model.Kind   `json:"kind"`
-	Status          model.Status `json:"status"`
-	Tags            []string     `json:"tags,omitempty"`
-	Excerpt         string       `json:"excerpt"`
-	EmbeddingStatus string       `json:"embedding_status,omitempty"`
+	FullID          string         `json:"full_id"`
+	Namespace       string         `json:"namespace"`
+	Kind            model.Kind     `json:"kind"`
+	Modality        model.Modality `json:"modality,omitempty"`
+	Status          model.Status   `json:"status"`
+	Tags            []string       `json:"tags,omitempty"`
+	Excerpt         string         `json:"excerpt"`
+	EmbeddingStatus string         `json:"embedding_status,omitempty"`
 }
 
 func summarize(st model.Statement, emb *index.Embedding) StatementSummary {
@@ -381,6 +394,7 @@ func summarize(st model.Statement, emb *index.Embedding) StatementSummary {
 		FullID:          st.FullID(),
 		Namespace:       st.Namespace,
 		Kind:            st.Kind,
+		Modality:        st.Modality,
 		Status:          st.Status,
 		Tags:            st.Tags,
 		Excerpt:         excerpt(st.Body),
