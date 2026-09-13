@@ -974,7 +974,7 @@ func TestCheck_DefaultLimitBoundsResultCount(t *testing.T) {
 
 	// Every statement matches this text lexically; without a cap `check`
 	// hands back the whole corpus, which defeats its own purpose.
-	got, _, err := s.Check("ns", "shared wording across every statement", nil, nil, "", index.DefaultCheckLimit)
+	got, _, err := s.Check(CheckParams{Namespace: "ns", Text: "shared wording across every statement", Limit: index.DefaultCheckLimit})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -982,7 +982,7 @@ func TestCheck_DefaultLimitBoundsResultCount(t *testing.T) {
 		t.Fatalf("expected %d candidates, got %d", index.DefaultCheckLimit, len(got))
 	}
 
-	unlimited, _, err := s.Check("ns", "shared wording across every statement", nil, nil, "", 0)
+	unlimited, _, err := s.Check(CheckParams{Namespace: "ns", Text: "shared wording across every statement", Limit: 0})
 	if err != nil {
 		t.Fatalf("Check unlimited: %v", err)
 	}

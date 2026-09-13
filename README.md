@@ -36,7 +36,7 @@ requiem add --id no-plaintext-tokens --namespace auth/session --kind rule \
 
 requiem check --namespace auth --text "should tokens expire on inactivity"  # surfaces related prior decisions
                                                            # top 10 by default; --limit to change
-                                                           # add --vector/--model to also match by meaning
+                                                           # --semantic also matches by meaning
 
 requiem get auth/session/no-plaintext-tokens
 requiem list --namespace auth

@@ -88,6 +88,12 @@ Results are therefore fused by **Reciprocal Rank Fusion** — `Σ 1/(60 + positi
 
 Fusion also changes what happens when both paths find the same statement. Previously the semantic pass skipped anything lexical search had already returned, so agreement between the two was invisible. Summing both contributions instead makes agreement *raise* a candidate — shared vocabulary and embedding proximity are independent signals, and a statement carrying both is a better answer than one carrying either. Such a candidate is marked `match_kind: both`.
 
+### Query embedding
+
+`reindex --embed` makes statement embedding automatic, but a *query* vector still has to come from somewhere. `check --semantic` embeds the query text through the same configured endpoint, so the caller never produces one by hand.
+
+Opt-in rather than automatic, for the reason `reindex --embed` is separate from `reindex`: `check` is the most-used command in the tool, and a plain one must stay fast and offline. `--semantic` trades that for a single round trip. `--vector`/`--model` remain for callers with their own embedding source, and the two are mutually exclusive — one asks requiem to compute the vector, the other supplies it.
+
 ### Query construction
 
 `check` builds its FTS query by OR-joining the draft's tokens. Terms occurring in more than half the rows are dropped first, via an `fts5vocab` lookup — exactly where FTS5 clamps a term's IDF to `1e-6`, so these are the terms its own ranking already treats as carrying no information. Being frequency-driven rather than a fixed word list, this adapts to the corpus and catches domain stopwords (`token` in an auth-heavy namespace) that no English stoplist would. Frequencies are counted per FTS table, since a term saturating the statement corpus may still discriminate among rejections.
@@ -160,7 +166,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
 | `list` | `[--namespace] [--kind] [--status] [--tag]` | array of compact summaries |
-| `check` | `--namespace --text [--tags] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
+| `check` | `--namespace --text [--tags] [--semantic] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
 | `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
 | `mv` | `<from-id> <to-id> [--leave-link]` | from, to, rewritten inbound references, whether a stub was left |

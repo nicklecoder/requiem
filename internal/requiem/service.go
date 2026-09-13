@@ -5,6 +5,7 @@
 package requiem
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nicklecoder/requiem/internal/config"
+	"github.com/nicklecoder/requiem/internal/embed"
 	"github.com/nicklecoder/requiem/internal/git"
 	"github.com/nicklecoder/requiem/internal/hash"
 	"github.com/nicklecoder/requiem/internal/index"
@@ -475,11 +477,79 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 // the agent gets a cheap short list instead of needing the whole spec in
 // context, and calls Get on whichever candidates actually warrant full
 // attention. Like Get/List, it reindexes first.
-//
-// Coverage is only computed when a query vector was supplied: without one
-// the semantic path never runs, so an unembedded corpus costs the caller
-// nothing and a warning about it would be noise on the common path.
-func (s *Service) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]index.Candidate, Coverage, error) {
+// CheckParams are the inputs to Check. A struct rather than positional
+// arguments because this is the third optional input the signature has
+// grown, and a call site reading Check(ns, text, nil, nil, "", 10) says
+// nothing about what those blanks are.
+type CheckParams struct {
+	Namespace string
+	Text      string
+	Tags      []string
+	Limit     int
+
+	// Vector and Model carry a query embedding the caller computed itself.
+	Vector []float32
+	Model  string
+
+	// Semantic asks requiem to fetch the query vector from the configured
+	// endpoint instead, so the caller does not have to produce one by hand.
+	// Opt-in rather than automatic: `check` is the most-used command in the
+	// tool and must stay fast and offline by default, which is the same
+	// reason `reindex --embed` is separate from a plain `reindex`.
+	Semantic bool
+}
+
+// resolveVector supplies the query vector when Semantic is set, leaving a
+// caller-supplied one untouched otherwise.
+func (s *Service) resolveVector(p CheckParams) ([]float32, string, error) {
+	if !p.Semantic {
+		return p.Vector, p.Model, nil
+	}
+	if len(p.Vector) > 0 {
+		return nil, "", fmt.Errorf("--semantic and --vector are mutually exclusive: one asks requiem to compute the query vector, the other supplies one")
+	}
+	if strings.TrimSpace(p.Text) == "" {
+		return nil, "", fmt.Errorf("--semantic needs --text to embed")
+	}
+
+	cfg, err := config.Load(s.Store.Root)
+	if err != nil {
+		return nil, "", err
+	}
+	if !cfg.EmbeddingConfigured() {
+		return nil, "", fmt.Errorf("--semantic needs an embedding endpoint: set `embedding.endpoint` and `embedding.model` in %s, or pass --vector/--model yourself",
+			filepath.Join(requiemDir, config.FileName))
+	}
+	client, err := embed.New(*cfg.Embedding)
+	if err != nil {
+		return nil, "", err
+	}
+	timeout, err := cfg.Embedding.ResolvedTimeout()
+	if err != nil {
+		return nil, "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	vecs, err := client.Embed(ctx, []string{p.Text})
+	if err != nil {
+		return nil, "", fmt.Errorf("embed query text: %w", err)
+	}
+	// The model comes from the same config the corpus was embedded under, so
+	// the mismatch guard in the index has nothing to catch here — but it
+	// still runs, and would catch a config edited since the last embed run.
+	return vecs[0], client.Model(), nil
+}
+
+// Coverage is only computed when a query vector is in play: without one the
+// semantic path never runs, so an unembedded corpus costs the caller nothing
+// and a warning about it would be noise on the common path.
+func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
+	vector, embModel, err := s.resolveVector(p)
+	if err != nil {
+		return nil, Coverage{}, err
+	}
+
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, Coverage{}, err
@@ -490,14 +560,14 @@ func (s *Service) Check(namespace, text string, tags []string, vector []float32,
 		return nil, Coverage{}, fmt.Errorf("reindex before check: %w", err)
 	}
 
-	candidates, err := ix.Check(namespace, text, tags, vector, embModel, limit)
+	candidates, err := ix.Check(p.Namespace, p.Text, p.Tags, vector, embModel, p.Limit)
 	if err != nil {
 		return nil, Coverage{}, err
 	}
 	if len(vector) == 0 {
 		return candidates, Coverage{}, nil
 	}
-	cov, err := embeddingCoverage(ix, namespace)
+	cov, err := embeddingCoverage(ix, p.Namespace)
 	if err != nil {
 		return nil, Coverage{}, err
 	}

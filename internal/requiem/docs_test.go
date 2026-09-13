@@ -151,6 +151,7 @@ func TestAgentDocBlock_IsWellFormedMarkdown(t *testing.T) {
 		"--modality",      // the one field requiem reasons with
 		"--limit",         // check's result cap
 		"list --needs-embedding",
+		"--semantic",
 		"requiem commit", // approval is the whole history model
 	} {
 		if !strings.Contains(agentDocBlock, want) {

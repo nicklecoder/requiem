@@ -7,20 +7,25 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nicklecoder/requiem/internal/index"
+	"github.com/nicklecoder/requiem/internal/requiem"
 )
 
 func newCheckCmd() *cobra.Command {
 	var namespace, text, vectorJSON, model string
 	var tags []string
 	var limit int
+	var semantic bool
 
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Surface compact candidate statements/rejections relevant to a draft idea",
 		Long: "Lexical (FTS) matching alone misses a prior statement worded completely\n" +
-			"differently. Pass --vector (a query embedding the agent computed itself —\n" +
-			"requiem never computes one) together with --model to also search by\n" +
-			"meaning; results from either path are merged and marked via match_kind.",
+			"differently. --semantic also searches by meaning, embedding the query text\n" +
+			"via the endpoint in .requiem/config.yaml. Pass --vector with --model instead\n" +
+			"to supply a query embedding you computed yourself. Results from either path\n" +
+			"are merged and marked via match_kind.\n\n" +
+			"--semantic is opt-in, not the default: check is the most-used command here\n" +
+			"and stays fast and offline unless you ask for the network call.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var vec []float32
@@ -39,7 +44,15 @@ func newCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, coverage, err := svc.Check(namespace, text, tags, vec, model, limit)
+			candidates, coverage, err := svc.Check(requiem.CheckParams{
+				Namespace: namespace,
+				Text:      text,
+				Tags:      tags,
+				Limit:     limit,
+				Vector:    vec,
+				Model:     model,
+				Semantic:  semantic,
+			})
 			if err != nil {
 				return err
 			}
@@ -56,6 +69,7 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags to narrow the search")
 	cmd.Flags().StringVar(&vectorJSON, "vector", "", "JSON array of floats: an embedding of --text, for semantic matching alongside lexical")
 	cmd.Flags().StringVar(&model, "model", "", "name of the embedding model that produced --vector (required with it)")
+	cmd.Flags().BoolVar(&semantic, "semantic", false, "also match by meaning, embedding --text via the configured endpoint")
 	cmd.Flags().IntVar(&limit, "limit", index.DefaultCheckLimit, "maximum candidates to return (0 = unlimited)")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("text")

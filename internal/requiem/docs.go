@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 3
+const docBlockVersion = 4
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -89,11 +89,17 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"  because a short result list would otherwise be indistinguishable from a",
 	"  thorough one.",
 	"",
-	"To match `check` by meaning, pass a query vector you computed from the same",
-	"model: `check --model <name> --vector <json>`. Requiem refuses a vector from",
-	"a different model, since cosine similarity across two models is meaningless.",
-	"`requiem embed <id> --model <name> --vector <json>` stores one by hand when",
-	"no endpoint is configured.",
+	"Add `--semantic` to search by meaning as well as vocabulary — requiem embeds",
+	"the query text for you:",
+	"",
+	"```sh",
+	"requiem check --namespace <area> --text \"<the idea>\" --semantic",
+	"```",
+	"",
+	"It is opt-in because a plain `check` stays offline and fast. Without an",
+	"endpoint, supply your own with `--model <name> --vector <json>`; requiem",
+	"refuses a vector from a different model, since cosine similarity across two",
+	"models is meaningless.",
 	"",
 	"`requiem audit` sweeps the whole corpus for pairs that may conflict or",
 	"duplicate each other. Record every verdict with",
