@@ -228,6 +228,26 @@ The obvious design is a boolean on `trace`, fetched when asked. Both halves of t
 
 It takes the same answer, too. Below a threshold of adoption, labelling is uninitialised rather than informative, and `code_refs` reads as *unknown* rather than `0`. Only once a corpus genuinely uses labels does a zero begin to carry signal. The value's asymmetry should be assumed throughout: a nonzero count is useful evidence, and a zero is weak evidence at best.
 
+### Classifying a reference
+
+A scanned id is a bare string. Resolving it says what the reference *means*, and the resolution has to consult both statements and rejections — not statements alone.
+
+That is not a completeness nicety. Resolve against statements only, and a rejection id found in source matches nothing and gets reported as a **dangling label**: "this points at something that no longer exists." The truthful report is the opposite in character — "this code implements an idea this project explicitly rejected." Same input, inverted meaning, and the only difference is one extra lookup. Getting it wrong turns the most interesting signal in the system into routine cleanup noise.
+
+Five outcomes, of which two matter:
+
+| resolves to | reading |
+|---|---|
+| active statement, refs > 0 | normal; nothing to say |
+| active statement, refs 0 | weak — unbuilt, unlabelled, or unimplementable (see the ambiguity of zero above) |
+| **non-active statement, refs > 0** | **code implements a rescinded decision** |
+| **rejection, refs > 0** | **code implements an explicitly rejected idea** |
+| nothing | dangling label; the reference rotted |
+
+The two bold rows are the ones worth raising unprompted, and neither is expressible today. They describe the same underlying hazard: a decision was made and the code was never brought along, so the corpus reads as settled while the source still asserts the superseded position. The requirements look internally consistent precisely because the contradiction has been pushed into the code, where none of requiem's other checks can see it. This is the *undeclared prior constraint* from the Problem section, manufactured by the tool's own workflow rather than inherited from legacy code.
+
+Note the asymmetry with staleness: the commit-date heuristic below would catch a superseded statement only incidentally, because a status change happens to be a commit to that file. Classifying by the target's status catches it directly and can say *why* it is suspect, which a date comparison never can.
+
 ### Derived staleness, again
 
 A labelled site is suspect when the statement changed *after* the code did. Both dates are already in git: compare the statement file's last commit against each referencing file's last commit. Nothing is stored, nothing needs invalidating — the same read-time-comparison posture as `stale` and `embedding_status`. It is a heuristic (a file changes for unrelated reasons too), which is acceptable for the same reason the code-derived hash is: cheap for an agent to glance at and dismiss, versus the cost of a silently wrong assumption.
@@ -237,7 +257,7 @@ A labelled site is suspect when the statement changed *after* the code did. Both
 - `code_refs` on `get`/`list`/`check` — how many labelled source sites reference this statement, or *unknown* where labelling is not yet in use. Derived, held only in the disposable index, never written back to the statement file: the same posture as `stale` and `embedding_status`, and for the same reason — a fact about a statement is not an edit to it.
 - `requiem trace <namespace/id>` — the labelled source sites themselves, plus commits referencing this statement (the latter searched on demand, see above).
 - **`update` reports the blast radius automatically.** This is the payoff, and it should not require remembering a separate command: changing a statement's body prints the sites and commits that referenced it, flagging those that predate the change. Everything else here is plumbing for this one behaviour.
-- `audit` additionally surfaces dangling labels — references to deleted or renamed statements. Without this the labels rot into decoration.
+- `audit` additionally surfaces the two strong signals above — code referencing a non-active statement, and code referencing a rejection — alongside dangling labels pointing at ids that resolve to nothing. Dangling labels are cleanup; the other two are contradictions between what the project has decided and what it currently does.
 - Listing statements with no references, in a corpus where labelling is well covered, becomes possible for the first time. This is the closest thing the model has to an undefined symbol: something declared and never linked to anything. It is not expressible today at all.
 - `mv` reports code references it cannot rewrite. This is the sharpest cost of the proposal: an id is already "stable once other statements may reference it", and once ids also live in source and in *immutable commit history*, renaming gets materially more expensive. `mv` can rewrite source comments; it can never fix a trailer in a published commit.
 
@@ -246,5 +266,7 @@ A labelled site is suspect when the statement changed *after* the code did. Both
 Traceability tooling has a strong pull toward compliance bureaucracy — this is the established shape of requirements-traceability practice in regulated software (DO-178C, IEC 62304, ISO 26262), and it is not the shape this should take. The existing principle holds the line: **infrastructure and retrieval, not a judge.** `trace` surfaces candidates. It must never enforce coverage, block a commit for an unlabelled change, or report a traceability percentage. The moment it scores you, it has become a different product.
 
 That last prohibition constrains how the ambiguity-of-zero problem above is solved, and the constraint is worth stating because the two nearly collide. Making a zero interpretable requires knowing whether labelling is in use at all — but emitting "coverage: 43%" would be a traceability score in everything but name, and someone would start managing it. So adoption is expressed as a *state* that decides whether `code_refs` is meaningful, never as a number to move. The distinction is between calibrating a signal and grading the user.
+
+These stay reports, and the distinction is sharper now that some of them look like violations. Code referencing a superseded statement is frequently a legitimate in-progress state: the decision landed on Tuesday, the migration ships on Friday, and both facts are true in the meantime. Surfacing that is useful. Refusing a commit over it would make requiem something developers route around, and a tool that gets routed around reports on a corpus nobody maintains.
 
 Wholly optional and additive: a repository with zero labels behaves exactly as it does today.
