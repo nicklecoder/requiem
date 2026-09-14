@@ -3,6 +3,7 @@ id: labels-not-enforced
 namespace: traceability
 kind: rule
 modality: must_not
+abstract: true
 status: active
 provenance:
     type: dialogue

@@ -601,6 +601,16 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			if !adopted || counts[st.FullID()] > 0 {
 				continue
 			}
+			// requiem: model/retired-is-not-unimplemented
+			// A retired decision has no implementation because it was
+			// withdrawn, not because anyone skipped the work. Reporting it
+			// as unimplemented is true and useless, and it crowds out the
+			// findings that are neither — the same reason a superseded
+			// statement is not Searchable. --direct does not reach it: that
+			// flag suppresses an inference, and this is a fact.
+			if !st.Status.Searchable() {
+				continue
+			}
 			// Declared unimplementable by its author — see Statement.Abstract.
 			if st.Abstract && !filter.Direct {
 				continue
