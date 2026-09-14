@@ -3,6 +3,7 @@ id: agent-writes-labels
 namespace: traceability
 kind: design
 modality: must_not
+abstract: true
 status: active
 provenance:
     type: dialogue

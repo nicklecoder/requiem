@@ -538,6 +538,56 @@ func TestMove_NoRewriteRefsReportsInstead(t *testing.T) {
 	}
 }
 
+// A withdrawn decision has no implementation because it was withdrawn. Saying
+// so is true and useless, and it crowds out the findings that are neither.
+func TestUnreferenced_RetiredStatementsAreNotFindings(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"gone", "stale", "live", "labelled"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "a rule about " + id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Update("ns/gone", UpdateParams{Status: "superseded"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, err := s.Update("ns/stale", UpdateParams{Status: "deprecated"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// Labelling has to be in use, or --unreferenced answers nothing at all.
+	writeCode(t, s, "src/a.go", label("ns/labelled"))
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	for _, direct := range []bool{false, true} {
+		got, err := s.List(ListFilter{Unreferenced: true, Direct: direct})
+		if err != nil {
+			t.Fatalf("List(direct=%v): %v", direct, err)
+		}
+		var ids []string
+		for _, g := range got {
+			ids = append(ids, g.FullID)
+		}
+		for _, retired := range []string{"ns/gone", "ns/stale"} {
+			for _, id := range ids {
+				if id == retired {
+					t.Fatalf("direct=%v: a retired statement is not an unimplemented one: %+v", direct, ids)
+				}
+			}
+		}
+		// The live one still is: this must narrow the answer, not empty it.
+		var sawLive bool
+		for _, id := range ids {
+			if id == "ns/live" {
+				sawLive = true
+			}
+		}
+		if !sawLive {
+			t.Fatalf("direct=%v: an active unlabelled statement is still a finding, got %+v", direct, ids)
+		}
+	}
+}
+
 // The declaration is an assertion by the author, not something requiem can
 // verify — so the one case that CAN be checked is checked: an abstract
 // statement with code referencing it has been falsified by evidence.

@@ -13,4 +13,4 @@ relationships:
       note: only matters once labelling is in use
 ---
 
-A principle is implemented through the rules that refine it, not at any single code site, so --unreferenced reports every principle forever. Requiem could treat a statement as covered when the statements refining it are labelled, making the list mean 'genuinely unimplemented' rather than 'has no direct label'. Undecided: transitive coverage is a judgement, and inferring it risks reporting a principle as satisfied when only part of it is.
+A principle is implemented through the rules that refine it, not at any single code site, so --unreferenced would report every principle forever. A statement therefore counts as covered when the active statements refining it are labelled, making the list mean 'genuinely unimplemented' rather than 'has no direct label'. Transitive coverage is an inference and can be wrong — refiners may implement only part of what they refine — so it is reported as covered_via naming the refiners responsible, and --direct suppresses it to recover the raw answer. Partially labelled refiners do not cover.

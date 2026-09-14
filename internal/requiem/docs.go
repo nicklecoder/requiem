@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 11
+const docBlockVersion = 12
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -193,9 +193,15 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- Writing *about* a label — a test fixture, a tutorial snippet — would",
 	"  otherwise scan as a real one. Put `requiem:ignore` on the line, with an",
 	"  optional reason after it.",
-	"- `--abstract` on a statement no code can implement (a principle, a process",
-	"  decision) keeps it out of `--unreferenced`. `audit` flags it if code turns",
-	"  up referencing it anyway.",
+	"- `--abstract` on a statement no code can implement keeps it out of",
+	"  `--unreferenced`. Three kinds qualify: a principle, a decision about",
+	"  process rather than software, and a **prohibition** — \"requiem must not",
+	"  do X\" is implemented by absence, so there is no site to label. A",
+	"  prohibition enforced by a specific guard is the exception: label the",
+	"  guard. `audit` flags an abstract statement if code references it anyway.",
+	"- `list --unreferenced` reports only live decisions. A superseded or",
+	"  deprecated one has no implementation because it was withdrawn, which is",
+	"  true and useless.",
 	"",
 	"`requiem mv` rewrites labels to the new id and leaves those edits unstaged,",
 	"so review them with `git diff`. `--no-rewrite-refs` reports them instead.",
