@@ -84,7 +84,11 @@ func warnContradictingRefs(refs []requiem.ClassifiedRef) {
 	}
 	fmt.Fprintf(os.Stderr, "requiem: %d labelled code site(s) contradict a recorded decision:\n", len(refs))
 	for _, r := range refs {
-		fmt.Fprintf(os.Stderr, "requiem:   %s:%d references %s (%s)\n", r.File, r.Line, r.FullID, r.Class)
+		reason := string(r.Class)
+		if r.Class == requiem.RefAbstract {
+			reason = "declared abstract, but code implements it"
+		}
+		fmt.Fprintf(os.Stderr, "requiem:   %s:%d references %s (%s)\n", r.File, r.Line, r.FullID, reason)
 	}
 }
 

@@ -28,13 +28,18 @@ const (
 	// RefDangling is a label naming nothing that exists — the reference
 	// rotted, or the id was mistyped.
 	RefDangling RefClass = "dangling"
+	// RefAbstract is code referencing a statement whose author declared that
+	// no code can implement it. The declaration excludes the statement from
+	// --unreferenced forever, so a wrong one hides a real gap permanently —
+	// and this is the one case where evidence can contradict it.
+	RefAbstract RefClass = "abstract"
 )
 
 // Contradiction reports whether this class describes code disagreeing with a
 // decision, as opposed to code that is merely out of date with a label or
 // ahead of a decision. These are the classes audit raises on its own.
 func (c RefClass) Contradiction() bool {
-	return c == RefRetired || c == RefRejected
+	return c == RefRetired || c == RefRejected || c == RefAbstract
 }
 
 // ClassifiedRef is one labelled site with the verdict on what it points at.
@@ -64,8 +69,10 @@ func classifyRefs(ix *index.Index, refs []trace.Ref) ([]ClassifiedRef, error) {
 		return nil, err
 	}
 	status := make(map[string]model.Status, len(statements))
+	abstract := make(map[string]bool, len(statements))
 	for _, st := range statements {
 		status[st.FullID()] = st.Status
+		abstract[st.FullID()] = st.Abstract
 	}
 
 	rejections, err := ix.AllRejectionIDs()
@@ -83,10 +90,12 @@ func classifyRefs(ix *index.Index, refs []trace.Ref) ([]ClassifiedRef, error) {
 		switch st, ok := status[r.FullID]; {
 		case ok:
 			c.Status = st
-			switch st {
-			case model.StatusActive:
+			switch {
+			case abstract[r.FullID]:
+				c.Class = RefAbstract
+			case st == model.StatusActive:
 				c.Class = RefActive
-			case model.StatusProposed:
+			case st == model.StatusProposed:
 				c.Class = RefProposed
 			default:
 				c.Class = RefRetired

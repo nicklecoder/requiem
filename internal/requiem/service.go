@@ -190,7 +190,9 @@ type AddParams struct {
 	Modality  string
 	// Status defaults to active. Set it to create a proposal directly,
 	// rather than adding a decision and immediately demoting it.
-	Status     string
+	Status string
+	// Abstract declares that no code can implement this statement.
+	Abstract   bool
 	Body       string
 	Tags       []string
 	Provenance string // "dialogue" (default) or "code-derived"
@@ -232,6 +234,7 @@ func (s *Service) Add(p AddParams) (*model.Statement, error) {
 		Namespace:  p.Namespace,
 		Kind:       model.Kind(p.Kind),
 		Modality:   model.Modality(p.Modality),
+		Abstract:   p.Abstract,
 		Status:     model.Status(defaultStr(p.Status, string(model.StatusActive))),
 		Tags:       p.Tags,
 		Provenance: provenance,
@@ -355,6 +358,9 @@ type UpdateParams struct {
 	Body     string
 	Status   string
 	Modality string
+	// Abstract is tri-state: nil leaves it unchanged, so an update touching
+	// only the body cannot silently clear a declaration.
+	Abstract *bool
 }
 
 // Update edits an existing statement's body, status and/or modality.
@@ -377,6 +383,9 @@ func (s *Service) Update(fullID string, p UpdateParams) (*model.Statement, error
 		st.Modality = ""
 	default:
 		st.Modality = model.Modality(p.Modality)
+	}
+	if p.Abstract != nil {
+		st.Abstract = *p.Abstract
 	}
 	if err := s.Store.WriteStatement(st); err != nil {
 		return nil, err
@@ -590,6 +599,10 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 		}
 		if filter.Unreferenced {
 			if !adopted || counts[st.FullID()] > 0 {
+				continue
+			}
+			// Declared unimplementable by its author — see Statement.Abstract.
+			if st.Abstract && !filter.Direct {
 				continue
 			}
 			if !filter.Direct && len(coveredVia[st.FullID()]) > 0 {

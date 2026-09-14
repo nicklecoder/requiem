@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 6
+const docBlockVersion = 7
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -140,6 +140,12 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- A label in a `.md` or `.txt` file is a *mention*, not a reference: it does",
 	"  not count toward `code_refs`, but a changed decision still flags it.",
 	"- A mistyped id is reported by `audit` and by `reindex`, which exits nonzero.",
+	"- Writing *about* a label — a test fixture, a tutorial snippet — would",
+	"  otherwise scan as a real one. Put `requiem:ignore` on the line, with an",
+	"  optional reason after it.",
+	"- `--abstract` on a statement no code can implement (a principle, a process",
+	"  decision) keeps it out of `--unreferenced`. `audit` flags it if code turns",
+	"  up referencing it anyway.",
 	"",
 	"`requiem mv` rewrites labels to the new id and leaves those edits unstaged,",
 	"so review them with `git diff`. `--no-rewrite-refs` reports them instead.",

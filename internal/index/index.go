@@ -101,6 +101,8 @@ func migrate(tx *sql.Tx) error {
 		// code_refs.kind distinguishes a reference in code from a mention in
 		// documentation (see internal/trace.Kind).
 		{"code_refs", "kind", `ALTER TABLE code_refs ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'`},
+		// statements.abstract marks a statement no code can implement.
+		{"statements", "abstract", `ALTER TABLE statements ADD COLUMN abstract INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		has, err := hasColumn(tx, m.table, m.column)

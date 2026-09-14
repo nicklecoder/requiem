@@ -102,16 +102,54 @@ func TestScan_NoLabelsIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestParseLine_HandlesColonsInPathsAndMalformedInput(t *testing.T) {
-	// A path may contain a colon, so the id is located from the right.
-	r, ok := parseLine("odd:dir/file.go:42:" + Marker + " ns/id")
-	if !ok || r.File != "odd:dir/file.go" || r.Line != 42 || r.FullID != "ns/id" {
-		t.Fatalf("unexpected parse: %+v ok=%v", r, ok)
+func TestParseLine_HandlesColonsInPathsMultipleLabelsAndMalformedInput(t *testing.T) {
+	rec := func(file, line, content string) string {
+		return file + "\x00" + line + "\x00" + content
 	}
-	for _, bad := range []string{"", "no marker here", "file.go:notanumber:" + Marker + " ns/id", Marker + " ns/id"} {
-		if _, ok := parseLine(bad); ok {
-			t.Errorf("expected %q rejected", bad)
+	// NUL-separated fields, so a colon in a path is unambiguous.
+	got := parseLine(rec("odd:dir/file.go", "42", "// "+Marker+" ns/id"))
+	if len(got) != 1 || got[0].File != "odd:dir/file.go" || got[0].Line != 42 || got[0].FullID != "ns/id" {
+		t.Fatalf("unexpected parse: %+v", got)
+	}
+	// Several labels on one line are all returned.
+	got = parseLine(rec("a.go", "1", Marker+" ns/one and "+Marker+" ns/two"))
+	if len(got) != 2 || got[0].FullID != "ns/one" || got[1].FullID != "ns/two" {
+		t.Fatalf("expected both labels, got %+v", got)
+	}
+	for _, bad := range []string{"", "no separators", rec("a.go", "notanumber", Marker+" ns/id"), rec("", "1", Marker+" ns/id")} {
+		if got := parseLine(bad); len(got) != 0 {
+			t.Errorf("expected %q rejected, got %+v", bad, got)
 		}
+	}
+}
+
+// A literal marker in a fixture or code sample is textually identical to a
+// real label, so the scanner needs an explicit way to be told which is which.
+func TestScan_IgnoreMarkerSuppressesTheLine(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "real.go", label("ns/genuine"))
+	write(t, dir, "fixture_test.go",
+		"writeCode(t, \"a.go\", \"// "+Marker+" ns/fixture\")  // "+IgnoreMarker+" test fixture\n")
+	// A whole raw-string block is suppressed line by line.
+	write(t, dir, "sample.go",
+		"const sample = `\n// "+Marker+" ns/sample   "+IgnoreMarker+"\n`\n")
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	counts := CountByID(refs)
+	if counts["ns/genuine"] != 1 {
+		t.Fatalf("real labels must still be found: %+v", counts)
+	}
+	for _, suppressed := range []string{"ns/fixture", "ns/sample"} {
+		if _, ok := counts[suppressed]; ok {
+			t.Fatalf("%s should have been suppressed: %+v", suppressed, counts)
+		}
+	}
+	// The marker must not itself register as a label named "ignore".
+	if _, ok := counts["ignore"]; ok {
+		t.Fatalf("the ignore marker must not parse as a label: %+v", counts)
 	}
 }
 

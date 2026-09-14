@@ -19,6 +19,7 @@ var schema = []string{
 		namespace         TEXT NOT NULL,
 		kind              TEXT NOT NULL,
 		modality          TEXT,
+		abstract          INTEGER NOT NULL DEFAULT 0,
 		body              TEXT NOT NULL,
 		status            TEXT NOT NULL,
 		provenance_type   TEXT NOT NULL,

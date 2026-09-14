@@ -18,7 +18,7 @@ type rowScanner interface {
 
 // statementColumns is the column list every SELECT against the statements
 // table (aliased "s") uses, in the order scanStatement expects.
-const statementColumns = `s.namespace, s.id, s.kind, s.modality, s.body, s.status, s.provenance_type,
+const statementColumns = `s.namespace, s.id, s.kind, s.modality, s.abstract, s.body, s.status, s.provenance_type,
 	s.source_file, s.source_line_start, s.source_line_end, s.source_hash, s.created_at`
 
 func scanStatement(row rowScanner) (model.Statement, error) {
@@ -27,7 +27,7 @@ func scanStatement(row rowScanner) (model.Statement, error) {
 	var modality, sourceFile, sourceHash sql.NullString
 	var lineStart, lineEnd sql.NullInt64
 
-	if err := row.Scan(&st.Namespace, &st.ID, &kind, &modality, &st.Body, &status, &provenanceType,
+	if err := row.Scan(&st.Namespace, &st.ID, &kind, &modality, &st.Abstract, &st.Body, &status, &provenanceType,
 		&sourceFile, &lineStart, &lineEnd, &sourceHash, &createdAt); err != nil {
 		return model.Statement{}, err
 	}

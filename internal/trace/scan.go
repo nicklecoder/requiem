@@ -74,6 +74,23 @@ func KindOf(path string) Kind {
 	return KindCode
 }
 
+// requiem: traceability/marker-in-fixtures
+// IgnoreMarker opts a line out of scanning.
+//
+// A literal marker in a test fixture or a code sample is textually identical
+// to a real label — the scanner cannot tell "this is a label" from "this is
+// an example of a label", because they are the same string. This is the
+// escape hatch the linter world settled on (noqa, nolint, eslint-disable),
+// and anything after it on the line is free text recording why.
+//
+// Checked before the label pattern deliberately: "requiem:ignore" matches the
+// label pattern itself, since "ignore" is a valid slug, and would otherwise
+// be read as a reference to a statement named "ignore".
+const IgnoreMarker = "requiem:ignore"
+
+var labelRe = regexp.MustCompile(labelPattern)
+
+// requiem: traceability/no-code-index
 // Scan returns every label in the working tree, in git grep's order (path,
 // then line).
 //
@@ -89,10 +106,13 @@ func KindOf(path string) Kind {
 // documentation. The example has to stay concrete — a vague one is
 // unactionable, which is the lesson that produced it — so the scan gives
 // way instead.
-// requiem: traceability/no-code-index
 func Scan(root string) ([]Ref, error) {
+	// Whole lines, NUL-separated, rather than -o: the ignore marker can sit
+	// anywhere on the line, so the match alone is not enough context. NUL
+	// separators also make parsing exact where a colon in a filename would
+	// otherwise be ambiguous.
 	cmd := exec.Command("git", "grep",
-		"--untracked", "--no-color", "-I", "-n", "-o", "-E", labelPattern,
+		"--untracked", "--no-color", "-I", "-n", "-z", "-E", labelPattern,
 		"--", ".", ":(exclude).requiem",
 		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md")
 	cmd.Dir = root
@@ -114,42 +134,36 @@ func Scan(root string) ([]Ref, error) {
 	// long one; give the scanner room rather than failing the whole scan.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		ref, ok := parseLine(scanner.Text())
-		if !ok {
-			continue
-		}
-		refs = append(refs, ref)
+		refs = append(refs, parseLine(scanner.Text())...)
 	}
 	return refs, scanner.Err()
 }
 
-// parseLine reads one `path:line:requiem: id` record. A path containing a
-// colon would break a naive split, so the id is located from the right by its
-// marker and the line number taken from the field immediately before it.
-func parseLine(line string) (Ref, bool) {
-	i := strings.LastIndex(line, Marker)
-	if i < 0 {
-		return Ref{}, false
+// parseLine reads one NUL-separated `path\0line\0content` record, returning
+// every label on it. A line carrying IgnoreMarker yields none.
+func parseLine(line string) []Ref {
+	parts := strings.SplitN(line, "\x00", 3)
+	if len(parts) != 3 {
+		return nil
 	}
-	fullID := strings.TrimSpace(line[i+len(Marker):])
-	if fullID == "" {
-		return Ref{}, false
+	file, content := parts[0], parts[2]
+	if file == "" || strings.Contains(content, IgnoreMarker) {
+		return nil
+	}
+	lineNo, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil
 	}
 
-	rest := strings.TrimSuffix(line[:i], ":")
-	j := strings.LastIndex(rest, ":")
-	if j < 0 {
-		return Ref{}, false
+	var out []Ref
+	for _, m := range labelRe.FindAllString(content, -1) {
+		id := strings.TrimSpace(strings.TrimPrefix(m, Marker))
+		if id == "" {
+			continue
+		}
+		out = append(out, Ref{FullID: id, File: file, Line: lineNo, Kind: KindOf(file)})
 	}
-	lineNo, err := strconv.Atoi(rest[j+1:])
-	if err != nil {
-		return Ref{}, false
-	}
-	file := rest[:j]
-	if file == "" {
-		return Ref{}, false
-	}
-	return Ref{FullID: fullID, File: file, Line: lineNo, Kind: KindOf(file)}, true
+	return out
 }
 
 // CountByID groups refs by the statement they name, counting code only —

@@ -1,4 +1,4 @@
-<!-- >>> requiem v6 >>> -->
+<!-- >>> requiem v7 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -97,6 +97,12 @@ the statement holds, where a comment only asserts intent.
 - A label in a `.md` or `.txt` file is a *mention*, not a reference: it does
   not count toward `code_refs`, but a changed decision still flags it.
 - A mistyped id is reported by `audit` and by `reindex`, which exits nonzero.
+- Writing *about* a label — a test fixture, a tutorial snippet — would
+  otherwise scan as a real one. Put `requiem:ignore` on the line, with an
+  optional reason after it.
+- `--abstract` on a statement no code can implement (a principle, a process
+  decision) keeps it out of `--unreferenced`. `audit` flags it if code turns
+  up referencing it anyway.
 
 `requiem mv` rewrites labels to the new id and leaves those edits unstaged,
 so review them with `git diff`. `--no-rewrite-refs` reports them instead.

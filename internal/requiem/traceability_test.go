@@ -537,3 +537,85 @@ func TestMove_NoRewriteRefsReportsInstead(t *testing.T) {
 		t.Fatalf("declining must leave the file untouched: %q", b)
 	}
 }
+
+// The declaration is an assertion by the author, not something requiem can
+// verify — so the one case that CAN be checked is checked: an abstract
+// statement with code referencing it has been falsified by evidence.
+func TestAbstract_ExcludedFromUnreferencedButFalsifiedByCode(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "meta", Namespace: "principles", Kind: "rule",
+		Abstract: true, Body: "a rule about the corpus, not the software"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "real", Namespace: "ns", Kind: "rule", Body: "implementable"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("ns/real"))
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	got, err := s.List(ListFilter{Unreferenced: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, g := range got {
+		if g.FullID == "principles/meta" {
+			t.Fatalf("an abstract statement must not be listed as unreferenced: %+v", got)
+		}
+	}
+	// --direct shows the raw answer, inference and declarations set aside.
+	direct, err := s.List(ListFilter{Unreferenced: true, Direct: true})
+	if err != nil {
+		t.Fatalf("List --direct: %v", err)
+	}
+	var sawMeta bool
+	for _, g := range direct {
+		if g.FullID == "principles/meta" {
+			sawMeta = true
+		}
+	}
+	if !sawMeta {
+		t.Fatalf("--direct must ignore the declaration, got %+v", direct)
+	}
+
+	// Now contradict the declaration with evidence.
+	writeCode(t, s, "src/b.go", label("principles/meta"))
+	refs, err := s.AuditRefs()
+	if err != nil {
+		t.Fatalf("AuditRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].Class != RefAbstract || refs[0].FullID != "principles/meta" {
+		t.Fatalf("expected the falsified declaration reported, got %+v", refs)
+	}
+}
+
+// An update touching only the body must not silently clear a declaration.
+func TestAbstract_UpdateIsTriState(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "meta", Namespace: "ns", Kind: "rule", Abstract: true, Body: "one"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Update("ns/meta", UpdateParams{Body: "two"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := s.Get("ns/meta")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Abstract {
+		t.Fatal("a body-only update must leave the declaration intact")
+	}
+
+	f := false
+	if _, err := s.Update("ns/meta", UpdateParams{Abstract: &f}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err = s.Get("ns/meta")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Abstract {
+		t.Fatal("--no-abstract must withdraw the declaration")
+	}
+}
