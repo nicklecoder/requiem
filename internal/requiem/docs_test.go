@@ -158,6 +158,8 @@ func TestAgentDocBlock_IsWellFormedMarkdown(t *testing.T) {
 		"requiem:ignore",
 		"--abstract",
 		"Working process",
+		"requiem label",
+		"--search",
 		"rejection",
 		"requiem commit", // approval is the whole history model
 	} {

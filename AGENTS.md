@@ -1,4 +1,4 @@
-<!-- >>> requiem v9 >>> -->
+<!-- >>> requiem v10 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -20,9 +20,15 @@ decisions without loading the whole spec into context.
    both ends, and `reject` the alternatives that lost with `--see-instead`
    pointing at what replaced them. A rejection costs one command and saves
    the next agent from re-deriving it.
-5. While implementing, label the code. Labelling a **test** is stronger than
+5. While implementing, run `requiem label <namespace/id> <file>:<line>` on
+   the code that carries the decision. Labelling a **test** is stronger than
    labelling an implementation: a passing labelled test is evidence the
    statement holds, where a comment only asserts intent.
+
+   Labels are a shortcut, not an obligation. Nothing enforces them, and
+   partial coverage is still useful: a label is an exact answer, and
+   `requiem trace <id> --search` answers from the statement's own wording
+   wherever a label is missing. Label what you can; do not stall on it.
 6. Periodically run `requiem reindex --embed` then `requiem audit`, and
    record a verdict on every pair it surfaces. An adjudicated pair stops
    resurfacing and frees the slot for the next candidate.
@@ -122,6 +128,11 @@ stronger than labelling an implementation: a passing labelled test is evidence
 the statement holds, where a comment only asserts intent.
 
 - `requiem trace <namespace/id>` — the labelled sites referencing a statement.
+  Add `--search` to also find files sharing the statement's vocabulary,
+  which works before anything has been labelled at all.
+- `requiem label <namespace/id> <file>:<line>` — insert the marker, with the
+  right comment syntax for that file. Refuses an id that does not exist, so
+  a typo cannot become a dangling reference.
 - `requiem update` prints which sites a body change affects.
 - `requiem audit` flags code still referencing a superseded or rejected
   statement — the decision changed and the code was never brought along.
