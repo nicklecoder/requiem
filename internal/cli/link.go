@@ -11,7 +11,7 @@ func newLinkCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "link <from-namespace/id> <to-namespace/id>",
-		Short: "Add a typed relationship from one statement to another",
+		Short: "Add a typed relationship from one statement to another, or update its note",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := openService()

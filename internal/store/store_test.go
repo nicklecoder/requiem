@@ -316,6 +316,42 @@ func TestReadStatement_UnknownModalityReadsAsUnsetNotAnError(t *testing.T) {
 	}
 }
 
+// requiem: model/relationship-unique-per-pair
+func TestReadStatement_DuplicateRelationshipCollapsesNotAnError(t *testing.T) {
+	s := newTestStore(t)
+	st := sampleStatement()
+	st.Relationships = []model.Relationship{{To: "auth/other", Type: model.RelNotRelated, Note: "old"}}
+	if err := s.WriteStatement(st); err != nil {
+		t.Fatalf("WriteStatement: %v", err)
+	}
+
+	// Simulate the second entry an older link appended.
+	path := filepath.Join(s.StatementsDir(), "auth", "session", "no-plaintext-tokens.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	patched := strings.Replace(string(raw), "      note: old\n",
+		"      note: old\n    - to: auth/other\n      type: not_related\n      note: new\n", 1)
+	if patched == string(raw) {
+		t.Fatalf("fixture did not match serialized form:\n%s", raw)
+	}
+	if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := s.ReadStatement(st.FullID())
+	if err != nil {
+		t.Fatalf("a duplicated relationship must not fail the read: %v", err)
+	}
+	if len(got.Relationships) != 1 || got.Relationships[0].Note != "new" {
+		t.Fatalf("expected one relationship carrying the later note, got %+v", got.Relationships)
+	}
+	if err := s.WriteStatement(got); err != nil {
+		t.Fatalf("a collapsed read must write back cleanly: %v", err)
+	}
+}
+
 func TestWriteStatement_RejectsUnknownModality(t *testing.T) {
 	s := New(t.TempDir())
 	if err := s.EnsureLayout(); err != nil {

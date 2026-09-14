@@ -340,6 +340,46 @@ func TestLink_RequiresBothEndsToExist(t *testing.T) {
 	}
 }
 
+// requiem: model/relationship-unique-per-pair
+func TestLink_SamePairAgainUpdatesNoteAndStillReindexes(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Link("ns/a", "ns/b", model.RelNotRelated, "first verdict"); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	from, err := s.Link("ns/a", "ns/b", model.RelNotRelated, "revised verdict")
+	if err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+	if len(from.Relationships) != 1 || from.Relationships[0].Note != "revised verdict" {
+		t.Fatalf("expected the one entry's note updated, got %+v", from.Relationships)
+	}
+
+	from, err = s.Link("ns/a", "ns/b", model.RelNotRelated, "")
+	if err != nil {
+		t.Fatalf("relink without note: %v", err)
+	}
+	if len(from.Relationships) != 1 || from.Relationships[0].Note != "revised verdict" {
+		t.Fatalf("an empty note must keep the recorded one, got %+v", from.Relationships)
+	}
+
+	from, err = s.Link("ns/a", "ns/b", model.RelConflictsWith, "")
+	if err != nil {
+		t.Fatalf("link with a second type: %v", err)
+	}
+	if len(from.Relationships) != 2 {
+		t.Fatalf("a different type on the same pair is a separate relationship, got %+v", from.Relationships)
+	}
+
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex after relinking: %v", err)
+	}
+}
+
 func TestList_Filters(t *testing.T) {
 	s := newTestService(t)
 	seed := []AddParams{

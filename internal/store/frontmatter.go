@@ -64,6 +64,11 @@ func parseStatement(data []byte) (model.Statement, error) {
 	if !st.Modality.Known() {
 		st.Modality = ""
 	}
+	// Likewise a duplicated relationship — hand-edited in, or appended by a
+	// binary whose link never checked — collapses rather than failing the
+	// read, so the next write saves the file clean.
+	// requiem: model/relationship-unique-per-pair
+	st.Relationships = model.DedupeRelationships(st.Relationships)
 	return st, nil
 }
 
