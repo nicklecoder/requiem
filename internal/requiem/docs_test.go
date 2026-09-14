@@ -158,7 +158,7 @@ func TestAgentDocBlock_IsWellFormedMarkdown(t *testing.T) {
 		"requiem:ignore",
 		"--abstract",
 		"Working process",
-		"requiem label",
+		"in a comment above", // labelling is the agent's own edit, not a command
 		"--search",
 		"rejection",
 		"requiem commit", // approval is the whole history model

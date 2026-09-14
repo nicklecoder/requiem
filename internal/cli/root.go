@@ -41,17 +41,22 @@ WORKFLOW
     reject  the alternatives that lost, with --see-instead pointing here
 
   While implementing it
-    label <namespace/id> <file>:<line>
-      Ties code to the decision it implements. Labelling a test is stronger
-      than labelling an implementation: a passing labelled test is evidence
-      the statement holds, where a comment only asserts intent.
+    Label the code: write "requiem: <namespace/id>" in an ordinary comment
+    above the code that carries the decision, using that file's own comment
+    syntax. Requiem has no command for this — you are already editing the
+    file and know its language, where requiem could only guess from the
+    extension and would eventually guess wrong.
 
-      Labels are a shortcut, not a requirement. Nothing enforces them, and
-      nothing should: deciding whether a change "should" have been labelled is
-      a judgment about intent, and a rule approximating it would be wrong
-      often enough to get disabled. Partial coverage is useful — a labelled
-      site is an exact answer, and "trace --search" still answers from the
-      statement's own words where no label exists.
+    Labelling a test is stronger than labelling an implementation: a passing
+    labelled test is evidence the statement holds, where a comment only
+    asserts intent.
+
+    Labels are a shortcut, not a requirement. Nothing enforces them, and
+    nothing should: deciding whether a change "should" have been labelled is
+    a judgment about intent, and a rule approximating it would be wrong often
+    enough to get disabled. Partial coverage is useful — a labelled site is
+    an exact answer, and "trace --search" still answers from the statement's
+    own words where no label exists.
 
   Periodically
     reindex --embed   refresh vectors and rescan labels
@@ -96,7 +101,6 @@ CONVENTIONS
 		newAuditCmd(semantic),
 		newMvCmd(),
 		newTraceCmd(),
-		newLabelCmd(),
 		newPrecommitCmd(),
 		newManCmd(),
 		newReindexCmd(semantic),

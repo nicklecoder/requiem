@@ -121,14 +121,18 @@ generically produce.
 
 A marker comment names the statement a piece of code implements:
 
-```sh
-requiem label auth/session/no-plaintext-tokens internal/auth/store.go:41
-```
-
 ```go
 // requiem: auth/session/no-plaintext-tokens
 func storeToken(...) { ... }
 ```
+
+You write that comment yourself, in whatever syntax the file uses. Requiem
+deliberately has no command for inserting it: whoever is editing the file
+already knows its language, where requiem would be guessing from a file
+extension — and guessing wrong means writing invalid syntax into a file it
+does not own. The scanner takes the other side of that trade and is
+forgiving: spacing and capitalisation vary freely, so `Requiem : ns/id` is
+found too.
 
 Then `requiem trace <id>` reports where a decision lives, `update` prints
 which sites a body change affects, and `audit` flags code still referencing a
