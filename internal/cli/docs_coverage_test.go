@@ -19,6 +19,7 @@ import (
 var undocumentedCommands = map[string]string{
 	"init":             "run once by a human before an agent sees the project; the block exists because init ran, so naming it is circular",
 	"precommit-notice": "invoked by the pre-commit hook init installs, never by a person or an agent; it is plumbing, not a verb",
+	"man":              "generates documentation for humans to install; an agent reads the block itself and --help, not a troff page",
 }
 
 // The doc block is the only thing telling an agent this tool exists, and it
