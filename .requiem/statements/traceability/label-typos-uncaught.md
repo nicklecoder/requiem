@@ -3,7 +3,7 @@ id: label-typos-uncaught
 namespace: traceability
 kind: design
 modality: should
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-13T23:16:42.516598251Z
