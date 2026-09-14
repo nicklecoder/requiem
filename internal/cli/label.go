@@ -10,12 +10,15 @@ import (
 )
 
 func newLabelCmd() *cobra.Command {
+	var comment string
+
 	cmd := &cobra.Command{
 		Use:   "label <namespace/id> <file>:<line>",
 		Short: "Insert a marker comment linking code to a statement",
 		Long: "Writes `<comment> requiem: <namespace/id>` on its own line above the given\n" +
 			"line, matching its indentation and using the comment syntax for that file\n" +
-			"type.\n\n" +
+			"type — including block syntax where a language has no line comment, so a\n" +
+			"stylesheet or Markdown file is not given an invalid `//`.\n\n" +
 			"The id is checked against the corpus first, so a typo is refused here\n" +
 			"rather than surfacing later as a dangling reference. Running it twice on\n" +
 			"the same line is a no-op.\n\n" +
@@ -36,7 +39,7 @@ func newLabelCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := svc.Label(args[0], file, line)
+			res, err := svc.Label(args[0], file, line, comment)
 			if err != nil {
 				return err
 			}
@@ -44,5 +47,6 @@ func newLabelCmd() *cobra.Command {
 			return printJSON(res)
 		},
 	}
+	cmd.Flags().StringVar(&comment, "comment", "", "line-comment marker to use, for a file type requiem does not recognise")
 	return cmd
 }

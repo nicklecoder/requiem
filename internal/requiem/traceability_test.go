@@ -637,7 +637,7 @@ func TestLabel_InsertsCorrectSyntaxAndRefusesUnknownIDs(t *testing.T) {
 		{"send.py", "# requiem: net/retry-once"},
 		{"schema.sql", "-- requiem: net/retry-once"},
 	} {
-		if _, err := s.Label("net/retry-once", tc.file, 1); err != nil {
+		if _, err := s.Label("net/retry-once", tc.file, 1, ""); err != nil {
 			t.Fatalf("Label %s: %v", tc.file, err)
 		}
 		b, err := os.ReadFile(filepath.Join(s.Root, tc.file))
@@ -651,7 +651,7 @@ func TestLabel_InsertsCorrectSyntaxAndRefusesUnknownIDs(t *testing.T) {
 
 	// Indentation follows the line being labelled, so the comment reads as
 	// part of the block rather than dangling at column zero.
-	if _, err := s.Label("net/retry-once", "send.go", 5); err != nil {
+	if _, err := s.Label("net/retry-once", "send.go", 5, ""); err != nil {
 		t.Fatalf("Label indented: %v", err)
 	}
 	b, _ := os.ReadFile(filepath.Join(s.Root, "send.go"))
@@ -661,13 +661,13 @@ func TestLabel_InsertsCorrectSyntaxAndRefusesUnknownIDs(t *testing.T) {
 
 	// A typo must be refused here rather than becoming a dangling reference
 	// discovered weeks later.
-	if _, err := s.Label("net/retry-onse", "send.go", 1); err == nil {
+	if _, err := s.Label("net/retry-onse", "send.go", 1, ""); err == nil {
 		t.Fatal("expected an unknown id to be refused")
 	}
 
 	// Idempotent: running it twice does not stack duplicate comments.
 	before, _ := os.ReadFile(filepath.Join(s.Root, "send.py"))
-	if _, err := s.Label("net/retry-once", "send.py", 2); err != nil {
+	if _, err := s.Label("net/retry-once", "send.py", 2, ""); err != nil {
 		t.Fatalf("second Label: %v", err)
 	}
 	after, _ := os.ReadFile(filepath.Join(s.Root, "send.py"))
@@ -716,7 +716,7 @@ func TestTrace_SearchAnswersWithoutAnyLabels(t *testing.T) {
 
 	// Once labelled, that file is reported as a reference and not repeated as
 	// weaker evidence for the same statement.
-	if _, err := s.Label("auth/plaintext", "store.go", 1); err != nil {
+	if _, err := s.Label("auth/plaintext", "store.go", 1, ""); err != nil {
 		t.Fatalf("Label: %v", err)
 	}
 	got, err = s.Trace("auth/plaintext", true, 0)

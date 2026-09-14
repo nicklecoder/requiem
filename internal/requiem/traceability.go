@@ -261,7 +261,7 @@ type LabelResult struct {
 // writes a typo would replace that friction with a dangling reference found
 // weeks later. Rejections resolve too — code referencing a rejected idea is a
 // finding audit reports, not something to refuse at the point of writing.
-func (s *Service) Label(fullID, file string, line int) (*LabelResult, error) {
+func (s *Service) Label(fullID, file string, line int, comment string) (*LabelResult, error) {
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, err
@@ -290,7 +290,7 @@ func (s *Service) Label(fullID, file string, line int) (*LabelResult, error) {
 		return nil, fmt.Errorf("no statement or rejection %q: labelling an id that does not exist would leave a dangling reference", fullID)
 	}
 
-	written, err := trace.InsertLabel(s.Root, file, line, fullID)
+	written, err := trace.InsertLabel(s.Root, file, line, fullID, comment)
 	if err != nil {
 		return nil, err
 	}
