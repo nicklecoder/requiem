@@ -162,12 +162,12 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | command | input | output |
 |---|---|---|
 | `init` | — | path, hooks installed, docs updated |
-| `add` | `--id --namespace --kind --body [--modality] [--tags] [--provenance] [--source file:line]` | created statement |
-| `update` | `<id> --body [--status] [--modality]` | updated statement |
+| `add` | `--id --namespace --kind --body [--modality] [--status] [--abstract] [--tags] [--provenance] [--source file:line]` | created statement |
+| `update` | `<id> --body [--status] [--modality] [--abstract\|--no-abstract]` | updated statement |
 | `link` | `<from-id> <to-id> --type [--note]` | confirmation |
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
-| `list` | `[--namespace] [--kind] [--status] [--tag] [--needs-embedding] [--unreferenced]` | array of compact summaries |
+| `list` | `[--namespace] [--kind] [--status] [--tag] [--needs-embedding] [--unreferenced] [--direct]` | array of compact summaries |
 | `check` | `--namespace --text [--tags] [--semantic] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
 | `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
@@ -245,6 +245,14 @@ The obvious design is a boolean on `trace`, fetched when asked. Both halves of t
 
 It takes the same answer, too. Below a threshold of adoption, labelling is uninitialised rather than informative, and `code_refs` reads as *unknown* rather than `0`. Only once a corpus genuinely uses labels does a zero begin to carry signal. The value's asymmetry should be assumed throughout: a nonzero count is useful evidence, and a zero is weak evidence at best.
 
+### Telling a label from a description of one
+
+The marker matches anywhere in a tracked file, so writing *about* labels produces them. A test fixture, a tutorial snippet, a README explaining the convention — each is textually identical to a real label, because they are the same string. There is no way to distinguish them by content.
+
+Two mechanisms, applied where each fits. Documentation file types are classified as mentions rather than references (above), which handles prose without anyone having to do anything. For everything else — fixtures, samples, a code block in a `.go` file — a line carrying `requiem:ignore` is skipped, with any text after it recording why. That is the escape hatch linters converged on (`noqa`, `nolint`, `eslint-disable-line`), and it is checked before the label pattern, since `requiem:ignore` matches that pattern itself and would otherwise read as a reference to a statement named "ignore".
+
+Requiring a label to begin its comment line, Go-directive style, was considered and rejected. It is incomplete — a multi-line raw string has its lines starting with `//` anyway — and it silently drops a trailing label, which is a written-but-never-seen failure with nothing to report it.
+
 ### Classifying a reference
 
 A scanned id is a bare string. Resolving it says what the reference *means*, and the resolution has to consult both statements and rejections — not statements alone.
@@ -284,6 +292,7 @@ A labelled site is suspect when the statement changed *after* the code did. Both
 - **`update` reports the blast radius automatically.** This is the payoff, and it should not require remembering a separate command: changing a statement's body prints the sites and commits that referenced it, flagging those that predate the change. Everything else here is plumbing for this one behaviour.
 - `audit` additionally surfaces the two strong signals above: code referencing a non-active statement, and code referencing a rejection. Both describe the same hazard — a decision was made and the code was never brought along.
 - Dangling labels are deliberately *not* raised by `audit`. They were specified as cleanup alongside the contradictions, and implementing the scanner showed why that is wrong: the marker matches anywhere in a tracked file, so prose explaining the label format reads as a label. Documentation describing traceability generates dangling references by existing, and an audit that reports them trains its reader to skim past its own output. They remain visible through `trace`, where someone is asking about one specific id and can judge for themselves.
+- `--abstract` declares that no code can implement a statement — a principle, a process decision, a rule about the corpus itself — excluding it from `--unreferenced`, which would otherwise list it forever. It is an assertion by the author, since requiem cannot tell "nothing implements this" from "nothing can", and a wrong one hides a real gap permanently. So the one case that admits evidence is checked: `audit` reports an abstract statement that turns out to have code referencing it.
 - `list --unreferenced` returns statements no labelled site points at — the closest thing this model has to an undefined symbol: something declared and never linked to anything. It returns nothing where labelling is not in use, rather than reporting an entire unlabelled corpus as unimplemented, which is the ambiguity of zero at corpus scale.
 - `mv` reports code references it cannot rewrite. This is the sharpest cost of the proposal: an id is already "stable once other statements may reference it", and once ids also live in source and in *immutable commit history*, renaming gets materially more expensive. `mv` can rewrite source comments; it can never fix a trailer in a published commit.
 
