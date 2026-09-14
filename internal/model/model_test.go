@@ -147,6 +147,45 @@ func TestStatementValidate_RelationshipTypes(t *testing.T) {
 	}
 }
 
+// requiem: model/relationship-unique-per-pair
+func TestStatementValidate_RejectsDuplicateRelationship(t *testing.T) {
+	s := validStatement()
+	s.Relationships = []Relationship{
+		{To: "auth/session/other", Type: RelRefines},
+		{To: "auth/session/other", Type: RelConflictsWith},
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("same pair with different types must be valid, got: %v", err)
+	}
+	s.Relationships = append(s.Relationships, Relationship{To: "auth/session/other", Type: RelRefines, Note: "again"})
+	if err := s.Validate(); err == nil {
+		t.Fatal("expected error for a second refines relationship to the same target")
+	}
+}
+
+// requiem: model/relationship-unique-per-pair
+func TestDedupeRelationships_LastNoteWinsAtFirstPosition(t *testing.T) {
+	got := DedupeRelationships([]Relationship{
+		{To: "ns/a", Type: RelNotRelated, Note: "first"},
+		{To: "ns/b", Type: RelRefines},
+		{To: "ns/a", Type: RelNotRelated, Note: "second"},
+		{To: "ns/a", Type: RelDuplicates},
+	})
+	want := []Relationship{
+		{To: "ns/a", Type: RelNotRelated, Note: "second"},
+		{To: "ns/b", Type: RelRefines},
+		{To: "ns/a", Type: RelDuplicates},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("entry %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func validRejection() Rejection {
 	return Rejection{
 		ID:         "sliding-session-expiration",

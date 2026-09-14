@@ -440,7 +440,23 @@ func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note
 	if _, err := s.Store.ReadStatement(toID); err != nil {
 		return nil, fmt.Errorf("to %s: %w", toID, err)
 	}
-	from.Relationships = append(from.Relationships, model.Relationship{To: toID, Type: relType, Note: note})
+	// Linking a pair again updates the existing entry instead of appending a
+	// second one, so re-recording an audit verdict can revise its note. An
+	// empty note leaves the recorded one alone rather than erasing it.
+	// requiem: model/relationship-unique-per-pair
+	updated := false
+	for i := range from.Relationships {
+		if from.Relationships[i].To == toID && from.Relationships[i].Type == relType {
+			if note != "" {
+				from.Relationships[i].Note = note
+			}
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		from.Relationships = append(from.Relationships, model.Relationship{To: toID, Type: relType, Note: note})
+	}
 	if err := s.Store.WriteStatement(from); err != nil {
 		return nil, err
 	}
@@ -926,6 +942,9 @@ func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveR
 		if !changed {
 			continue
 		}
+		// A referrer already pointing at the destination (a dangling link
+		// written before the move) now holds two entries for it.
+		refSt.Relationships = model.DedupeRelationships(refSt.Relationships)
 		if err := s.Store.WriteStatement(refSt); err != nil {
 			return nil, err
 		}

@@ -191,6 +191,36 @@ type Relationship struct {
 	Note string           `yaml:"note,omitempty" json:"note,omitempty"`
 }
 
+type relationshipKey struct {
+	to  string
+	typ RelationshipType
+}
+
+// DedupeRelationships collapses entries sharing a target and type into one,
+// kept at the position of the first and carrying the last one's note — the
+// later entry is the more recent verdict. The index keys relationships by
+// (from, to, type), so a file holding two such entries would otherwise fail
+// the whole reindex rather than just misreport one note.
+//
+// requiem: model/relationship-unique-per-pair
+func DedupeRelationships(rels []Relationship) []Relationship {
+	if len(rels) < 2 {
+		return rels
+	}
+	pos := make(map[relationshipKey]int, len(rels))
+	out := make([]Relationship, 0, len(rels))
+	for _, rel := range rels {
+		key := relationshipKey{rel.To, rel.Type}
+		if i, ok := pos[key]; ok {
+			out[i] = rel
+			continue
+		}
+		pos[key] = len(out)
+		out = append(out, rel)
+	}
+	return out
+}
+
 // InboundRef is one statement pointing at another — the reverse of a
 // Relationship, carrying the same type and note so a reader sees why the
 // edge exists without a second lookup.
@@ -337,6 +367,8 @@ func (s Statement) Validate() error {
 			return fmt.Errorf("provenance.hash is required for code-derived statements")
 		}
 	}
+	// requiem: model/relationship-unique-per-pair
+	seen := make(map[relationshipKey]bool, len(s.Relationships))
 	for i, rel := range s.Relationships {
 		if !rel.Type.valid() {
 			return fmt.Errorf("relationship[%d]: invalid type %q", i, rel.Type)
@@ -344,6 +376,11 @@ func (s Statement) Validate() error {
 		if rel.To == "" {
 			return fmt.Errorf("relationship[%d]: to must not be empty", i)
 		}
+		key := relationshipKey{rel.To, rel.Type}
+		if seen[key] {
+			return fmt.Errorf("relationship[%d]: duplicate %s relationship to %s", i, rel.Type, rel.To)
+		}
+		seen[key] = true
 	}
 	return nil
 }
