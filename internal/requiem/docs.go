@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 5
+const docBlockVersion = 6
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -134,9 +134,27 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- `requiem audit` flags code still referencing a superseded or rejected",
 	"  statement — the decision changed and the code was never brought along.",
 	"- `get`/`list` show `code_refs`, a count, absent where labelling is unused.",
+	"- `requiem list --unreferenced` finds statements no code implements. A",
+	"  statement counts as covered when the statements refining it are labelled;",
+	"  `--direct` suppresses that inference.",
+	"- A label in a `.md` or `.txt` file is a *mention*, not a reference: it does",
+	"  not count toward `code_refs`, but a changed decision still flags it.",
+	"- A mistyped id is reported by `audit` and by `reindex`, which exits nonzero.",
 	"",
-	"Renaming a statement does not fix its labels; `requiem mv` reports the ones",
-	"left behind so you can update them.",
+	"`requiem mv` rewrites labels to the new id and leaves those edits unstaged,",
+	"so review them with `git diff`. `--no-rewrite-refs` reports them instead.",
+	"",
+	"A code commit can also name the decision it implements, which records *when*",
+	"something was built rather than where it lives now:",
+	"",
+	"```",
+	"Enforce single-model embedding",
+	"",
+	"Requiem-Id: embedding/model-pinning",
+	"```",
+	"",
+	"`requiem trace` reports those commits. Requiem only reads them — you write",
+	"them on your own commits.",
 	"",
 	"Full reference: `requiem --help`.",
 }, "\n") + "\n" + docMarkerEnd + "\n"

@@ -83,6 +83,11 @@ type InitResult struct {
 // CLI — install-time reindex hooks target exactly these.
 var hookedEvents = []string{"post-checkout", "post-merge", "post-rewrite"}
 
+// precommitCommand is deliberately not silenced, unlike the reindex hooks: a
+// warning nobody sees is not a warning. It still ends in `|| true`, so a
+// missing or failing requiem can never block a commit.
+const precommitCommand = "requiem precommit-notice || true"
+
 // hookCommand is deliberately a plain `requiem reindex`, not a targeted
 // `--files` scan: Reindex already skips any file whose mtime/size didn't
 // change, so a full scan is cheap, and it avoids needing to derive a
@@ -158,6 +163,9 @@ func (s *Service) Init() (*InitResult, error) {
 			return nil, fmt.Errorf("install %s hook: %w", name, err)
 		}
 	}
+	if err := s.Git.InstallHook("pre-commit", precommitCommand); err != nil {
+		return nil, fmt.Errorf("install pre-commit hook: %w", err)
+	}
 
 	// AGENTS.md/CLAUDE.md live at the project root, not under .requiem/ —
 	// they're the project's own files, so unlike everything else Init
@@ -168,7 +176,7 @@ func (s *Service) Init() (*InitResult, error) {
 		return nil, fmt.Errorf("write agent docs: %w", err)
 	}
 
-	return &InitResult{Path: s.Store.Root, HooksInstalled: hookedEvents, DocsUpdated: docsUpdated}, nil
+	return &InitResult{Path: s.Store.Root, HooksInstalled: append(append([]string{}, hookedEvents...), "pre-commit"), DocsUpdated: docsUpdated}, nil
 }
 
 // AddParams are the inputs to Add.
@@ -817,8 +825,11 @@ type MoveResult struct {
 	To                string   `json:"to"`
 	UpdatedReferences []string `json:"updated_references"`
 	StubLeft          bool     `json:"stub_left"`
-	// OrphanedCodeRefs are labelled source sites still naming the old id.
-	// Reported, not rewritten — see Move.
+	// RewrittenRefs are labelled sites updated to the new id. Left unstaged,
+	// so they show in `git diff` before anything is committed.
+	RewrittenRefs []ClassifiedRef `json:"rewritten_refs,omitempty"`
+	// OrphanedCodeRefs are sites still naming the old id, populated only
+	// when rewriting was declined with --no-rewrite-refs.
 	OrphanedCodeRefs []ClassifiedRef `json:"orphaned_code_refs,omitempty"`
 }
 
@@ -828,7 +839,7 @@ type MoveResult struct {
 // so every referrer found via the index's to_id lookup needs its own file
 // rewritten). If leaveLink is true, a deprecated stub with a moved_to
 // relationship is left at the old location instead of deleting it outright.
-func (s *Service) Move(fromID, toID string, leaveLink bool) (*MoveResult, error) {
+func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveResult, error) {
 	if fromID == toID {
 		return nil, fmt.Errorf("from and to must differ")
 	}
@@ -946,17 +957,36 @@ func (s *Service) Move(fromID, toID string, leaveLink bool) (*MoveResult, error)
 		return nil, err
 	}
 
-	// Report labelled code pointing at the old id rather than rewriting it.
-	// Rewriting would mean requiem editing source files outside .requiem,
-	// which is a materially larger claim on a project than anything else it
-	// does, and is recorded as an open question rather than decided here.
-	orphaned, err := s.refsTo(ix, fromID)
+	// Labels naming the old id are rewritten by default. Choosing rewritable
+	// carriers over commit trailers was justified precisely because they can
+	// be fixed; reporting without fixing would leave mv worse than a careful
+	// sed, and leave every rename breaking every label.
+	//
+	// Edits land unstaged — requiem stages only its own files — so they
+	// appear in `git diff` and cannot reach history unseen.
+	stale, err := s.refsTo(ix, fromID)
 	if err != nil {
 		return nil, err
 	}
-
-	return &MoveResult{From: fromID, To: toID, UpdatedReferences: updated,
-		StubLeft: leaveLink, OrphanedCodeRefs: orphaned}, nil
+	result := &MoveResult{From: fromID, To: toID, UpdatedReferences: updated, StubLeft: leaveLink}
+	if rewriteRefs && len(stale) > 0 {
+		refs := make([]trace.Ref, len(stale))
+		for i, c := range stale {
+			refs[i] = trace.Ref{FullID: c.FullID, File: c.File, Line: c.Line, Kind: c.Kind}
+		}
+		changed, err := trace.Rewrite(s.Root, refs, fromID, toID)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range changed {
+			result.RewrittenRefs = append(result.RewrittenRefs, ClassifiedRef{
+				FullID: toID, File: c.File, Line: c.Line, Kind: c.Kind, Class: RefActive,
+			})
+		}
+	} else {
+		result.OrphanedCodeRefs = stale
+	}
+	return result, nil
 }
 
 // Reindex incrementally syncs the index with the statement files on disk —
@@ -1033,6 +1063,12 @@ type CommitResult struct {
 // to .requiem/ so it can never sweep in unrelated staged changes elsewhere
 // in the working tree.
 func (s *Service) Commit(message string) (*CommitResult, error) {
+	// Marks this commit as requiem's own, so the pre-commit notice stays
+	// quiet: this path is already a deliberate approval, and warning about
+	// it would train the reader to ignore the warning that matters.
+	s.Git.Env = append(s.Git.Env, "REQUIEM_COMMIT=1")
+	defer func() { s.Git.Env = s.Git.Env[:len(s.Git.Env)-1] }()
+
 	files, err := s.Git.StagedFiles(requiemDir)
 	if err != nil {
 		return nil, err
@@ -1101,4 +1137,28 @@ func (s *Service) Discard(fullID string) (*DiscardResult, error) {
 		return nil, err
 	}
 	return &DiscardResult{Files: files}, nil
+}
+
+// PendingChange is one staged statement or rejection awaiting approval.
+type PendingChange struct {
+	FullID string `json:"full_id"`
+	Change string `json:"change"`
+}
+
+// PendingApproval lists staged changes under .requiem/statements.
+//
+// Requiem auto-stages every mutation and SPEC holds that commit is approval,
+// so a plain `git commit -a` approves whatever happens to be pending. The
+// path-scoping on `requiem commit` stops it sweeping in unrelated code; this
+// is the reverse direction, which nothing protected.
+func (s *Service) PendingApproval() ([]PendingChange, error) {
+	files, err := s.Git.StagedFiles(requiemDir + "/statements")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PendingChange, 0, len(files))
+	for _, f := range files {
+		out = append(out, PendingChange{FullID: labelForGitPath(f), Change: "~"})
+	}
+	return out, nil
 }

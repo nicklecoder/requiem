@@ -15,7 +15,8 @@ import (
 // leaving one out becomes a decision someone wrote down, instead of an
 // oversight nobody noticed.
 var undocumentedCommands = map[string]string{
-	"init": "run once by a human before an agent sees the project; the block exists because init ran, so naming it is circular",
+	"init":             "run once by a human before an agent sees the project; the block exists because init ran, so naming it is circular",
+	"precommit-notice": "invoked by the pre-commit hook init installs, never by a person or an agent; it is plumbing, not a verb",
 }
 
 // The doc block is the only thing telling an agent this tool exists, and it

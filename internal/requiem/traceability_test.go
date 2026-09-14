@@ -3,6 +3,7 @@ package requiem
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nicklecoder/requiem/internal/model"
@@ -191,34 +192,6 @@ func TestCodeRefs_LazyReindexDoesNotScan(t *testing.T) {
 	}
 	if got.CodeRefs == nil || *got.CodeRefs != 1 {
 		t.Fatalf("expected the explicit scan to record the label, got %v", got.CodeRefs)
-	}
-}
-
-// mv reports what it cannot fix rather than editing source files.
-func TestMove_ReportsOrphanedCodeRefs(t *testing.T) {
-	s := newTestService(t)
-	if _, err := s.Add(AddParams{ID: "rule", Namespace: "old", Kind: "rule", Body: "a rule"}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	writeCode(t, s, "src/a.go", label("old/rule"))
-	if _, err := s.Commit("setup"); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-
-	res, err := s.Move("old/rule", "new/rule", false)
-	if err != nil {
-		t.Fatalf("Move: %v", err)
-	}
-	if len(res.OrphanedCodeRefs) != 1 || res.OrphanedCodeRefs[0].File != "src/a.go" {
-		t.Fatalf("expected the stale label reported, got %+v", res.OrphanedCodeRefs)
-	}
-	// Reported, not rewritten: the source file is untouched.
-	body, err := os.ReadFile(filepath.Join(s.Root, "src/a.go"))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(body) != label("old/rule") {
-		t.Fatalf("mv must not edit source files, got %q", body)
 	}
 }
 
@@ -481,3 +454,86 @@ func TestUnreferenced_PartiallyLabelledRefinersDoNotCover(t *testing.T) {
 // label, so the scanner would find these fixtures when run against requiem's
 // own repository — including the deliberately broken ones below.
 func label(id string) string { return "// " + "requiem: " + id + "\n" }
+
+// Choosing rewritable carriers over commit trailers was justified precisely
+// because they can be fixed. mv doing the fixing is what makes that true.
+func TestMove_RewritesLabelsAndLeavesThemUnstaged(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rule", Namespace: "old", Kind: "rule", Body: "a rule"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", "package a\n"+label("old/rule")+"func f() {}\n")
+	writeCode(t, s, "src/b.go", label("old/rule"))
+	writeCode(t, s, "docs/d.md", "See "+label("old/rule"))
+	// A different statement's label must be untouched.
+	writeCode(t, s, "src/other.go", label("old/unrelated"))
+	if _, err := s.Commit("setup"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	res, err := s.Move("old/rule", "new/rule", false, true)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if len(res.RewrittenRefs) != 3 {
+		t.Fatalf("expected all three sites rewritten, got %+v", res.RewrittenRefs)
+	}
+	if len(res.OrphanedCodeRefs) != 0 {
+		t.Fatalf("nothing should be left orphaned, got %+v", res.OrphanedCodeRefs)
+	}
+
+	for _, f := range []string{"src/a.go", "src/b.go", "docs/d.md"} {
+		b, err := os.ReadFile(filepath.Join(s.Root, f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if !strings.Contains(string(b), "new/rule") || strings.Contains(string(b), "old/rule") {
+			t.Fatalf("%s not rewritten: %q", f, b)
+		}
+	}
+	// Surrounding content survives — this is a one-line swap, not a rewrite
+	// of the file.
+	a, _ := os.ReadFile(filepath.Join(s.Root, "src/a.go"))
+	if !strings.Contains(string(a), "package a\n") || !strings.Contains(string(a), "func f() {}") {
+		t.Fatalf("surrounding code was damaged: %q", a)
+	}
+	other, _ := os.ReadFile(filepath.Join(s.Root, "src/other.go"))
+	if !strings.Contains(string(other), "old/unrelated") {
+		t.Fatalf("an unrelated label was rewritten: %q", other)
+	}
+
+	// Source edits must be unstaged: requiem stages only its own files, so a
+	// rewrite cannot reach history without someone seeing it in git diff.
+	staged, err := s.Git.StagedFiles()
+	if err != nil {
+		t.Fatalf("StagedPaths: %v", err)
+	}
+	for _, p := range staged {
+		if strings.HasPrefix(p, "src/") || strings.HasPrefix(p, "docs/") {
+			t.Fatalf("source edits must not be staged, found %q", p)
+		}
+	}
+}
+
+func TestMove_NoRewriteRefsReportsInstead(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rule", Namespace: "old", Kind: "rule", Body: "a rule"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("old/rule"))
+	if _, err := s.Commit("setup"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	res, err := s.Move("old/rule", "new/rule", false, false)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if len(res.RewrittenRefs) != 0 || len(res.OrphanedCodeRefs) != 1 {
+		t.Fatalf("expected report-only, got %+v / %+v", res.RewrittenRefs, res.OrphanedCodeRefs)
+	}
+	b, _ := os.ReadFile(filepath.Join(s.Root, "src/a.go"))
+	if !strings.Contains(string(b), "old/rule") {
+		t.Fatalf("declining must leave the file untouched: %q", b)
+	}
+}

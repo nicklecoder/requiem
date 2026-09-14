@@ -63,11 +63,11 @@ func TestInit_InstallsReindexHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
-	if len(res.HooksInstalled) != 3 {
-		t.Fatalf("expected 3 hooks reported, got %v", res.HooksInstalled)
+	if len(res.HooksInstalled) != 4 {
+		t.Fatalf("expected 4 hooks reported, got %v", res.HooksInstalled)
 	}
 
-	for _, name := range []string{"post-checkout", "post-merge", "post-rewrite"} {
+	for _, name := range []string{"post-checkout", "post-merge", "post-rewrite", "pre-commit"} {
 		path := filepath.Join(s.Root, ".git", "hooks", name)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -80,8 +80,14 @@ func TestInit_InstallsReindexHooks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s hook: %v", name, err)
 		}
-		if !strings.Contains(string(content), "requiem reindex") {
-			t.Fatalf("expected %s hook to invoke requiem reindex, got:\n%s", name, content)
+		// The reindex hooks keep the index warm; pre-commit carries the
+		// approval notice instead, and unlike the others is not silenced.
+		want := "requiem reindex"
+		if name == "pre-commit" {
+			want = "requiem precommit-notice"
+		}
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("expected %s hook to invoke %q, got:\n%s", name, want, content)
 		}
 	}
 }
@@ -827,7 +833,7 @@ func TestMove_RewritesInboundReferencesAndStagesChanges(t *testing.T) {
 		t.Fatalf("commit setup: %v", err)
 	}
 
-	res, err := s.Move("auth/session/target", "auth/shared/target", false)
+	res, err := s.Move("auth/session/target", "auth/shared/target", false, false)
 	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
@@ -884,7 +890,7 @@ func TestMove_NeverCommittedOldLocationStagesCleanly(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if _, err := s.Move("ns/target", "ns2/target", false); err != nil {
+	if _, err := s.Move("ns/target", "ns2/target", false, false); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
 
@@ -903,7 +909,7 @@ func TestMove_LeaveLinkWritesStub(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	res, err := s.Move("auth/session/target", "auth/shared/target", true)
+	res, err := s.Move("auth/session/target", "auth/shared/target", true, false)
 	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
@@ -931,7 +937,7 @@ func TestMove_RefusesExistingTarget(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "b"}); err != nil {
 		t.Fatalf("Add b: %v", err)
 	}
-	if _, err := s.Move("ns/a", "ns/b", false); err == nil {
+	if _, err := s.Move("ns/a", "ns/b", false, false); err == nil {
 		t.Fatal("expected error moving onto an existing statement")
 	}
 }
@@ -948,7 +954,7 @@ func TestMove_CarriesEmbeddingToNewID(t *testing.T) {
 		t.Fatalf("commit setup: %v", err)
 	}
 
-	if _, err := s.Move("auth/session/target", "auth/shared/target", false); err != nil {
+	if _, err := s.Move("auth/session/target", "auth/shared/target", false, false); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
 
@@ -1137,5 +1143,67 @@ func TestInit_InstallsEmbeddingHooksOnlyWhenOptedIn(t *testing.T) {
 	}
 	if got := read(t, s); !strings.Contains(got, "reindex --embed") {
 		t.Fatalf("expected the opted-in hook to embed:\n%s", got)
+	}
+}
+
+// Requiem auto-stages every mutation and commit is approval, so a plain
+// git commit can approve statements nobody reviewed. The notice names them.
+func TestPendingApproval_ListsStagedStatements(t *testing.T) {
+	s := newTestService(t)
+	pending, err := s.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a clean corpus has nothing pending, got %+v", pending)
+	}
+
+	if _, err := s.Add(AddParams{ID: "a", Namespace: "ns", Kind: "rule", Body: "one"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "two"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	pending, err = s.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected both staged statements, got %+v", pending)
+	}
+
+	// Committing clears it — that commit was the approval.
+	if _, err := s.Commit("approve them"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	pending, err = s.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("nothing should be pending after commit, got %+v", pending)
+	}
+}
+
+// The hook must never stand in the way of a commit: a blocking hook is one
+// --no-verify away from useless, and would make requiem a gate on every
+// commit in the repository.
+func TestInit_InstallsNonBlockingPrecommitHook(t *testing.T) {
+	s := newTestService(t)
+	b, err := os.ReadFile(filepath.Join(s.Root, ".git", "hooks", "pre-commit"))
+	if err != nil {
+		t.Fatalf("read pre-commit hook: %v", err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "precommit-notice") {
+		t.Fatalf("expected the notice installed:\n%s", got)
+	}
+	if !strings.Contains(got, "|| true") {
+		t.Fatalf("the hook must never fail a commit:\n%s", got)
+	}
+	// Unlike the reindex hooks, this one must not be silenced — a warning
+	// nobody sees is not a warning.
+	if strings.Contains(got, "2>&1") {
+		t.Fatalf("the notice must reach stderr, not be silenced:\n%s", got)
 	}
 }

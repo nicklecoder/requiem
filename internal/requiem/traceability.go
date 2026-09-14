@@ -110,6 +110,10 @@ type TraceResult struct {
 	CodeRefs    int             `json:"code_refs"`
 	DocMentions int             `json:"doc_mentions"`
 	Refs        []ClassifiedRef `json:"refs"`
+	// Commits carry Requiem-Id trailers naming this statement. Labels answer
+	// where a decision lives now; trailers answer when it was implemented and
+	// by what change, which labels structurally cannot.
+	Commits []trace.Commit `json:"commits,omitempty"`
 }
 
 // Trace reports the labelled source sites referencing one statement.
@@ -150,6 +154,12 @@ func (s *Service) Trace(fullID string) (*TraceResult, error) {
 		}
 		out.Refs = append(out.Refs, c)
 	}
+	commits, err := trace.Commits(s.Root, fullID)
+	if err != nil {
+		return nil, err
+	}
+	out.Commits = commits
+
 	if out.Class == "" {
 		// No labels point here, so the class describes the statement itself
 		// rather than any reference to it.

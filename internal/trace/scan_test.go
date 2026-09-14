@@ -185,3 +185,70 @@ func TestKindOf_IsCaseInsensitiveAndDefaultsToCode(t *testing.T) {
 // label builds a marker comment at runtime — see the note in
 // internal/requiem/traceability_test.go for why a literal will not do.
 func label(id string) string { return "// " + "requiem: " + id + "\n" }
+
+// Labels answer where a decision lives now; trailers answer when it was
+// implemented and by what change.
+func TestCommits_FindsTrailersAndIgnoresOtherCommits(t *testing.T) {
+	dir := newRepo(t)
+	commit := func(msg, file, body string) {
+		t.Helper()
+		write(t, dir, file, body)
+		for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", msg}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+	}
+	commit("Unrelated change", "a.go", "package a\n")
+	commit("Enforce single-model embedding\n\n"+TrailerKey+" embedding/model-pinning", "b.go", "package b\n")
+	commit("Follow-up fix\n\n"+TrailerKey+" embedding/model-pinning", "c.go", "package c\n")
+	commit("Different decision\n\n"+TrailerKey+" retrieval/rrf-fusion", "d.go", "package d\n")
+
+	got, err := Commits(dir, "embedding/model-pinning")
+	if err != nil {
+		t.Fatalf("Commits: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected the two commits naming this id, got %+v", got)
+	}
+	if got[0].Subject != "Follow-up fix" {
+		t.Fatalf("expected newest first, got %+v", got)
+	}
+	if got[0].SHA == "" || got[0].Date == "" {
+		t.Fatalf("expected sha and date populated, got %+v", got[0])
+	}
+
+	none, err := Commits(dir, "ns/never-referenced")
+	if err != nil {
+		t.Fatalf("Commits: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected no commits, got %+v", none)
+	}
+}
+
+// A trailer naming an id that was later renamed stays as written: a commit
+// message is a historical document and should record what was true then.
+func TestCommits_TrailerIsNotRewrittenByRename(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "a.go", "package a\n")
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-q", "-m", "Implement it\n\n" + TrailerKey + " old/id"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	got, err := Commits(dir, "old/id")
+	if err != nil {
+		t.Fatalf("Commits: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("history keeps the name it was written with, got %+v", got)
+	}
+}

@@ -104,3 +104,22 @@ func warnNearMisses(misses []requiem.NearMiss) {
 		fmt.Fprintf(os.Stderr, "requiem:     did you mean %s?\n", m.DidYouMean)
 	}
 }
+
+// warnRewrittenRefs reports source files mv edited. Source edits are the one
+// thing requiem does outside .requiem/, so they are announced rather than
+// left to be discovered in a diff.
+func warnRewrittenRefs(res *requiem.MoveResult) {
+	if len(res.RewrittenRefs) > 0 {
+		fmt.Fprintf(os.Stderr, "requiem: rewrote %d labelled site(s) to %s:\n", len(res.RewrittenRefs), res.To)
+		for _, r := range res.RewrittenRefs {
+			fmt.Fprintf(os.Stderr, "requiem:   %s:%d\n", r.File, r.Line)
+		}
+		fmt.Fprintln(os.Stderr, "requiem: source edits are UNSTAGED — review with `git diff`")
+	}
+	if len(res.OrphanedCodeRefs) > 0 {
+		fmt.Fprintf(os.Stderr, "requiem: %d labelled site(s) still name %s:\n", len(res.OrphanedCodeRefs), res.From)
+		for _, r := range res.OrphanedCodeRefs {
+			fmt.Fprintf(os.Stderr, "requiem:   %s:%d\n", r.File, r.Line)
+		}
+	}
+}

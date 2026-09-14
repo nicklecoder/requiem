@@ -15,8 +15,11 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -167,4 +170,126 @@ func ByID(refs []Ref) map[string][]Ref {
 		out[r.FullID] = append(out[r.FullID], r)
 	}
 	return out
+}
+
+// Rewrite replaces the statement id in every given ref's label, in place.
+//
+// One exact-string swap per site, not a pattern match: the marker plus a full
+// id is distinctive enough that collision is not a realistic concern, which
+// is what makes this safe where a general codemod would need an AST. Requiem
+// is language-agnostic by design, so an AST is not available to it anyway.
+//
+// Edits are left unstaged. Requiem stages only its own files, so a rewrite
+// shows up in `git diff` and cannot reach history without someone seeing it.
+//
+// Returns the sites actually changed. A ref whose line no longer holds the
+// expected label is skipped rather than guessed at — the tree may have moved
+// under us between the scan and the write.
+func Rewrite(root string, refs []Ref, from, to string) ([]Ref, error) {
+	byFile := map[string][]Ref{}
+	for _, r := range refs {
+		byFile[r.File] = append(byFile[r.File], r)
+	}
+
+	files := make([]string, 0, len(byFile))
+	for f := range byFile {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+
+	oldLabel, newLabel := Marker+" "+from, Marker+" "+to
+	var changed []Ref
+	for _, file := range files {
+		path := filepath.Join(root, file)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return changed, fmt.Errorf("rewrite %s: %w", file, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return changed, err
+		}
+
+		lines := strings.Split(string(data), "\n")
+		var touched bool
+		for _, r := range byFile[file] {
+			i := r.Line - 1
+			if i < 0 || i >= len(lines) || !strings.Contains(lines[i], oldLabel) {
+				continue
+			}
+			lines[i] = strings.ReplaceAll(lines[i], oldLabel, newLabel)
+			changed = append(changed, r)
+			touched = true
+		}
+		if !touched {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), info.Mode().Perm()); err != nil {
+			return changed, fmt.Errorf("rewrite %s: %w", file, err)
+		}
+	}
+	return changed, nil
+}
+
+// TrailerKey is the git trailer a code commit uses to name the decision it
+// implements. Requiem only ever reads these.
+//
+// It cannot write the useful ones: `requiem commit` commits statements, so a
+// trailer there would relate a statement commit to its own statement. The
+// trailer worth having goes on the code commit that implements a decision,
+// and requiem never makes those.
+const TrailerKey = "Requiem-Id:"
+
+// Commit is one commit naming a statement in a trailer.
+type Commit struct {
+	SHA     string `json:"sha"`
+	Date    string `json:"date"`
+	Subject string `json:"subject"`
+}
+
+// Commits finds commits whose message carries a TrailerKey naming fullID.
+//
+// On demand only. Walking history is far more expensive than one working-tree
+// grep, so this never runs on an indexing path — unlike labels, which are
+// scanned and cached.
+//
+// A trailer naming an id that was later renamed stays as written, and that is
+// correct: a commit message is a historical document, and it should record
+// what was true when the change was made, the same way `Fixes #123` survives
+// an issue being retitled.
+func Commits(root, fullID string) ([]Commit, error) {
+	cmd := exec.Command("git", "log",
+		"--grep="+regexp.QuoteMeta(TrailerKey+" "+fullID),
+		"--extended-regexp", "--no-color",
+		"--format=%H%x1f%cs%x1f%s")
+	cmd.Dir = root
+
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git log for trailers: %w", err)
+	}
+
+	var commits []Commit
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x1f", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		commits = append(commits, Commit{SHA: parts[0][:min(7, len(parts[0]))], Date: parts[1], Subject: parts[2]})
+	}
+	return commits, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

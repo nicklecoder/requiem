@@ -38,6 +38,7 @@ func NewRootCmd() *cobra.Command {
 		newAuditCmd(),
 		newMvCmd(),
 		newTraceCmd(),
+		newPrecommitCmd(),
 		newReindexCmd(),
 		newReviewCmd(),
 		newCommitCmd(),
