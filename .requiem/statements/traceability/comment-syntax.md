@@ -3,7 +3,7 @@ id: comment-syntax
 namespace: traceability
 kind: rule
 modality: must
-status: active
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-14T03:23:45.54778512Z
