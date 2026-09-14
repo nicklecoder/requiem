@@ -620,73 +620,6 @@ func TestAbstract_UpdateIsTriState(t *testing.T) {
 	}
 }
 
-// Labelling should be one call, not a hand-edit: the friction is small but it
-// lands exactly when it competes with finishing the task, which is when labels
-// get skipped.
-func TestLabel_InsertsCorrectSyntaxAndRefusesUnknownIDs(t *testing.T) {
-	s := newTestService(t)
-	if _, err := s.Add(AddParams{ID: "retry-once", Namespace: "net", Kind: "rule", Body: "retried exactly once"}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	writeCode(t, s, "send.go", "package net\n\nfunc Send() error {\n\treturn nil\n}\n")
-	writeCode(t, s, "send.py", "def send():\n    return None\n")
-	writeCode(t, s, "schema.sql", "CREATE TABLE t (id INT);\n")
-
-	for _, tc := range []struct{ file, want string }{
-		{"send.go", "// requiem: net/retry-once"},
-		{"send.py", "# requiem: net/retry-once"},
-		{"schema.sql", "-- requiem: net/retry-once"},
-	} {
-		if _, err := s.Label("net/retry-once", tc.file, 1); err != nil {
-			t.Fatalf("Label %s: %v", tc.file, err)
-		}
-		b, err := os.ReadFile(filepath.Join(s.Root, tc.file))
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		if !strings.HasPrefix(string(b), tc.want) {
-			t.Errorf("%s: expected %q first, got %q", tc.file, tc.want, strings.SplitN(string(b), "\n", 2)[0])
-		}
-	}
-
-	// Indentation follows the line being labelled, so the comment reads as
-	// part of the block rather than dangling at column zero.
-	if _, err := s.Label("net/retry-once", "send.go", 5); err != nil {
-		t.Fatalf("Label indented: %v", err)
-	}
-	b, _ := os.ReadFile(filepath.Join(s.Root, "send.go"))
-	if !strings.Contains(string(b), "\t// requiem: net/retry-once") {
-		t.Errorf("expected the label to match surrounding indentation:\n%s", b)
-	}
-
-	// A typo must be refused here rather than becoming a dangling reference
-	// discovered weeks later.
-	if _, err := s.Label("net/retry-onse", "send.go", 1); err == nil {
-		t.Fatal("expected an unknown id to be refused")
-	}
-
-	// Idempotent: running it twice does not stack duplicate comments.
-	before, _ := os.ReadFile(filepath.Join(s.Root, "send.py"))
-	if _, err := s.Label("net/retry-once", "send.py", 2); err != nil {
-		t.Fatalf("second Label: %v", err)
-	}
-	after, _ := os.ReadFile(filepath.Join(s.Root, "send.py"))
-	if string(before) != string(after) {
-		t.Errorf("re-labelling the same line must be a no-op:\n%s", after)
-	}
-
-	// And the edit is never staged — requiem stages only its own files.
-	staged, err := s.Git.StagedFiles()
-	if err != nil {
-		t.Fatalf("StagedFiles: %v", err)
-	}
-	for _, p := range staged {
-		if strings.HasSuffix(p, ".go") || strings.HasSuffix(p, ".py") || strings.HasSuffix(p, ".sql") {
-			t.Fatalf("source edits must not be staged, found %q", p)
-		}
-	}
-}
-
 // The point of the fallback: the question is answerable before anything has
 // been labelled, and labels only sharpen it.
 func TestTrace_SearchAnswersWithoutAnyLabels(t *testing.T) {
@@ -716,9 +649,7 @@ func TestTrace_SearchAnswersWithoutAnyLabels(t *testing.T) {
 
 	// Once labelled, that file is reported as a reference and not repeated as
 	// weaker evidence for the same statement.
-	if _, err := s.Label("auth/plaintext", "store.go", 1); err != nil {
-		t.Fatalf("Label: %v", err)
-	}
+	writeCode(t, s, "store.go", label("auth/plaintext")+"func persist(plaintext string, tokens []byte) {}\n")
 	got, err = s.Trace("auth/plaintext", true, 0)
 	if err != nil {
 		t.Fatalf("Trace: %v", err)

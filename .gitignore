@@ -4,6 +4,9 @@
 *.test
 *.out
 
+# Generated on demand by `requiem man`, never a source of truth
+/man/
+
 # Test/coverage output
 coverage.out
 coverage.html

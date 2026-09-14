@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,6 +154,96 @@ func TestScan_IgnoreMarkerSuppressesTheLine(t *testing.T) {
 	}
 }
 
+// Requiem writes no labels itself, so every marker in a project arrives from
+// a hand. A marker that fails to match is not an error anyone sees — the
+// label is simply never found and the statement reads as unimplemented —
+// which makes the spacing and capitalisation a hand actually produces the
+// thing this scanner has to survive.
+func TestScan_ToleratesTheSpacingAndCaseAHandProduces(t *testing.T) {
+	dir := newRepo(t)
+	marker := "requiem" + ":"
+	for i, form := range []string{
+		"// " + marker + " ns/rule",   // canonical
+		"# " + marker + "ns/rule",     // no space
+		"-- " + marker + "   ns/rule", // several spaces
+		"; requiem  : ns/rule",        // space before the colon
+		"/* Requiem: ns/rule */",      // capitalised, mid-sentence
+		"<!-- REQUIEM:\tns/rule -->",  // shouted, tab-separated
+	} {
+		write(t, dir, fmt.Sprintf("f%d.txt", i), form+"\n")
+	}
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	byID := ByID(refs)
+	if len(byID["ns/rule"]) != 6 {
+		t.Fatalf("every written form must be found, got %d: %+v", len(byID["ns/rule"]), byID)
+	}
+	if len(byID) != 1 {
+		t.Fatalf("case must not split one statement into several ids: %+v", byID)
+	}
+}
+
+// The ignore marker is written by the same hand, so it has to tolerate the
+// same variation — otherwise a suppressed fixture quietly becomes a real
+// reference, which is the exact failure it exists to prevent.
+func TestScan_IgnoreMarkerToleratesSpacingAndCase(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "a.go", label("ns/genuine"))
+	write(t, dir, "b.go", "// "+Marker+" ns/one   Requiem : ignore  example\n")
+	write(t, dir, "c.go", "// "+Marker+" ns/two   REQUIEM:ignore\n")
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	counts := CountByID(refs)
+	if counts["ns/genuine"] != 1 {
+		t.Fatalf("real labels must still be found: %+v", counts)
+	}
+	if len(counts) != 1 {
+		t.Fatalf("every ignore form must suppress its line: %+v", counts)
+	}
+}
+
+// mv rewrites what scan finds. If the two disagree about what a label looks
+// like, a renamed statement leaves labels behind naming an id that no longer
+// exists — silently, since nothing rescans the line it failed to touch.
+func TestRewrite_MovesEveryFormTheScannerAccepts(t *testing.T) {
+	dir := newRepo(t)
+	marker := "requiem" + ":"
+	write(t, dir, "a.go", "// "+marker+"old/rule\n")
+	write(t, dir, "b.go", "# Requiem :  old/rule\n")
+	// A longer id sharing the prefix must not be caught by the rename.
+	write(t, dir, "c.go", "// "+marker+" old/rule-extended\n")
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	changed, err := Rewrite(dir, refs, "old/rule", "new/rule")
+	if err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("expected both spellings rewritten, got %+v", changed)
+	}
+
+	after, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	counts := CountByID(after)
+	if counts["new/rule"] != 2 || counts["old/rule"] != 0 {
+		t.Fatalf("unexpected counts after rename: %+v", counts)
+	}
+	if counts["old/rule-extended"] != 1 {
+		t.Fatalf("a different id sharing the prefix must be untouched: %+v", counts)
+	}
+}
+
 // requiem writes AGENTS.md/CLAUDE.md, and the doc block it installs carries a
 // worked example label. Scanning them would hand every project a phantom
 // reference to the id in requiem's own documentation.
@@ -223,6 +314,20 @@ func TestKindOf_IsCaseInsensitiveAndDefaultsToCode(t *testing.T) {
 // label builds a marker comment at runtime — see the note in
 // internal/requiem/traceability_test.go for why a literal will not do.
 func label(id string) string { return "// " + "requiem: " + id + "\n" }
+
+// `init` runs before the first commit, so the first label is often written in
+// a repository with no HEAD. git log fails there with a generic fatal that is
+// indistinguishable from a real error, so the question is asked first.
+func TestCommits_EmptyRepositoryIsNotAnError(t *testing.T) {
+	dir := newRepo(t)
+	commits, err := Commits(dir, "ns/rule")
+	if err != nil {
+		t.Fatalf("a repository with no commits must not be an error: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Fatalf("expected no commits, got %+v", commits)
+	}
+}
 
 // Labels answer where a decision lives now; trailers answer when it was
 // implemented and by what change.

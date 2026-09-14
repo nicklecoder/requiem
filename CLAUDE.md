@@ -1,4 +1,4 @@
-<!-- >>> requiem v10 >>> -->
+<!-- >>> requiem v11 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -20,10 +20,13 @@ decisions without loading the whole spec into context.
    both ends, and `reject` the alternatives that lost with `--see-instead`
    pointing at what replaced them. A rejection costs one command and saves
    the next agent from re-deriving it.
-5. While implementing, run `requiem label <namespace/id> <file>:<line>` on
-   the code that carries the decision. Labelling a **test** is stronger than
-   labelling an implementation: a passing labelled test is evidence the
-   statement holds, where a comment only asserts intent.
+5. While implementing, write `requiem: <namespace/id>` in a comment above
+   the code that carries the decision — an ordinary comment, in that
+   file's own syntax, written by you. Requiem has no command for this on
+   purpose: you are editing the file and know its language, where requiem
+   could only guess from the extension. Labelling a **test** is stronger
+   than labelling an implementation: a passing labelled test is evidence
+   the statement holds, where a comment only asserts intent.
 
    Labels are a shortcut, not an obligation. Nothing enforces them, and
    partial coverage is still useful: a label is an exact answer, and
@@ -130,9 +133,10 @@ the statement holds, where a comment only asserts intent.
 - `requiem trace <namespace/id>` — the labelled sites referencing a statement.
   Add `--search` to also find files sharing the statement's vocabulary,
   which works before anything has been labelled at all.
-- `requiem label <namespace/id> <file>:<line>` — insert the marker, with the
-  right comment syntax for that file. Refuses an id that does not exist, so
-  a typo cannot become a dangling reference.
+- Write the marker yourself, in the file's own comment syntax. Spacing and
+  capitalisation are tolerated — `Requiem : ns/id` is found — but the id
+  must be exact. Copy `full_id` from `add` or `check` output rather than
+  retyping it.
 - `requiem update` prints which sites a body change affects.
 - `requiem audit` flags code still referencing a superseded or rejected
   statement — the decision changed and the code was never brought along.
