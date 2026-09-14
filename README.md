@@ -74,7 +74,7 @@ why" — the single thing most likely to save an agent's time.
 |---|---|
 | `--kind` | Open string: requirement, rule, design, whatever suits. Deliberately carries no semantics; it exists for grouping and retrieval. |
 | `--modality` | Closed: `must`, `should`, `may`, `must_not`, `should_not`. The one field requiem reasons with — `audit` flags a pair whose modalities oppose. Optional. |
-| `--status` | `proposed` → `active` → `superseded`/`deprecated`. A proposal is searched and audited like a decision, so you learn whether it conflicts before committing to it. |
+| `--status` | `proposed` → `active` → `superseded`/`deprecated`. A proposal is searched and audited like a decision, so you learn whether it conflicts before committing to it. An open question belongs here, never hedged into an active statement's body — `list --status proposed` is the only queue that lists it. |
 | `--abstract` | No code can implement this: a principle, a process rule, or a prohibition — "must not do X" is implemented by absence, so there is no site to label. Keeps it out of `list --unreferenced`. |
 
 ## Semantic search

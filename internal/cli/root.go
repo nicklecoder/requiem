@@ -40,6 +40,11 @@ WORKFLOW
     link    it to the principle it refines, so the graph is navigable
     reject  the alternatives that lost, with --see-instead pointing here
 
+    An open question goes in as "--status proposed", never hedged into the
+    body of an active statement. "list --status proposed" is the only queue
+    of open decisions; a question written into an active body is invisible
+    to it, and goes stale silently once answered elsewhere.
+
   While implementing it
     Label the code: write "requiem: <namespace/id>" in an ordinary comment
     above the code that carries the decision, using that file's own comment

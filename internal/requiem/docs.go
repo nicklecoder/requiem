@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 12
+const docBlockVersion = 13
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -59,6 +59,16 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"   your job, and reporting the conflict is part of judging it.",
 	"3. When a decision is made, `add` it — with `--modality` if it carries",
 	"   normative force, `--status proposed` if it is not settled yet.",
+	"",
+	"   **Never write the open part into the body of an active statement.** A",
+	"   body that says \"undecided\", \"open whether\" or \"for now\" is a question",
+	"   filed where nothing will look for it: `list --status proposed` is the",
+	"   only queue of open decisions, and an active statement is not in it. The",
+	"   question then goes stale silently the moment it is answered elsewhere.",
+	"   Split it — the settled part `active`, the open part `proposed` — or",
+	"   record the whole statement as `proposed`. Requiem's own corpus carried",
+	"   four such bodies, every one long since shipped, while the queue read",
+	"   zero.",
 	"4. `link` it to the principle it refines, so the graph is navigable from",
 	"   both ends, and `reject` the alternatives that lost with `--see-instead`",
 	"   pointing at what replaced them. A rejection costs one command and saves",
@@ -117,7 +127,8 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- `--status proposed` — a decision under consideration rather than in force.",
 	"  Searched and audited like a settled one, so you find out whether a proposal",
 	"  conflicts with something before committing to it. `list --status proposed`",
-	"  is the queue of open decisions.",
+	"  is the queue of open decisions — and the only one, which is why an open",
+	"  question must never be written into an active statement's body instead.",
 	"",
 	"`requiem get` also reports what points *at* a statement: `referenced_by` for",
 	"statements refining or depending on it, and `rejected_alternatives` for ideas",
