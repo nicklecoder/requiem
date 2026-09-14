@@ -1,6 +1,9 @@
 package trace
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Writing `//` into a stylesheet is not a cosmetic mistake: it is invalid
 // syntax. In Markdown it is visible text, and in a Makefile it is a build
@@ -15,7 +18,6 @@ func TestStyleFor_UsesBlockSyntaxWhereThereIsNoLineComment(t *testing.T) {
 		"run.py":       "# requiem: ns/x",
 		"schema.sql":   "-- requiem: ns/x",
 		"init.el":      "; requiem: ns/x",
-		"calc.m":       "% requiem: ns/x",
 		"mod.f90":      "! requiem: ns/x",
 		"settings.ini": "; requiem: ns/x",
 	} {
@@ -84,5 +86,82 @@ func TestScan_FindsBlockCommentLabels(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("expected %q found inside a block comment, got %+v", want, refs)
 		}
+	}
+}
+
+// A table of what each language actually requires, independent of what
+// requiem currently believes.
+//
+// This began as a throwaway audit after `//` turned out to be wrong for CSS,
+// Markdown, Makefiles and more. It is kept because the failure it catches is
+// silent: a wrong marker does not error, it writes invalid syntax into a file
+// requiem does not own, and nothing notices until that file is next parsed.
+func TestStyleFor_MarkerIsCorrectPerLanguage(t *testing.T) {
+	want := map[string]string{
+		// Hash family, including Python's variants and the build files that
+		// carry their type in the name.
+		".py": "#", ".pyw": "#", ".pyi": "#", ".pyx": "#", ".rb": "#",
+		".sh": "#", ".ksh": "#", ".csh": "#", ".tcl": "#", ".nix": "#",
+		".jl": "#", ".r": "#", ".coffee": "#", ".hcl": "#", ".tfvars": "#",
+		"Makefile": "#", "Dockerfile": "#", "Gemfile": "#", "Justfile": "#",
+
+		// TeX and its auxiliaries — a class or style file is as much LaTeX as
+		// the document is.
+		".tex": "%", ".sty": "%", ".cls": "%", ".bib": "%", ".ltx": "%",
+		".erl": "%",
+
+		// Everything else with a line comment.
+		".go": "//", ".rs": "//", ".fs": "//", ".hx": "//", ".odin": "//",
+		".sv": "//", ".pas": "//", ".adoc": "//",
+		".scss": "//", ".less": "//", ".sass": "//",
+		".sql": "--", ".hs": "--", ".lhs": "--", ".purs": "--", ".idr": "--",
+		".rkt": ";", ".el": ";", ".ini": ";",
+		".f90": "!", ".vb": "'", ".bas": "'", ".bat": "REM", ".rst": "..",
+
+		// No line comment exists, so a block form is the only correct answer.
+		".css": "/*", ".ml": "(*", ".mli": "(*",
+		".html": "<!--", ".xml": "<!--", ".md": "<!--", ".svelte": "<!--",
+		".hbs": "{{!", ".j2": "{#", ".erb": "<%#",
+	}
+
+	for path, marker := range want {
+		name := path
+		if strings.HasPrefix(path, ".") {
+			name = "file" + path
+		}
+		style, ok := StyleFor(name)
+		if !ok {
+			t.Errorf("%s: unrecognised; it should map to %q", name, marker)
+			continue
+		}
+		got := style.Line
+		if got == "" {
+			got = style.Open
+		}
+		if got != marker {
+			t.Errorf("%s: requiem writes %q, the language requires %q", name, got, marker)
+		}
+	}
+}
+
+// Two widely-used languages disagree about .m, and no amount of extending the
+// table resolves that — picking either side writes invalid syntax for half
+// the people who hit it.
+func TestStyleFor_AmbiguousExtensionIsRefusedNotPicked(t *testing.T) {
+	if _, ok := StyleFor("calc.m"); ok {
+		t.Fatal(".m is MATLAB or Objective-C; requiem must not choose")
+	}
+	dir := newRepo(t)
+	write(t, dir, "calc.m", "x = 1\n")
+	_, err := InsertLabel(dir, "calc.m", 1, "ns/x", "")
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "MATLAB") || !strings.Contains(err.Error(), "Objective-C") {
+		t.Errorf("the error should name both possibilities, got: %v", err)
+	}
+	// And the caller can still proceed by saying which.
+	if _, err := InsertLabel(dir, "calc.m", 1, "ns/x", "%"); err != nil {
+		t.Fatalf("--comment must resolve it: %v", err)
 	}
 }

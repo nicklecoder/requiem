@@ -24,68 +24,107 @@ func (c CommentStyle) wrap(body string) string {
 }
 
 var (
-	slash = CommentStyle{Line: "//"}
-	hash  = CommentStyle{Line: "#"}
-	dash  = CommentStyle{Line: "--"}
-	semi  = CommentStyle{Line: ";"}
-	pct   = CommentStyle{Line: "%"}
-	bang  = CommentStyle{Line: "!"}
-	quote = CommentStyle{Line: `"`}
-	cBlk  = CommentStyle{Open: "/*", Close: "*/"}
-	sgml  = CommentStyle{Open: "<!--", Close: "-->"}
+	slash  = CommentStyle{Line: "//"}
+	hash   = CommentStyle{Line: "#"}
+	dash   = CommentStyle{Line: "--"}
+	semi   = CommentStyle{Line: ";"}
+	pct    = CommentStyle{Line: "%"}
+	bang   = CommentStyle{Line: "!"}
+	quote  = CommentStyle{Line: `"`}
+	tick   = CommentStyle{Line: "'"}
+	rem    = CommentStyle{Line: "REM"}
+	rstCmt = CommentStyle{Line: ".."}
+	cBlk   = CommentStyle{Open: "/*", Close: "*/"}
+	sgml   = CommentStyle{Open: "<!--", Close: "-->"}
+	ocaml  = CommentStyle{Open: "(*", Close: "*)"}
+	hbs    = CommentStyle{Open: "{{!", Close: "}}"}
+	jinja  = CommentStyle{Open: "{#", Close: "#}"}
+	erb    = CommentStyle{Open: "<%#", Close: "%>"}
 )
+
+// ambiguousExtensions are extensions two widely-used languages disagree on.
+// Requiem refuses them rather than picking a side, because either choice
+// writes invalid syntax for half the people who hit it — and unlike an
+// unrecognised type, no amount of extending the table resolves this one.
+var ambiguousExtensions = map[string]string{
+	".m": "MATLAB uses %, Objective-C uses //",
+}
 
 // commentStyles maps a file extension to how a comment is written there.
 //
-// Exhaustive enough that an unrecognised extension is genuinely unusual,
-// because the alternative to knowing is guessing, and a wrong guess writes
-// invalid syntax into a file requiem does not own.
+// Wide on purpose. The alternative to knowing is refusing, and while refusing
+// is safe it is friction in exactly the place this command exists to remove
+// friction, so the table should make refusal rare.
 var commentStyles = map[string]CommentStyle{
 	// C family and descendants
 	".c": slash, ".h": slash, ".cc": slash, ".cpp": slash, ".cxx": slash,
 	".hpp": slash, ".hh": slash, ".go": slash, ".rs": slash, ".java": slash,
 	".js": slash, ".jsx": slash, ".ts": slash, ".tsx": slash, ".mjs": slash,
 	".cjs": slash, ".cs": slash, ".swift": slash, ".kt": slash, ".kts": slash,
-	".scala": slash, ".dart": slash, ".php": slash, ".m": pct, ".mm": slash,
+	".scala": slash, ".dart": slash, ".php": slash, ".mm": slash,
 	".zig": slash, ".v": slash, ".d": slash, ".groovy": slash, ".gradle": slash,
 	".proto": slash, ".sol": slash, ".glsl": slash, ".hlsl": slash, ".jsonc": slash,
+	".sv": slash, ".svh": slash, ".vg": slash, ".hx": slash, ".odin": slash,
+	".pas": slash, ".fs": slash, ".fsx": slash, ".fsi": slash,
+	".re": slash, ".res": slash, ".adoc": slash, ".asciidoc": slash,
+	".scss": slash, ".less": slash, ".sass": slash,
 
 	// Hash-comment languages and config
-	".py": hash, ".rb": hash, ".sh": hash, ".bash": hash, ".zsh": hash,
-	".fish": hash, ".pl": hash, ".pm": hash, ".r": hash, ".jl": hash,
-	".nim": hash, ".cr": hash, ".ex": hash, ".exs": hash, ".tf": hash,
-	".yml": hash, ".yaml": hash, ".toml": hash, ".ps1": hash, ".psm1": hash,
+	".py": hash, ".pyw": hash, ".pyi": hash, ".pyx": hash, ".pxd": hash,
+	".rb": hash, ".sh": hash, ".bash": hash, ".zsh": hash, ".ksh": hash,
+	".csh": hash, ".fish": hash, ".pl": hash, ".pm": hash, ".t": hash,
+	".r": hash, ".jl": hash, ".nim": hash, ".cr": hash, ".ex": hash,
+	".exs": hash, ".tf": hash, ".tfvars": hash, ".hcl": hash, ".nix": hash,
+	".tcl": hash, ".pp": hash, ".coffee": hash, ".yml": hash, ".yaml": hash,
+	".toml": hash, ".ps1": hash, ".psm1": hash, ".psd1": hash,
 	".dockerfile": hash, ".mk": hash, ".cmake": hash, ".gitignore": hash,
-	".env": hash, ".conf": hash, ".properties": hash, ".awk": hash,
+	".env": hash, ".conf": hash, ".cfg": hash, ".properties": hash,
+	".awk": hash, ".bzl": hash, ".bazel": hash, ".gemspec": hash,
 
 	// Double-dash
-	".sql": dash, ".lua": dash, ".hs": dash, ".elm": dash, ".ada": dash,
-	".vhd": dash, ".vhdl": dash,
+	".sql": dash, ".lua": dash, ".hs": dash, ".lhs": dash, ".elm": dash,
+	".purs": dash, ".idr": dash, ".ada": dash, ".adb": dash, ".ads": dash,
+	".vhd": dash, ".vhdl": dash, ".applescript": dash,
 
 	// Semicolon
-	".lisp": semi, ".clj": semi, ".cljs": semi, ".el": semi, ".scm": semi,
-	".asm": semi, ".s": semi, ".ini": semi, ".reg": semi,
+	".lisp": semi, ".clj": semi, ".cljs": semi, ".cljc": semi, ".edn": semi,
+	".el": semi, ".scm": semi, ".ss": semi, ".rkt": semi,
+	".asm": semi, ".s": semi, ".ini": semi, ".reg": semi, ".nsi": semi,
 
-	// Percent and bang
-	".erl": pct, ".hrl": pct, ".tex": pct, ".m4": hash,
-	".f": bang, ".f90": bang, ".f95": bang, ".for": bang,
+	// Percent — TeX and its auxiliaries, Erlang, Prolog-family
+	".tex": pct, ".sty": pct, ".cls": pct, ".bib": pct, ".ltx": pct,
+	".dtx": pct, ".ins": pct, ".erl": pct, ".hrl": pct, ".escript": pct,
 
-	".vim": quote,
+	// Bang — Fortran
+	".f": bang, ".f90": bang, ".f95": bang, ".f03": bang, ".for": bang,
 
-	// No line comment at all — these are the ones a `//` default breaks.
-	".css": cBlk, ".scss": cBlk, ".less": cBlk,
-	".html": sgml, ".htm": sgml, ".xml": sgml, ".svg": sgml, ".xsl": sgml,
-	".vue": sgml, ".md": sgml, ".markdown": sgml, ".rst": sgml,
+	// Apostrophe — Visual Basic family
+	".vb": tick, ".vbs": tick, ".bas": tick, ".frm": tick,
+
+	".bat": rem, ".cmd": rem,
+	".vim": quote, ".vimrc": quote,
+	".rst": rstCmt,
+
+	// No line comment at all
+	".css": cBlk, ".ml": ocaml, ".mli": ocaml,
+	".html": sgml, ".htm": sgml, ".xhtml": sgml, ".xml": sgml, ".svg": sgml,
+	".xsl": sgml, ".xslt": sgml, ".vue": sgml, ".svelte": sgml, ".astro": sgml,
+	".md": sgml, ".markdown": sgml, ".mdx": sgml,
+	".hbs": hbs, ".handlebars": hbs, ".mustache": hbs,
+	".j2": jinja, ".jinja": jinja, ".jinja2": jinja, ".twig": jinja,
+	".erb": erb, ".ejs": erb,
 }
 
 // commentStylesByName covers files that carry their type in the name rather
-// than an extension. Without this they fall through to "unknown", and a
-// Makefile or Dockerfile is exactly where a `//` guess breaks a build.
+// than an extension. Without this they fall through to unrecognised, and a
+// Makefile or Dockerfile is exactly where a bad guess breaks a build.
 var commentStylesByName = map[string]CommentStyle{
 	"makefile": hash, "gnumakefile": hash, "dockerfile": hash,
 	"containerfile": hash, "rakefile": hash, "gemfile": hash,
 	"vagrantfile": hash, "brewfile": hash, "justfile": hash,
-	"procfile": hash, "caddyfile": hash, "jenkinsfile": slash,
+	"procfile": hash, "caddyfile": hash, "cmakelists": hash,
+	"build": hash, "workspace": hash, "pkgbuild": hash,
+	"jenkinsfile": slash,
 }
 
 // StyleFor returns how to write a comment in path, and whether the file type
@@ -98,7 +137,13 @@ var commentStylesByName = map[string]CommentStyle{
 // and in a Makefile it is a build error. Refusing costs the caller one flag;
 // guessing wrong costs them a broken file they did not expect requiem to touch.
 func StyleFor(path string) (CommentStyle, bool) {
-	if style, ok := commentStyles[strings.ToLower(filepath.Ext(path))]; ok {
+	ext := strings.ToLower(filepath.Ext(path))
+	// An ambiguous extension is refused even though a style could be picked:
+	// guessing here is wrong for half the callers, and no table fixes that.
+	if _, ambiguous := ambiguousExtensions[ext]; ambiguous {
+		return CommentStyle{}, false
+	}
+	if style, ok := commentStyles[ext]; ok {
 		return style, true
 	}
 	name := strings.ToLower(filepath.Base(path))
@@ -131,6 +176,9 @@ func InsertLabel(root, file string, line int, fullID, override string) (int, err
 		var ok bool
 		style, ok = StyleFor(file)
 		if !ok {
+			if why, ambiguous := ambiguousExtensions[strings.ToLower(filepath.Ext(file))]; ambiguous {
+				return 0, fmt.Errorf("%q is ambiguous (%s): pass --comment to say which", filepath.Base(file), why)
+			}
 			return 0, fmt.Errorf("unrecognised file type %q: pass --comment with the line-comment marker for it (for example --comment '//')", filepath.Base(file))
 		}
 	}
