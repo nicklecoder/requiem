@@ -284,6 +284,13 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 	if adopted {
 		n := counts[fullID]
 		st.CodeRefs = &n
+		if n == 0 {
+			coveredVia, err := transitiveCoverage(ix, counts)
+			if err != nil {
+				return nil, err
+			}
+			st.CoveredVia = coveredVia[fullID]
+		}
 	}
 
 	if st.ReferencedBy, err = ix.InboundRelationships(fullID); err != nil {
@@ -512,6 +519,11 @@ type ListFilter struct {
 	// its entire contents as unimplemented, which is the ambiguity-of-zero
 	// problem at corpus scale: an answer manufactured from missing data.
 	Unreferenced bool
+	// Direct suppresses transitive coverage, so Unreferenced reports only
+	// statements with no label of their own. Transitive coverage is an
+	// inference — refiners may implement only part of what they refine — so
+	// the unfiltered answer stays reachable rather than being replaced.
+	Direct bool
 }
 
 // List returns compact summaries of every statement matching filter. Like
@@ -546,6 +558,10 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 	if err != nil {
 		return nil, err
 	}
+	coveredVia, err := transitiveCoverage(ix, counts)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]StatementSummary, 0, len(statements))
 	for _, st := range statements {
@@ -561,8 +577,13 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
 			continue
 		}
-		if filter.Unreferenced && (!adopted || counts[st.FullID()] > 0) {
-			continue
+		if filter.Unreferenced {
+			if !adopted || counts[st.FullID()] > 0 {
+				continue
+			}
+			if !filter.Direct && len(coveredVia[st.FullID()]) > 0 {
+				continue
+			}
 		}
 		out = append(out, summary)
 	}
@@ -972,7 +993,7 @@ func (s *Service) scanCodeRefs(ix *index.Index) error {
 	}
 	stored := make([]index.CodeRef, len(refs))
 	for i, r := range refs {
-		stored[i] = index.CodeRef{FullID: r.FullID, File: r.File, Line: r.Line}
+		stored[i] = index.CodeRef{FullID: r.FullID, File: r.File, Line: r.Line, Kind: string(r.Kind)}
 	}
 	return ix.ReplaceCodeRefs(stored)
 }

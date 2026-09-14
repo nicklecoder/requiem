@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/nicklecoder/requiem/internal/requiem"
+	"github.com/nicklecoder/requiem/internal/trace"
 )
 
 // openService builds a Service rooted at the current working directory —
@@ -55,9 +56,17 @@ func warnBlastRadius(fullID string, refs []requiem.ClassifiedRef) {
 	if len(refs) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "requiem: %s changed; %d labelled code site(s) reference it:\n", fullID, len(refs))
+	var code, docs int
 	for _, r := range refs {
-		fmt.Fprintf(os.Stderr, "requiem:   %s:%d\n", r.File, r.Line)
+		if r.Kind == trace.KindDoc {
+			docs++
+		} else {
+			code++
+		}
+	}
+	fmt.Fprintf(os.Stderr, "requiem: %s changed; %d code site(s) and %d document(s) reference it:\n", fullID, code, docs)
+	for _, r := range refs {
+		fmt.Fprintf(os.Stderr, "requiem:   %s:%d (%s)\n", r.File, r.Line, r.Kind)
 	}
 }
 
@@ -76,5 +85,22 @@ func warnContradictingRefs(refs []requiem.ClassifiedRef) {
 	fmt.Fprintf(os.Stderr, "requiem: %d labelled code site(s) contradict a recorded decision:\n", len(refs))
 	for _, r := range refs {
 		fmt.Fprintf(os.Stderr, "requiem:   %s:%d references %s (%s)\n", r.File, r.Line, r.FullID, r.Class)
+	}
+}
+
+// warnNearMisses reports labels that look like typos of a real statement id.
+//
+// Dangling labels are otherwise ignored, because documentation explaining the
+// label format generates them by existing. A near miss is different: it sits
+// within an edit or two of a real id, which a doc example never does, so it
+// can be reported without bringing that noise back.
+func warnNearMisses(misses []requiem.NearMiss) {
+	if len(misses) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "requiem: %d label(s) look like typos:\n", len(misses))
+	for _, m := range misses {
+		fmt.Fprintf(os.Stderr, "requiem:   %s:%d  requiem: %s\n", m.File, m.Line, m.FullID)
+		fmt.Fprintf(os.Stderr, "requiem:     did you mean %s?\n", m.DidYouMean)
 	}
 }

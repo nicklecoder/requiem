@@ -35,6 +35,11 @@ func newAuditCmd() *cobra.Command {
 				return err
 			}
 			warnContradictingRefs(contradicting)
+			misses, err := svc.NearMisses()
+			if err != nil {
+				return err
+			}
+			warnNearMisses(misses)
 			if candidates == nil {
 				candidates = []index.PairCandidate{}
 			}

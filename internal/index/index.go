@@ -66,11 +66,71 @@ func (ix *Index) ensureSchema() error {
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
+
 	for _, stmt := range schema {
 		if _, err := tx.Exec(stmt); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("schema: %w", err)
 		}
 	}
+	if err := migrate(tx); err != nil {
+		return fmt.Errorf("migrate index: %w", err)
+	}
 	return tx.Commit()
+}
+
+// migrate brings an index created by an older build up to the current shape.
+//
+// CREATE TABLE IF NOT EXISTS silently does nothing when a table already
+// exists, so adding a column to the schema leaves every existing index
+// broken — queries against the new column fail until the file is deleted.
+//
+// Deleting it is not an acceptable answer. Every other table can be rebuilt
+// by reparsing statement files, but embeddings cannot: recovering those needs
+// network access and an endpoint that may not be reachable. So schema changes
+// are migrated rather than resolved by wiping.
+//
+// Additive only, and each step checks for its own column rather than relying
+// on a version counter — that way a fresh index built from the full schema
+// and an old one being upgraded both end up in the same state, with no
+// bookkeeping to get out of step.
+func migrate(tx *sql.Tx) error {
+	migrations := []struct {
+		table, column, ddl string
+	}{
+		// code_refs.kind distinguishes a reference in code from a mention in
+		// documentation (see internal/trace.Kind).
+		{"code_refs", "kind", `ALTER TABLE code_refs ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'`},
+	}
+	for _, m := range migrations {
+		has, err := hasColumn(tx, m.table, m.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.Exec(m.ddl); err != nil {
+			return fmt.Errorf("add %s.%s: %w", m.table, m.column, err)
+		}
+	}
+	return nil
+}
+
+func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

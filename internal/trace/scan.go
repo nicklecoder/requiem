@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -30,11 +31,43 @@ const Marker = "requiem:"
 // slash-separated).
 const labelPattern = `requiem: ?[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*`
 
+// Kind distinguishes a label in code from one in documentation.
+//
+// A document citing a decision is not an implementation of it, so a mention
+// must not count toward a statement's reference count — otherwise a README
+// showing the label format inflates the very number it is explaining. It is
+// still worth recording: a document that cites a decision is something a
+// change to that decision affects, so mentions appear in trace and in
+// update's blast radius.
+type Kind string
+
+const (
+	KindCode Kind = "code"
+	KindDoc  Kind = "doc"
+)
+
+// docExtensions are treated as documentation. A guess, but a legible one —
+// and it only ever moves a reference between two reported buckets, never
+// discards it, so being wrong about a file costs accuracy rather than data.
+var docExtensions = map[string]bool{
+	".md": true, ".markdown": true, ".rst": true,
+	".adoc": true, ".asciidoc": true, ".txt": true, ".org": true,
+}
+
 // Ref is one labelled site.
 type Ref struct {
 	FullID string `json:"full_id"`
 	File   string `json:"file"`
 	Line   int    `json:"line"`
+	Kind   Kind   `json:"kind"`
+}
+
+// KindOf classifies a path as code or documentation.
+func KindOf(path string) Kind {
+	if docExtensions[strings.ToLower(filepath.Ext(path))] {
+		return KindDoc
+	}
+	return KindCode
 }
 
 // Scan returns every label in the working tree, in git grep's order (path,
@@ -112,14 +145,17 @@ func parseLine(line string) (Ref, bool) {
 	if file == "" {
 		return Ref{}, false
 	}
-	return Ref{FullID: fullID, File: file, Line: lineNo}, true
+	return Ref{FullID: fullID, File: file, Line: lineNo, Kind: KindOf(file)}, true
 }
 
-// CountByID groups refs by the statement they name.
+// CountByID groups refs by the statement they name, counting code only —
+// see Kind for why a documentation mention is not a reference.
 func CountByID(refs []Ref) map[string]int {
 	out := make(map[string]int)
 	for _, r := range refs {
-		out[r.FullID]++
+		if r.Kind == KindCode {
+			out[r.FullID]++
+		}
 	}
 	return out
 }

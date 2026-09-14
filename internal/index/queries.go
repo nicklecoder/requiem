@@ -296,8 +296,8 @@ func (ix *Index) ReplaceCodeRefs(refs []CodeRef) error {
 	}
 	for _, r := range refs {
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO code_refs (full_id, file, line) VALUES (?, ?, ?)`,
-			r.FullID, r.File, r.Line); err != nil {
+			`INSERT OR IGNORE INTO code_refs (full_id, file, line, kind) VALUES (?, ?, ?, ?)`,
+			r.FullID, r.File, r.Line, r.Kind); err != nil {
 			return fmt.Errorf("store code ref %s %s:%d: %w", r.FullID, r.File, r.Line, err)
 		}
 	}
@@ -310,6 +310,7 @@ type CodeRef struct {
 	FullID string
 	File   string
 	Line   int
+	Kind   string
 }
 
 // CodeRefCounts returns the cached reference count per statement, and whether
@@ -326,7 +327,11 @@ type CodeRef struct {
 // people manage toward, which is the failure mode of every requirements
 // traceability tool and is forbidden outright in SPEC's Boundary section.
 func (ix *Index) CodeRefCounts() (map[string]int, bool, error) {
-	rows, err := ix.db.Query(`SELECT full_id, COUNT(*) FROM code_refs GROUP BY full_id`)
+	// Code only: a documentation mention is not an implementation, so it
+	// must not inflate the count. Adoption is still judged on any label at
+	// all, so a project that only cites decisions in docs is not treated as
+	// having adopted labelling.
+	rows, err := ix.db.Query(`SELECT full_id, COUNT(*) FROM code_refs WHERE kind = 'code' GROUP BY full_id`)
 	if err != nil {
 		return nil, false, err
 	}

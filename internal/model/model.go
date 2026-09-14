@@ -242,6 +242,13 @@ type Statement struct {
 	// reading missing data as an answer.
 	CodeRefs *int `yaml:"-" json:"code_refs,omitempty"`
 
+	// CoveredVia names the refining statements that carry this one's
+	// implementation, where it has no label of its own. Derived, and
+	// reported rather than merely acted on: treating a statement as covered
+	// because its refiners are labelled is an inference, and an inference
+	// should be inspectable.
+	CoveredVia []string `yaml:"-" json:"covered_via,omitempty"`
+
 	// EmbeddingStatus is another derived, never-stored fact: "missing" (no
 	// vector on record), "stale" (body has changed since the vector was
 	// computed), or "fresh". Set by Service.Get/List from the index's

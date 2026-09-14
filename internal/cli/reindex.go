@@ -35,6 +35,15 @@ func newReindexCmd() *cobra.Command {
 				return err
 			}
 
+			// Reported here because reindex is what scans the tree, and its
+			// nonzero exit lets CI catch a typo on every push rather than
+			// whenever someone remembers to run audit.
+			misses, err := svc.NearMisses()
+			if err != nil {
+				return err
+			}
+			warnNearMisses(misses)
+
 			var embedErr error
 			if withEmbed {
 				res, err := svc.EmbedAll(force)
@@ -46,6 +55,9 @@ func newReindexCmd() *cobra.Command {
 
 			if err := printJSON(stats); err != nil {
 				return err
+			}
+			if len(misses) > 0 && embedErr == nil {
+				return fmt.Errorf("%d label(s) do not resolve to a statement", len(misses))
 			}
 			// Reported after stdout so the machine-readable payload is never
 			// withheld by a partial failure — the caller gets the index
