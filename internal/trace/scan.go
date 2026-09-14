@@ -34,6 +34,7 @@ const Marker = "requiem:"
 // slash-separated).
 const labelPattern = `requiem: ?[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*`
 
+// requiem: traceability/label-false-positives
 // Kind distinguishes a label in code from one in documentation.
 //
 // A document citing a decision is not an implementation of it, so a mention
@@ -172,6 +173,7 @@ func ByID(refs []Ref) map[string][]Ref {
 	return out
 }
 
+// requiem: traceability/mv-rewrites-labels
 // Rewrite replaces the statement id in every given ref's label, in place.
 //
 // One exact-string swap per site, not a pattern match: the marker plus a full
@@ -247,6 +249,7 @@ type Commit struct {
 	Subject string `json:"subject"`
 }
 
+// requiem: traceability/code-labels
 // Commits finds commits whose message carries a TrailerKey naming fullID.
 //
 // On demand only. Walking history is far more expensive than one working-tree

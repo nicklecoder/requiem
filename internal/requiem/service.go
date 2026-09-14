@@ -1142,6 +1142,7 @@ func (s *Service) Discard(fullID string) (*DiscardResult, error) {
 	return &DiscardResult{Files: files}, nil
 }
 
+// requiem: cli/approval-by-accident
 // PendingChange is one staged statement or rejection awaiting approval.
 type PendingChange struct {
 	FullID string `json:"full_id"`

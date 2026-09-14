@@ -31,6 +31,7 @@ type NearMiss struct {
 	DidYouMean string     `json:"did_you_mean"`
 }
 
+// requiem: traceability/label-typos-uncaught
 // findNearMisses pairs each dangling label with the closest real id within
 // nearMissDistance, if any.
 func findNearMisses(refs []ClassifiedRef, knownIDs []string) []NearMiss {
@@ -135,6 +136,7 @@ func (s *Service) NearMisses() ([]NearMiss, error) {
 	return findNearMisses(classified, known), nil
 }
 
+// requiem: traceability/principles-covered-transitively
 // transitiveCoverage maps each statement to the refining statements that
 // carry its implementation.
 //
