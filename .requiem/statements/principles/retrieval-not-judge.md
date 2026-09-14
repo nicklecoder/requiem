@@ -2,6 +2,7 @@
 id: retrieval-not-judge
 namespace: principles
 kind: design
+abstract: true
 status: active
 provenance:
     type: dialogue

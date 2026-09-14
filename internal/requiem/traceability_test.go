@@ -3,7 +3,10 @@ package requiem
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/nicklecoder/requiem/internal/model"
 )
 
 func writeCode(t *testing.T, s *Service, rel, body string) {
@@ -38,13 +41,7 @@ func TestClassifyRefs_DistinguishesRejectedFromDangling(t *testing.T) {
 		t.Fatalf("Reject: %v", err)
 	}
 
-	writeCode(t, s, "src/a.go", `
-// requiem: ns/live
-// requiem: ns/idea
-// requiem: ns/old
-// requiem: ns/turned-down
-// requiem: ns/never-existed
-`)
+	writeCode(t, s, "src/a.go", label("ns/live")+label("ns/idea")+label("ns/old")+label("ns/turned-down")+label("ns/never-existed"))
 
 	refs, err := s.UpdateBlastRadius("ns/live")
 	if err != nil {
@@ -82,8 +79,8 @@ func TestTrace_ReportsSitesLiveAndSurvivesRefactor(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "rule", Namespace: "ns", Kind: "rule", Body: "a rule"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	writeCode(t, s, "src/one.go", "// requiem: ns/rule\n")
-	writeCode(t, s, "src/two.go", "package x\n// requiem: ns/rule\n")
+	writeCode(t, s, "src/one.go", label("ns/rule"))
+	writeCode(t, s, "src/two.go", "package x\n"+label("ns/rule"))
 
 	got, err := s.Trace("ns/rule")
 	if err != nil {
@@ -101,7 +98,7 @@ func TestTrace_ReportsSitesLiveAndSurvivesRefactor(t *testing.T) {
 	if err := os.Remove(filepath.Join(s.Root, "src/one.go")); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	writeCode(t, s, "pkg/moved/one.go", "// requiem: ns/rule\n")
+	writeCode(t, s, "pkg/moved/one.go", label("ns/rule"))
 
 	got, err = s.Trace("ns/rule")
 	if err != nil {
@@ -146,7 +143,7 @@ func TestCodeRefs_AbsentUntilLabellingIsInUse(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "other", Namespace: "ns", Kind: "rule", Body: "another"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	writeCode(t, s, "src/a.go", "// requiem: ns/other\n")
+	writeCode(t, s, "src/a.go", label("ns/other"))
 	if _, err := s.Reindex(); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -174,7 +171,7 @@ func TestCodeRefs_LazyReindexDoesNotScan(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "rule", Namespace: "ns", Kind: "rule", Body: "a rule"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	writeCode(t, s, "src/a.go", "// requiem: ns/rule\n")
+	writeCode(t, s, "src/a.go", label("ns/rule"))
 
 	// Get triggers the lazy reindex, which must not pick the label up.
 	got, err := s.Get("ns/rule")
@@ -195,34 +192,6 @@ func TestCodeRefs_LazyReindexDoesNotScan(t *testing.T) {
 	}
 	if got.CodeRefs == nil || *got.CodeRefs != 1 {
 		t.Fatalf("expected the explicit scan to record the label, got %v", got.CodeRefs)
-	}
-}
-
-// mv reports what it cannot fix rather than editing source files.
-func TestMove_ReportsOrphanedCodeRefs(t *testing.T) {
-	s := newTestService(t)
-	if _, err := s.Add(AddParams{ID: "rule", Namespace: "old", Kind: "rule", Body: "a rule"}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	writeCode(t, s, "src/a.go", "// requiem: old/rule\n")
-	if _, err := s.Commit("setup"); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-
-	res, err := s.Move("old/rule", "new/rule", false)
-	if err != nil {
-		t.Fatalf("Move: %v", err)
-	}
-	if len(res.OrphanedCodeRefs) != 1 || res.OrphanedCodeRefs[0].File != "src/a.go" {
-		t.Fatalf("expected the stale label reported, got %+v", res.OrphanedCodeRefs)
-	}
-	// Reported, not rewritten: the source file is untouched.
-	body, err := os.ReadFile(filepath.Join(s.Root, "src/a.go"))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(body) != "// requiem: old/rule\n" {
-		t.Fatalf("mv must not edit source files, got %q", body)
 	}
 }
 
@@ -249,7 +218,7 @@ func TestListUnreferenced_EmptyUntilLabellingIsInUse(t *testing.T) {
 	}
 
 	// Once labelling is in use, the unlabelled statement is a real finding.
-	writeCode(t, s, "src/a.go", "// requiem: ns/linked\n")
+	writeCode(t, s, "src/a.go", label("ns/linked"))
 	if _, err := s.Reindex(); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -259,5 +228,394 @@ func TestListUnreferenced_EmptyUntilLabellingIsInUse(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].FullID != "ns/orphan" {
 		t.Fatalf("expected only the unreferenced statement, got %+v", got)
+	}
+}
+
+// Documentation explaining why an idea was rejected cites that rejection
+// legitimately. Treating it as a contradiction would make writing about a
+// decision an offence against it.
+func TestAuditRefs_DocMentionOfARejectionIsNotAContradiction(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{ID: "turned-down", Namespace: "ns", Body: "considered and rejected"}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	writeCode(t, s, "docs/why.md", "We rejected this; see "+label("ns/turned-down"))
+
+	got, err := s.AuditRefs()
+	if err != nil {
+		t.Fatalf("AuditRefs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a doc mention must not be a contradiction, got %+v", got)
+	}
+
+	// The same reference in code is a real finding.
+	writeCode(t, s, "src/a.go", label("ns/turned-down"))
+	got, err = s.AuditRefs()
+	if err != nil {
+		t.Fatalf("AuditRefs: %v", err)
+	}
+	if len(got) != 1 || got[0].File != "src/a.go" {
+		t.Fatalf("expected only the code site flagged, got %+v", got)
+	}
+}
+
+func TestTrace_SeparatesCodeRefsFromDocMentions(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rule", Namespace: "ns", Kind: "rule", Body: "a rule"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("ns/rule"))
+	writeCode(t, s, "src/b.go", label("ns/rule"))
+	writeCode(t, s, "docs/d.md", label("ns/rule"))
+
+	got, err := s.Trace("ns/rule")
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	if got.CodeRefs != 2 || got.DocMentions != 1 {
+		t.Fatalf("expected 2 code / 1 doc, got %+v", got)
+	}
+	if len(got.Refs) != 3 {
+		t.Fatalf("every site should still be reported, got %+v", got.Refs)
+	}
+}
+
+// Edit distance is what lets typos be reported while documentation examples
+// stay silent: a typo sits an edit or two from a real id, a doc example sits
+// nowhere near anything.
+func TestNearMisses_CatchesTyposButNotDistantDanglingLabels(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rrf-fusion", Namespace: "retrieval", Kind: "rule", Body: "fuse on rank"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("retrieval/rrf-fusio"))        // 1 edit — typo
+	writeCode(t, s, "src/b.go", label("retrieval/rrf-fusionn"))      // 1 edit — typo
+	writeCode(t, s, "README.md", label("auth/session/no-plaintext")) // unrelated — example
+
+	got, err := s.NearMisses()
+	if err != nil {
+		t.Fatalf("NearMisses: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected exactly the two typos, got %+v", got)
+	}
+	for _, m := range got {
+		if m.DidYouMean != "retrieval/rrf-fusion" {
+			t.Errorf("expected a suggestion of the real id, got %q", m.DidYouMean)
+		}
+	}
+}
+
+// A label naming a real statement is not a near miss, and neither is one
+// naming a rejection — rejections are resolvable ids too.
+func TestNearMisses_IgnoresResolvableLabels(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rule", Namespace: "ns", Kind: "rule", Body: "x"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Reject(RejectParams{ID: "rulz", Namespace: "ns", Body: "turned down"}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("ns/rule")+label("ns/rulz"))
+
+	got, err := s.NearMisses()
+	if err != nil {
+		t.Fatalf("NearMisses: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("resolvable labels must never be near misses, got %+v", got)
+	}
+}
+
+func TestLevenshtein(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0}, {"a", "", 1}, {"", "abc", 3}, {"abc", "abc", 0},
+		{"retrieval/rrf-fusion", "retrieval/rrf-fusio", 1},
+		{"kitten", "sitting", 3},
+	} {
+		if got := levenshtein(tc.a, tc.b); got != tc.want {
+			t.Errorf("levenshtein(%q,%q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// A principle is implemented through the rules refining it, so without
+// transitive coverage --unreferenced reports every principle forever and the
+// real finding is buried.
+func TestUnreferenced_TransitiveCoverageOverActiveRefinersOnly(t *testing.T) {
+	s := newTestService(t)
+	add := func(id, status string) {
+		t.Helper()
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Status: status, Body: "body " + id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	add("principle", "")
+	add("rule-a", "")
+	add("rule-b", "")
+	add("someday", "proposed") // a proposal refining the principle
+	add("orphan", "")
+	for _, from := range []string{"rule-a", "rule-b", "someday"} {
+		if _, err := s.Link("ns/"+from, "ns/principle", model.RelRefines, ""); err != nil {
+			t.Fatalf("Link %s: %v", from, err)
+		}
+	}
+	// Both active refiners are labelled; the proposal is not.
+	writeCode(t, s, "src/a.go", label("ns/rule-a"))
+	writeCode(t, s, "src/b.go", label("ns/rule-b"))
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	got, err := s.List(ListFilter{Unreferenced: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, g := range got {
+		ids[g.FullID] = true
+	}
+	// The proposal is unlabelled, so counting it would hold the principle
+	// uncovered forever — active refiners only.
+	if ids["ns/principle"] {
+		t.Fatalf("principle should be transitively covered, got %+v", got)
+	}
+	if !ids["ns/orphan"] {
+		t.Fatalf("a statement with no refiners and no label is a real finding, got %+v", got)
+	}
+	if !ids["ns/someday"] {
+		t.Fatalf("an unbuilt proposal should still be listed, got %+v", got)
+	}
+
+	// --direct suppresses the inference entirely.
+	direct, err := s.List(ListFilter{Unreferenced: true, Direct: true})
+	if err != nil {
+		t.Fatalf("List --direct: %v", err)
+	}
+	var sawPrinciple bool
+	for _, g := range direct {
+		if g.FullID == "ns/principle" {
+			sawPrinciple = true
+		}
+	}
+	if !sawPrinciple {
+		t.Fatalf("--direct must report the unfiltered answer, got %+v", direct)
+	}
+
+	// And the inference is inspectable.
+	p, err := s.Get("ns/principle")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(p.CoveredVia) != 2 {
+		t.Fatalf("expected covered_via to name both refiners, got %+v", p.CoveredVia)
+	}
+}
+
+// Partial implementation must not read as complete.
+func TestUnreferenced_PartiallyLabelledRefinersDoNotCover(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"principle", "rule-a", "rule-b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "body " + id}); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+	for _, from := range []string{"rule-a", "rule-b"} {
+		if _, err := s.Link("ns/"+from, "ns/principle", model.RelRefines, ""); err != nil {
+			t.Fatalf("Link: %v", err)
+		}
+	}
+	writeCode(t, s, "src/a.go", label("ns/rule-a")) // only one of two
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	got, err := s.List(ListFilter{Unreferenced: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var sawPrinciple bool
+	for _, g := range got {
+		if g.FullID == "ns/principle" {
+			sawPrinciple = true
+		}
+	}
+	if !sawPrinciple {
+		t.Fatal("a principle whose refiners are only partly labelled must not read as covered")
+	}
+}
+
+// label builds a marker comment at runtime. Written this way deliberately:
+// a literal "requiem:" in a test fixture is indistinguishable from a real
+// label, so the scanner would find these fixtures when run against requiem's
+// own repository — including the deliberately broken ones below.
+func label(id string) string { return "// " + "requiem: " + id + "\n" }
+
+// Choosing rewritable carriers over commit trailers was justified precisely
+// because they can be fixed. mv doing the fixing is what makes that true.
+func TestMove_RewritesLabelsAndLeavesThemUnstaged(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rule", Namespace: "old", Kind: "rule", Body: "a rule"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", "package a\n"+label("old/rule")+"func f() {}\n")
+	writeCode(t, s, "src/b.go", label("old/rule"))
+	writeCode(t, s, "docs/d.md", "See "+label("old/rule"))
+	// A different statement's label must be untouched.
+	writeCode(t, s, "src/other.go", label("old/unrelated"))
+	if _, err := s.Commit("setup"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	res, err := s.Move("old/rule", "new/rule", false, true)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if len(res.RewrittenRefs) != 3 {
+		t.Fatalf("expected all three sites rewritten, got %+v", res.RewrittenRefs)
+	}
+	if len(res.OrphanedCodeRefs) != 0 {
+		t.Fatalf("nothing should be left orphaned, got %+v", res.OrphanedCodeRefs)
+	}
+
+	for _, f := range []string{"src/a.go", "src/b.go", "docs/d.md"} {
+		b, err := os.ReadFile(filepath.Join(s.Root, f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if !strings.Contains(string(b), "new/rule") || strings.Contains(string(b), "old/rule") {
+			t.Fatalf("%s not rewritten: %q", f, b)
+		}
+	}
+	// Surrounding content survives — this is a one-line swap, not a rewrite
+	// of the file.
+	a, _ := os.ReadFile(filepath.Join(s.Root, "src/a.go"))
+	if !strings.Contains(string(a), "package a\n") || !strings.Contains(string(a), "func f() {}") {
+		t.Fatalf("surrounding code was damaged: %q", a)
+	}
+	other, _ := os.ReadFile(filepath.Join(s.Root, "src/other.go"))
+	if !strings.Contains(string(other), "old/unrelated") {
+		t.Fatalf("an unrelated label was rewritten: %q", other)
+	}
+
+	// Source edits must be unstaged: requiem stages only its own files, so a
+	// rewrite cannot reach history without someone seeing it in git diff.
+	staged, err := s.Git.StagedFiles()
+	if err != nil {
+		t.Fatalf("StagedPaths: %v", err)
+	}
+	for _, p := range staged {
+		if strings.HasPrefix(p, "src/") || strings.HasPrefix(p, "docs/") {
+			t.Fatalf("source edits must not be staged, found %q", p)
+		}
+	}
+}
+
+func TestMove_NoRewriteRefsReportsInstead(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "rule", Namespace: "old", Kind: "rule", Body: "a rule"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("old/rule"))
+	if _, err := s.Commit("setup"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	res, err := s.Move("old/rule", "new/rule", false, false)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if len(res.RewrittenRefs) != 0 || len(res.OrphanedCodeRefs) != 1 {
+		t.Fatalf("expected report-only, got %+v / %+v", res.RewrittenRefs, res.OrphanedCodeRefs)
+	}
+	b, _ := os.ReadFile(filepath.Join(s.Root, "src/a.go"))
+	if !strings.Contains(string(b), "old/rule") {
+		t.Fatalf("declining must leave the file untouched: %q", b)
+	}
+}
+
+// The declaration is an assertion by the author, not something requiem can
+// verify — so the one case that CAN be checked is checked: an abstract
+// statement with code referencing it has been falsified by evidence.
+func TestAbstract_ExcludedFromUnreferencedButFalsifiedByCode(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "meta", Namespace: "principles", Kind: "rule",
+		Abstract: true, Body: "a rule about the corpus, not the software"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "real", Namespace: "ns", Kind: "rule", Body: "implementable"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	writeCode(t, s, "src/a.go", label("ns/real"))
+	if _, err := s.Reindex(); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	got, err := s.List(ListFilter{Unreferenced: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, g := range got {
+		if g.FullID == "principles/meta" {
+			t.Fatalf("an abstract statement must not be listed as unreferenced: %+v", got)
+		}
+	}
+	// --direct shows the raw answer, inference and declarations set aside.
+	direct, err := s.List(ListFilter{Unreferenced: true, Direct: true})
+	if err != nil {
+		t.Fatalf("List --direct: %v", err)
+	}
+	var sawMeta bool
+	for _, g := range direct {
+		if g.FullID == "principles/meta" {
+			sawMeta = true
+		}
+	}
+	if !sawMeta {
+		t.Fatalf("--direct must ignore the declaration, got %+v", direct)
+	}
+
+	// Now contradict the declaration with evidence.
+	writeCode(t, s, "src/b.go", label("principles/meta"))
+	refs, err := s.AuditRefs()
+	if err != nil {
+		t.Fatalf("AuditRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].Class != RefAbstract || refs[0].FullID != "principles/meta" {
+		t.Fatalf("expected the falsified declaration reported, got %+v", refs)
+	}
+}
+
+// An update touching only the body must not silently clear a declaration.
+func TestAbstract_UpdateIsTriState(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "meta", Namespace: "ns", Kind: "rule", Abstract: true, Body: "one"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Update("ns/meta", UpdateParams{Body: "two"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := s.Get("ns/meta")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Abstract {
+		t.Fatal("a body-only update must leave the declaration intact")
+	}
+
+	f := false
+	if _, err := s.Update("ns/meta", UpdateParams{Abstract: &f}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err = s.Get("ns/meta")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Abstract {
+		t.Fatal("--no-abstract must withdraw the declaration")
 	}
 }

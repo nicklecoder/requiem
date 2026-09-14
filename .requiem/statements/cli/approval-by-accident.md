@@ -3,7 +3,7 @@ id: approval-by-accident
 namespace: cli
 kind: design
 modality: should
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-13T22:40:10.199051079Z

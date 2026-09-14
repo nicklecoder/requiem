@@ -8,6 +8,7 @@ import (
 
 func newAddCmd() *cobra.Command {
 	var id, namespace, kind, modality, status, body, provenance, source string
+	var abstract bool
 	var tags []string
 
 	cmd := &cobra.Command{
@@ -25,6 +26,7 @@ func newAddCmd() *cobra.Command {
 				Kind:       kind,
 				Modality:   modality,
 				Status:     status,
+				Abstract:   abstract,
 				Body:       body,
 				Tags:       tags,
 				Provenance: provenance,
@@ -40,6 +42,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&id, "id", "", "namespace-relative slug, e.g. no-plaintext-tokens (required)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "hierarchical namespace, e.g. auth/session (required)")
 	cmd.Flags().StringVar(&kind, "kind", "", "statement kind, e.g. requirement, rule, design (required)")
+	cmd.Flags().BoolVar(&abstract, "abstract", false, "no code can implement this statement (a principle, a process decision); excludes it from list --unreferenced")
 	cmd.Flags().StringVar(&status, "status", "", "proposed for a decision under consideration (default: active)")
 	cmd.Flags().StringVar(&modality, "modality", "", "normative strength: must, should, may, must_not, should_not (optional)")
 	cmd.Flags().StringVar(&body, "body", "", "statement body text (required)")

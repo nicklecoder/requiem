@@ -18,6 +18,10 @@ import (
 // Client runs git commands rooted at Dir (normally the project root).
 type Client struct {
 	Dir string
+	// Env is added to the environment of every git invocation. Used to mark
+	// a commit as coming from requiem itself, so the pre-commit notice can
+	// stay quiet for a commit that is already an explicit approval.
+	Env []string
 }
 
 func New(dir string) *Client {
@@ -48,6 +52,9 @@ func (c *Client) run(args ...string) (string, error) {
 
 		cmd := exec.Command("git", args...)
 		cmd.Dir = c.Dir
+		if len(c.Env) > 0 {
+			cmd.Env = append(os.Environ(), c.Env...)
+		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

@@ -3,7 +3,7 @@ id: no-code-index
 namespace: traceability
 kind: rule
 modality: must_not
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-13T22:28:53.714195331Z

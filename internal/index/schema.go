@@ -19,6 +19,7 @@ var schema = []string{
 		namespace         TEXT NOT NULL,
 		kind              TEXT NOT NULL,
 		modality          TEXT,
+		abstract          INTEGER NOT NULL DEFAULT 0,
 		body              TEXT NOT NULL,
 		status            TEXT NOT NULL,
 		provenance_type   TEXT NOT NULL,
@@ -115,6 +116,7 @@ var schema = []string{
 		full_id TEXT NOT NULL,
 		file    TEXT NOT NULL,
 		line    INTEGER NOT NULL,
+		kind    TEXT NOT NULL DEFAULT 'code',
 		PRIMARY KEY (full_id, file, line)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_code_refs_full_id ON code_refs(full_id)`,

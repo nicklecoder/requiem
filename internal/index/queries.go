@@ -18,7 +18,7 @@ type rowScanner interface {
 
 // statementColumns is the column list every SELECT against the statements
 // table (aliased "s") uses, in the order scanStatement expects.
-const statementColumns = `s.namespace, s.id, s.kind, s.modality, s.body, s.status, s.provenance_type,
+const statementColumns = `s.namespace, s.id, s.kind, s.modality, s.abstract, s.body, s.status, s.provenance_type,
 	s.source_file, s.source_line_start, s.source_line_end, s.source_hash, s.created_at`
 
 func scanStatement(row rowScanner) (model.Statement, error) {
@@ -27,7 +27,7 @@ func scanStatement(row rowScanner) (model.Statement, error) {
 	var modality, sourceFile, sourceHash sql.NullString
 	var lineStart, lineEnd sql.NullInt64
 
-	if err := row.Scan(&st.Namespace, &st.ID, &kind, &modality, &st.Body, &status, &provenanceType,
+	if err := row.Scan(&st.Namespace, &st.ID, &kind, &modality, &st.Abstract, &st.Body, &status, &provenanceType,
 		&sourceFile, &lineStart, &lineEnd, &sourceHash, &createdAt); err != nil {
 		return model.Statement{}, err
 	}
@@ -296,8 +296,8 @@ func (ix *Index) ReplaceCodeRefs(refs []CodeRef) error {
 	}
 	for _, r := range refs {
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO code_refs (full_id, file, line) VALUES (?, ?, ?)`,
-			r.FullID, r.File, r.Line); err != nil {
+			`INSERT OR IGNORE INTO code_refs (full_id, file, line, kind) VALUES (?, ?, ?, ?)`,
+			r.FullID, r.File, r.Line, r.Kind); err != nil {
 			return fmt.Errorf("store code ref %s %s:%d: %w", r.FullID, r.File, r.Line, err)
 		}
 	}
@@ -310,6 +310,7 @@ type CodeRef struct {
 	FullID string
 	File   string
 	Line   int
+	Kind   string
 }
 
 // CodeRefCounts returns the cached reference count per statement, and whether
@@ -326,7 +327,11 @@ type CodeRef struct {
 // people manage toward, which is the failure mode of every requirements
 // traceability tool and is forbidden outright in SPEC's Boundary section.
 func (ix *Index) CodeRefCounts() (map[string]int, bool, error) {
-	rows, err := ix.db.Query(`SELECT full_id, COUNT(*) FROM code_refs GROUP BY full_id`)
+	// Code only: a documentation mention is not an implementation, so it
+	// must not inflate the count. Adoption is still judged on any label at
+	// all, so a project that only cites decisions in docs is not treated as
+	// having adopted labelling.
+	rows, err := ix.db.Query(`SELECT full_id, COUNT(*) FROM code_refs WHERE kind = 'code' GROUP BY full_id`)
 	if err != nil {
 		return nil, false, err
 	}

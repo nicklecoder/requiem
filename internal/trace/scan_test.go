@@ -36,10 +36,10 @@ func write(t *testing.T, dir, rel, body string) {
 func TestScan_FindsLabelsAndSkipsIgnoredAndRequiemItself(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, ".gitignore", "node_modules/\n")
-	write(t, dir, "src/auth.go", "// requiem: auth/session/no-plaintext\nfunc store() {}\n// requiem: auth/session/expiry\n")
-	write(t, dir, "src/auth_test.go", "// requiem: auth/session/no-plaintext\n")
+	write(t, dir, "src/auth.go", label("auth/session/no-plaintext")+"func store() {}\n"+label("auth/session/expiry"))
+	write(t, dir, "src/auth_test.go", label("auth/session/no-plaintext"))
 	// Gitignored: build output and vendored code must never appear.
-	write(t, dir, "node_modules/junk/v.go", "// requiem: auth/session/vendored\n")
+	write(t, dir, "node_modules/junk/v.go", label("auth/session/vendored"))
 	// Statements reference each other by id; those are relationships, not
 	// code references, so .requiem is excluded.
 	write(t, dir, ".requiem/statements/auth/session/x.md", "relationships:\n  - to: auth/session/expiry\n")
@@ -79,7 +79,7 @@ func TestScan_FindsLabelsAndSkipsIgnoredAndRequiemItself(t *testing.T) {
 // the reference matters most.
 func TestScan_IncludesUntrackedFiles(t *testing.T) {
 	dir := newRepo(t)
-	write(t, dir, "new.go", "// requiem: ns/fresh\n")
+	write(t, dir, "new.go", label("ns/fresh"))
 	refs, err := Scan(dir)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
@@ -102,16 +102,54 @@ func TestScan_NoLabelsIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestParseLine_HandlesColonsInPathsAndMalformedInput(t *testing.T) {
-	// A path may contain a colon, so the id is located from the right.
-	r, ok := parseLine("odd:dir/file.go:42:requiem: ns/id")
-	if !ok || r.File != "odd:dir/file.go" || r.Line != 42 || r.FullID != "ns/id" {
-		t.Fatalf("unexpected parse: %+v ok=%v", r, ok)
+func TestParseLine_HandlesColonsInPathsMultipleLabelsAndMalformedInput(t *testing.T) {
+	rec := func(file, line, content string) string {
+		return file + "\x00" + line + "\x00" + content
 	}
-	for _, bad := range []string{"", "no marker here", "file.go:notanumber:requiem: ns/id", "requiem: ns/id"} {
-		if _, ok := parseLine(bad); ok {
-			t.Errorf("expected %q rejected", bad)
+	// NUL-separated fields, so a colon in a path is unambiguous.
+	got := parseLine(rec("odd:dir/file.go", "42", "// "+Marker+" ns/id"))
+	if len(got) != 1 || got[0].File != "odd:dir/file.go" || got[0].Line != 42 || got[0].FullID != "ns/id" {
+		t.Fatalf("unexpected parse: %+v", got)
+	}
+	// Several labels on one line are all returned.
+	got = parseLine(rec("a.go", "1", Marker+" ns/one and "+Marker+" ns/two"))
+	if len(got) != 2 || got[0].FullID != "ns/one" || got[1].FullID != "ns/two" {
+		t.Fatalf("expected both labels, got %+v", got)
+	}
+	for _, bad := range []string{"", "no separators", rec("a.go", "notanumber", Marker+" ns/id"), rec("", "1", Marker+" ns/id")} {
+		if got := parseLine(bad); len(got) != 0 {
+			t.Errorf("expected %q rejected, got %+v", bad, got)
 		}
+	}
+}
+
+// A literal marker in a fixture or code sample is textually identical to a
+// real label, so the scanner needs an explicit way to be told which is which.
+func TestScan_IgnoreMarkerSuppressesTheLine(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "real.go", label("ns/genuine"))
+	write(t, dir, "fixture_test.go",
+		"writeCode(t, \"a.go\", \"// "+Marker+" ns/fixture\")  // "+IgnoreMarker+" test fixture\n")
+	// A whole raw-string block is suppressed line by line.
+	write(t, dir, "sample.go",
+		"const sample = `\n// "+Marker+" ns/sample   "+IgnoreMarker+"\n`\n")
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	counts := CountByID(refs)
+	if counts["ns/genuine"] != 1 {
+		t.Fatalf("real labels must still be found: %+v", counts)
+	}
+	for _, suppressed := range []string{"ns/fixture", "ns/sample"} {
+		if _, ok := counts[suppressed]; ok {
+			t.Fatalf("%s should have been suppressed: %+v", suppressed, counts)
+		}
+	}
+	// The marker must not itself register as a label named "ignore".
+	if _, ok := counts["ignore"]; ok {
+		t.Fatalf("the ignore marker must not parse as a label: %+v", counts)
 	}
 }
 
@@ -120,9 +158,9 @@ func TestParseLine_HandlesColonsInPathsAndMalformedInput(t *testing.T) {
 // reference to the id in requiem's own documentation.
 func TestScan_SkipsRequiemsOwnGeneratedDocs(t *testing.T) {
 	dir := newRepo(t)
-	write(t, dir, "CLAUDE.md", "// requiem: auth/session/no-plaintext-tokens\n")
-	write(t, dir, "AGENTS.md", "// requiem: auth/session/no-plaintext-tokens\n")
-	write(t, dir, "src/real.go", "// requiem: ns/genuine\n")
+	write(t, dir, "CLAUDE.md", label("auth/session/no-plaintext-tokens"))
+	write(t, dir, "AGENTS.md", label("auth/session/no-plaintext-tokens"))
+	write(t, dir, "src/real.go", label("ns/genuine"))
 
 	refs, err := Scan(dir)
 	if err != nil {
@@ -134,5 +172,121 @@ func TestScan_SkipsRequiemsOwnGeneratedDocs(t *testing.T) {
 	}
 	if counts["ns/genuine"] != 1 {
 		t.Fatalf("real labels must still be found: %+v", counts)
+	}
+}
+
+// A document citing a decision is not an implementation of it, so it must not
+// count toward a reference count — otherwise a README explaining the label
+// format inflates the very number it is explaining.
+func TestScan_ClassifiesDocumentationSeparatelyFromCode(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "src/a.go", label("ns/rule"))
+	write(t, dir, "docs/design.md", "See "+label("ns/rule"))
+	write(t, dir, "notes.txt", label("ns/rule"))
+
+	refs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(refs) != 3 {
+		t.Fatalf("expected all three sites recorded, got %+v", refs)
+	}
+	// Counted: code only.
+	if got := CountByID(refs)["ns/rule"]; got != 1 {
+		t.Fatalf("expected only the code site counted, got %d", got)
+	}
+	// Recorded: everything, so a changed decision can still flag the docs.
+	kinds := map[string]Kind{}
+	for _, r := range refs {
+		kinds[r.File] = r.Kind
+	}
+	for file, want := range map[string]Kind{
+		"src/a.go": KindCode, "docs/design.md": KindDoc, "notes.txt": KindDoc,
+	} {
+		if kinds[file] != want {
+			t.Errorf("%s classified %q, want %q", file, kinds[file], want)
+		}
+	}
+}
+
+func TestKindOf_IsCaseInsensitiveAndDefaultsToCode(t *testing.T) {
+	for path, want := range map[string]Kind{
+		"README.MD": KindDoc, "a/b/notes.Rst": KindDoc, "x.adoc": KindDoc,
+		"main.go": KindCode, "Makefile": KindCode, "a.md.go": KindCode, "script.sh": KindCode,
+	} {
+		if got := KindOf(path); got != want {
+			t.Errorf("KindOf(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// label builds a marker comment at runtime — see the note in
+// internal/requiem/traceability_test.go for why a literal will not do.
+func label(id string) string { return "// " + "requiem: " + id + "\n" }
+
+// Labels answer where a decision lives now; trailers answer when it was
+// implemented and by what change.
+func TestCommits_FindsTrailersAndIgnoresOtherCommits(t *testing.T) {
+	dir := newRepo(t)
+	commit := func(msg, file, body string) {
+		t.Helper()
+		write(t, dir, file, body)
+		for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", msg}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+	}
+	commit("Unrelated change", "a.go", "package a\n")
+	commit("Enforce single-model embedding\n\n"+TrailerKey+" embedding/model-pinning", "b.go", "package b\n")
+	commit("Follow-up fix\n\n"+TrailerKey+" embedding/model-pinning", "c.go", "package c\n")
+	commit("Different decision\n\n"+TrailerKey+" retrieval/rrf-fusion", "d.go", "package d\n")
+
+	got, err := Commits(dir, "embedding/model-pinning")
+	if err != nil {
+		t.Fatalf("Commits: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected the two commits naming this id, got %+v", got)
+	}
+	if got[0].Subject != "Follow-up fix" {
+		t.Fatalf("expected newest first, got %+v", got)
+	}
+	if got[0].SHA == "" || got[0].Date == "" {
+		t.Fatalf("expected sha and date populated, got %+v", got[0])
+	}
+
+	none, err := Commits(dir, "ns/never-referenced")
+	if err != nil {
+		t.Fatalf("Commits: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected no commits, got %+v", none)
+	}
+}
+
+// A trailer naming an id that was later renamed stays as written: a commit
+// message is a historical document and should record what was true then.
+func TestCommits_TrailerIsNotRewrittenByRename(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "a.go", "package a\n")
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-q", "-m", "Implement it\n\n" + TrailerKey + " old/id"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	got, err := Commits(dir, "old/id")
+	if err != nil {
+		t.Fatalf("Commits: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("history keeps the name it was written with, got %+v", got)
 	}
 }

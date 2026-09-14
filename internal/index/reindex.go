@@ -292,11 +292,11 @@ func insertStatement(tx *sql.Tx, st model.Statement, relPath string) error {
 
 	_, err := tx.Exec(
 		`INSERT INTO statements
-			(full_id, id, namespace, kind, modality, body, status, provenance_type,
+			(full_id, id, namespace, kind, modality, abstract, body, status, provenance_type,
 			 source_file, source_line_start, source_line_end, source_hash,
 			 created_at, file_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		fullID, st.ID, st.Namespace, string(st.Kind), nullableString(string(st.Modality)),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		fullID, st.ID, st.Namespace, string(st.Kind), nullableString(string(st.Modality)), st.Abstract,
 		st.Body, string(st.Status), string(st.Provenance.Type),
 		sourceFile, lineStart, lineEnd, sourceHash,
 		st.CreatedAt.Format(timeFormat), relPath,

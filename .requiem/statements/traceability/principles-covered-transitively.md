@@ -3,7 +3,7 @@ id: principles-covered-transitively
 namespace: traceability
 kind: design
 modality: may
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-13T23:01:01.113457589Z

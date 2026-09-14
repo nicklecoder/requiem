@@ -3,7 +3,7 @@ id: code-labels
 namespace: traceability
 kind: design
 modality: should
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-13T22:28:53.711038145Z

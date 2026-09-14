@@ -28,21 +28,27 @@ const (
 	// RefDangling is a label naming nothing that exists — the reference
 	// rotted, or the id was mistyped.
 	RefDangling RefClass = "dangling"
+	// RefAbstract is code referencing a statement whose author declared that
+	// no code can implement it. The declaration excludes the statement from
+	// --unreferenced forever, so a wrong one hides a real gap permanently —
+	// and this is the one case where evidence can contradict it.
+	RefAbstract RefClass = "abstract"
 )
 
 // Contradiction reports whether this class describes code disagreeing with a
 // decision, as opposed to code that is merely out of date with a label or
 // ahead of a decision. These are the classes audit raises on its own.
 func (c RefClass) Contradiction() bool {
-	return c == RefRetired || c == RefRejected
+	return c == RefRetired || c == RefRejected || c == RefAbstract
 }
 
 // ClassifiedRef is one labelled site with the verdict on what it points at.
 type ClassifiedRef struct {
-	FullID string   `json:"full_id"`
-	File   string   `json:"file"`
-	Line   int      `json:"line"`
-	Class  RefClass `json:"class"`
+	FullID string     `json:"full_id"`
+	File   string     `json:"file"`
+	Line   int        `json:"line"`
+	Kind   trace.Kind `json:"kind"`
+	Class  RefClass   `json:"class"`
 	// Status is the referenced statement's status, absent for rejections and
 	// dangling labels.
 	Status model.Status `json:"status,omitempty"`
@@ -63,8 +69,10 @@ func classifyRefs(ix *index.Index, refs []trace.Ref) ([]ClassifiedRef, error) {
 		return nil, err
 	}
 	status := make(map[string]model.Status, len(statements))
+	abstract := make(map[string]bool, len(statements))
 	for _, st := range statements {
 		status[st.FullID()] = st.Status
+		abstract[st.FullID()] = st.Abstract
 	}
 
 	rejections, err := ix.AllRejectionIDs()
@@ -78,14 +86,16 @@ func classifyRefs(ix *index.Index, refs []trace.Ref) ([]ClassifiedRef, error) {
 
 	out := make([]ClassifiedRef, 0, len(refs))
 	for _, r := range refs {
-		c := ClassifiedRef{FullID: r.FullID, File: r.File, Line: r.Line}
+		c := ClassifiedRef{FullID: r.FullID, File: r.File, Line: r.Line, Kind: r.Kind}
 		switch st, ok := status[r.FullID]; {
 		case ok:
 			c.Status = st
-			switch st {
-			case model.StatusActive:
+			switch {
+			case abstract[r.FullID]:
+				c.Class = RefAbstract
+			case st == model.StatusActive:
 				c.Class = RefActive
-			case model.StatusProposed:
+			case st == model.StatusProposed:
 				c.Class = RefProposed
 			default:
 				c.Class = RefRetired
@@ -102,9 +112,17 @@ func classifyRefs(ix *index.Index, refs []trace.Ref) ([]ClassifiedRef, error) {
 
 // TraceResult is `trace`'s output for one statement.
 type TraceResult struct {
-	FullID string          `json:"full_id"`
-	Class  RefClass        `json:"class"`
-	Refs   []ClassifiedRef `json:"refs"`
+	FullID string   `json:"full_id"`
+	Class  RefClass `json:"class"`
+	// CodeRefs and DocMentions are counted apart: only the first says
+	// anything about whether the decision is implemented.
+	CodeRefs    int             `json:"code_refs"`
+	DocMentions int             `json:"doc_mentions"`
+	Refs        []ClassifiedRef `json:"refs"`
+	// Commits carry Requiem-Id trailers naming this statement. Labels answer
+	// where a decision lives now; trailers answer when it was implemented and
+	// by what change, which labels structurally cannot.
+	Commits []trace.Commit `json:"commits,omitempty"`
 }
 
 // Trace reports the labelled source sites referencing one statement.
@@ -134,11 +152,23 @@ func (s *Service) Trace(fullID string) (*TraceResult, error) {
 
 	out := &TraceResult{FullID: fullID, Refs: []ClassifiedRef{}}
 	for _, c := range classified {
-		if c.FullID == fullID {
-			out.Class = c.Class
-			out.Refs = append(out.Refs, c)
+		if c.FullID != fullID {
+			continue
 		}
+		out.Class = c.Class
+		if c.Kind == trace.KindDoc {
+			out.DocMentions++
+		} else {
+			out.CodeRefs++
+		}
+		out.Refs = append(out.Refs, c)
 	}
+	commits, err := trace.Commits(s.Root, fullID)
+	if err != nil {
+		return nil, err
+	}
+	out.Commits = commits
+
 	if out.Class == "" {
 		// No labels point here, so the class describes the statement itself
 		// rather than any reference to it.
@@ -165,9 +195,16 @@ func classOfTarget(ix *index.Index, fullID string) RefClass {
 // ContradictingRefs returns the labelled sites that disagree with a decision:
 // code referencing a retired statement or a rejected idea. Sorted so output
 // is stable between runs.
+//
+// Code only. A document explaining why an idea was rejected cites that
+// rejection legitimately and contradicts nothing — treating it as a finding
+// would make writing about a decision an offence against it.
 func ContradictingRefs(refs []ClassifiedRef) []ClassifiedRef {
 	var out []ClassifiedRef
 	for _, r := range refs {
+		if r.Kind == trace.KindDoc {
+			continue
+		}
 		if r.Class.Contradiction() {
 			out = append(out, r)
 		}

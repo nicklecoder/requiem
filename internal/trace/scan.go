@@ -15,7 +15,11 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,13 +34,63 @@ const Marker = "requiem:"
 // slash-separated).
 const labelPattern = `requiem: ?[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*`
 
+// requiem: traceability/label-false-positives
+// Kind distinguishes a label in code from one in documentation.
+//
+// A document citing a decision is not an implementation of it, so a mention
+// must not count toward a statement's reference count — otherwise a README
+// showing the label format inflates the very number it is explaining. It is
+// still worth recording: a document that cites a decision is something a
+// change to that decision affects, so mentions appear in trace and in
+// update's blast radius.
+type Kind string
+
+const (
+	KindCode Kind = "code"
+	KindDoc  Kind = "doc"
+)
+
+// docExtensions are treated as documentation. A guess, but a legible one —
+// and it only ever moves a reference between two reported buckets, never
+// discards it, so being wrong about a file costs accuracy rather than data.
+var docExtensions = map[string]bool{
+	".md": true, ".markdown": true, ".rst": true,
+	".adoc": true, ".asciidoc": true, ".txt": true, ".org": true,
+}
+
 // Ref is one labelled site.
 type Ref struct {
 	FullID string `json:"full_id"`
 	File   string `json:"file"`
 	Line   int    `json:"line"`
+	Kind   Kind   `json:"kind"`
 }
 
+// KindOf classifies a path as code or documentation.
+func KindOf(path string) Kind {
+	if docExtensions[strings.ToLower(filepath.Ext(path))] {
+		return KindDoc
+	}
+	return KindCode
+}
+
+// requiem: traceability/marker-in-fixtures
+// IgnoreMarker opts a line out of scanning.
+//
+// A literal marker in a test fixture or a code sample is textually identical
+// to a real label — the scanner cannot tell "this is a label" from "this is
+// an example of a label", because they are the same string. This is the
+// escape hatch the linter world settled on (noqa, nolint, eslint-disable),
+// and anything after it on the line is free text recording why.
+//
+// Checked before the label pattern deliberately: "requiem:ignore" matches the
+// label pattern itself, since "ignore" is a valid slug, and would otherwise
+// be read as a reference to a statement named "ignore".
+const IgnoreMarker = "requiem:ignore"
+
+var labelRe = regexp.MustCompile(labelPattern)
+
+// requiem: traceability/no-code-index
 // Scan returns every label in the working tree, in git grep's order (path,
 // then line).
 //
@@ -52,10 +106,13 @@ type Ref struct {
 // documentation. The example has to stay concrete — a vague one is
 // unactionable, which is the lesson that produced it — so the scan gives
 // way instead.
-// requiem: traceability/no-code-index
 func Scan(root string) ([]Ref, error) {
+	// Whole lines, NUL-separated, rather than -o: the ignore marker can sit
+	// anywhere on the line, so the match alone is not enough context. NUL
+	// separators also make parsing exact where a colon in a filename would
+	// otherwise be ambiguous.
 	cmd := exec.Command("git", "grep",
-		"--untracked", "--no-color", "-I", "-n", "-o", "-E", labelPattern,
+		"--untracked", "--no-color", "-I", "-n", "-z", "-E", labelPattern,
 		"--", ".", ":(exclude).requiem",
 		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md")
 	cmd.Dir = root
@@ -77,49 +134,46 @@ func Scan(root string) ([]Ref, error) {
 	// long one; give the scanner room rather than failing the whole scan.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		ref, ok := parseLine(scanner.Text())
-		if !ok {
-			continue
-		}
-		refs = append(refs, ref)
+		refs = append(refs, parseLine(scanner.Text())...)
 	}
 	return refs, scanner.Err()
 }
 
-// parseLine reads one `path:line:requiem: id` record. A path containing a
-// colon would break a naive split, so the id is located from the right by its
-// marker and the line number taken from the field immediately before it.
-func parseLine(line string) (Ref, bool) {
-	i := strings.LastIndex(line, Marker)
-	if i < 0 {
-		return Ref{}, false
+// parseLine reads one NUL-separated `path\0line\0content` record, returning
+// every label on it. A line carrying IgnoreMarker yields none.
+func parseLine(line string) []Ref {
+	parts := strings.SplitN(line, "\x00", 3)
+	if len(parts) != 3 {
+		return nil
 	}
-	fullID := strings.TrimSpace(line[i+len(Marker):])
-	if fullID == "" {
-		return Ref{}, false
+	file, content := parts[0], parts[2]
+	if file == "" || strings.Contains(content, IgnoreMarker) {
+		return nil
+	}
+	lineNo, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil
 	}
 
-	rest := strings.TrimSuffix(line[:i], ":")
-	j := strings.LastIndex(rest, ":")
-	if j < 0 {
-		return Ref{}, false
+	var out []Ref
+	for _, m := range labelRe.FindAllString(content, -1) {
+		id := strings.TrimSpace(strings.TrimPrefix(m, Marker))
+		if id == "" {
+			continue
+		}
+		out = append(out, Ref{FullID: id, File: file, Line: lineNo, Kind: KindOf(file)})
 	}
-	lineNo, err := strconv.Atoi(rest[j+1:])
-	if err != nil {
-		return Ref{}, false
-	}
-	file := rest[:j]
-	if file == "" {
-		return Ref{}, false
-	}
-	return Ref{FullID: fullID, File: file, Line: lineNo}, true
+	return out
 }
 
-// CountByID groups refs by the statement they name.
+// CountByID groups refs by the statement they name, counting code only —
+// see Kind for why a documentation mention is not a reference.
 func CountByID(refs []Ref) map[string]int {
 	out := make(map[string]int)
 	for _, r := range refs {
-		out[r.FullID]++
+		if r.Kind == KindCode {
+			out[r.FullID]++
+		}
 	}
 	return out
 }
@@ -131,4 +185,128 @@ func ByID(refs []Ref) map[string][]Ref {
 		out[r.FullID] = append(out[r.FullID], r)
 	}
 	return out
+}
+
+// requiem: traceability/mv-rewrites-labels
+// Rewrite replaces the statement id in every given ref's label, in place.
+//
+// One exact-string swap per site, not a pattern match: the marker plus a full
+// id is distinctive enough that collision is not a realistic concern, which
+// is what makes this safe where a general codemod would need an AST. Requiem
+// is language-agnostic by design, so an AST is not available to it anyway.
+//
+// Edits are left unstaged. Requiem stages only its own files, so a rewrite
+// shows up in `git diff` and cannot reach history without someone seeing it.
+//
+// Returns the sites actually changed. A ref whose line no longer holds the
+// expected label is skipped rather than guessed at — the tree may have moved
+// under us between the scan and the write.
+func Rewrite(root string, refs []Ref, from, to string) ([]Ref, error) {
+	byFile := map[string][]Ref{}
+	for _, r := range refs {
+		byFile[r.File] = append(byFile[r.File], r)
+	}
+
+	files := make([]string, 0, len(byFile))
+	for f := range byFile {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+
+	oldLabel, newLabel := Marker+" "+from, Marker+" "+to
+	var changed []Ref
+	for _, file := range files {
+		path := filepath.Join(root, file)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return changed, fmt.Errorf("rewrite %s: %w", file, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return changed, err
+		}
+
+		lines := strings.Split(string(data), "\n")
+		var touched bool
+		for _, r := range byFile[file] {
+			i := r.Line - 1
+			if i < 0 || i >= len(lines) || !strings.Contains(lines[i], oldLabel) {
+				continue
+			}
+			lines[i] = strings.ReplaceAll(lines[i], oldLabel, newLabel)
+			changed = append(changed, r)
+			touched = true
+		}
+		if !touched {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), info.Mode().Perm()); err != nil {
+			return changed, fmt.Errorf("rewrite %s: %w", file, err)
+		}
+	}
+	return changed, nil
+}
+
+// TrailerKey is the git trailer a code commit uses to name the decision it
+// implements. Requiem only ever reads these.
+//
+// It cannot write the useful ones: `requiem commit` commits statements, so a
+// trailer there would relate a statement commit to its own statement. The
+// trailer worth having goes on the code commit that implements a decision,
+// and requiem never makes those.
+const TrailerKey = "Requiem-Id:"
+
+// Commit is one commit naming a statement in a trailer.
+type Commit struct {
+	SHA     string `json:"sha"`
+	Date    string `json:"date"`
+	Subject string `json:"subject"`
+}
+
+// requiem: traceability/code-labels
+// Commits finds commits whose message carries a TrailerKey naming fullID.
+//
+// On demand only. Walking history is far more expensive than one working-tree
+// grep, so this never runs on an indexing path — unlike labels, which are
+// scanned and cached.
+//
+// A trailer naming an id that was later renamed stays as written, and that is
+// correct: a commit message is a historical document, and it should record
+// what was true when the change was made, the same way `Fixes #123` survives
+// an issue being retitled.
+func Commits(root, fullID string) ([]Commit, error) {
+	cmd := exec.Command("git", "log",
+		"--grep="+regexp.QuoteMeta(TrailerKey+" "+fullID),
+		"--extended-regexp", "--no-color",
+		"--format=%H%x1f%cs%x1f%s")
+	cmd.Dir = root
+
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git log for trailers: %w", err)
+	}
+
+	var commits []Commit
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x1f", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		commits = append(commits, Commit{SHA: parts[0][:min(7, len(parts[0]))], Date: parts[1], Subject: parts[2]})
+	}
+	return commits, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -3,7 +3,7 @@ id: mv-rewrites-labels
 namespace: traceability
 kind: design
 modality: may
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-13T22:40:10.194740468Z

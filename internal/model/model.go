@@ -203,10 +203,21 @@ type InboundRef struct {
 // Statement is the atomic unit requiem tracks: a requirement, rule, or
 // design decision, addressed by the composite "<namespace>/<id>".
 type Statement struct {
-	ID            string         `yaml:"id" json:"id"`
-	Namespace     string         `yaml:"namespace" json:"namespace"`
-	Kind          Kind           `yaml:"kind" json:"kind"`
-	Modality      Modality       `yaml:"modality,omitempty" json:"modality,omitempty"`
+	ID        string   `yaml:"id" json:"id"`
+	Namespace string   `yaml:"namespace" json:"namespace"`
+	Kind      Kind     `yaml:"kind" json:"kind"`
+	Modality  Modality `yaml:"modality,omitempty" json:"modality,omitempty"`
+	// Abstract declares that no code can implement this statement — a
+	// principle, a process decision, a rule about the corpus itself. It
+	// excludes the statement from --unreferenced, which otherwise lists it
+	// forever.
+	//
+	// An assertion by the author, not an inference: requiem cannot tell
+	// "nothing implements this" from "nothing can". The cost is that a wrong
+	// assertion hides a real gap, so audit reports an abstract statement that
+	// turns out to have code referencing it — evidence contradicting the
+	// declaration, which is the one case that can be checked.
+	Abstract      bool           `yaml:"abstract,omitempty" json:"abstract,omitempty"`
 	Status        Status         `yaml:"status" json:"status"`
 	Tags          []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Provenance    Provenance     `yaml:"provenance" json:"provenance"`
@@ -241,6 +252,13 @@ type Statement struct {
 	// implemented but unlabelled, or unimplementable, and a zero would invite
 	// reading missing data as an answer.
 	CodeRefs *int `yaml:"-" json:"code_refs,omitempty"`
+
+	// CoveredVia names the refining statements that carry this one's
+	// implementation, where it has no label of its own. Derived, and
+	// reported rather than merely acted on: treating a statement as covered
+	// because its refiners are labelled is an inference, and an inference
+	// should be inspectable.
+	CoveredVia []string `yaml:"-" json:"covered_via,omitempty"`
 
 	// EmbeddingStatus is another derived, never-stored fact: "missing" (no
 	// vector on record), "stale" (body has changed since the vector was

@@ -8,7 +8,7 @@ import (
 
 func newListCmd() *cobra.Command {
 	var namespace, kind, status, tag string
-	var needsEmbedding, unreferenced bool
+	var needsEmbedding, unreferenced, direct bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -26,6 +26,7 @@ func newListCmd() *cobra.Command {
 				Tag:            tag,
 				NeedsEmbedding: needsEmbedding,
 				Unreferenced:   unreferenced,
+				Direct:         direct,
 			})
 			if err != nil {
 				return err
@@ -43,6 +44,7 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tag, "tag", "", "filter by tag")
 	cmd.Flags().BoolVar(&needsEmbedding, "needs-embedding", false, "only statements with a missing or stale embedding")
 	cmd.Flags().BoolVar(&unreferenced, "unreferenced", false, "only statements no labelled code site references (empty where labelling is unused)")
+	cmd.Flags().BoolVar(&direct, "direct", false, "with --unreferenced, ignore coverage inherited from refining statements")
 
 	return cmd
 }
