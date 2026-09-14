@@ -1201,9 +1201,14 @@ func TestInit_InstallsNonBlockingPrecommitHook(t *testing.T) {
 	if !strings.Contains(got, "|| true") {
 		t.Fatalf("the hook must never fail a commit:\n%s", got)
 	}
-	// Unlike the reindex hooks, this one must not be silenced — a warning
-	// nobody sees is not a warning.
-	if strings.Contains(got, "2>&1") {
+	// Unlike the reindex hooks, the notice itself must not be silenced — a
+	// warning nobody sees is not a warning.
+	if strings.Contains(got, "precommit-notice >/dev/null") || strings.Contains(got, "precommit-notice 2>") {
 		t.Fatalf("the notice must reach stderr, not be silenced:\n%s", got)
+	}
+	// But a missing binary must stay quiet: without the guard, a project
+	// whose requiem is not on PATH prints "not found" on every commit.
+	if !strings.Contains(got, "command -v requiem") {
+		t.Fatalf("the hook must no-op quietly when requiem is absent:\n%s", got)
 	}
 }

@@ -83,10 +83,13 @@ type InitResult struct {
 // CLI — install-time reindex hooks target exactly these.
 var hookedEvents = []string{"post-checkout", "post-merge", "post-rewrite"}
 
-// precommitCommand is deliberately not silenced, unlike the reindex hooks: a
-// warning nobody sees is not a warning. It still ends in `|| true`, so a
-// missing or failing requiem can never block a commit.
-const precommitCommand = "requiem precommit-notice || true"
+// precommitCommand keeps requiem's own output visible, unlike the reindex
+// hooks: a warning nobody sees is not a warning. But it guards on the binary
+// existing first — without that, a project whose requiem is not on PATH gets
+// "requiem: not found" printed on every single commit, which is noise worse
+// than the silence it replaced. The trailing `|| true` means a failing
+// requiem can still never block a commit.
+const precommitCommand = "command -v requiem >/dev/null 2>&1 && requiem precommit-notice || true"
 
 // hookCommand is deliberately a plain `requiem reindex`, not a targeted
 // `--files` scan: Reindex already skips any file whose mtime/size didn't
