@@ -3,7 +3,7 @@ id: marker-in-fixtures
 namespace: traceability
 kind: design
 modality: should
-status: proposed
+status: active
 provenance:
     type: dialogue
 created_at: 2026-09-14T00:29:42.372871439Z

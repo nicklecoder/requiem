@@ -3,6 +3,7 @@ id: rules-serve-principles
 namespace: principles
 kind: rule
 modality: must
+abstract: true
 status: active
 provenance:
     type: dialogue

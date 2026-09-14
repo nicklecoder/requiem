@@ -3,6 +3,7 @@ id: no-silent-success
 namespace: principles
 kind: rule
 modality: must_not
+abstract: true
 status: active
 provenance:
     type: dialogue

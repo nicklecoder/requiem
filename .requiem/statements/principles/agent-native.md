@@ -2,6 +2,7 @@
 id: agent-native
 namespace: principles
 kind: design
+abstract: true
 status: active
 provenance:
     type: dialogue

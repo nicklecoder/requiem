@@ -2,6 +2,7 @@
 id: files-canonical
 namespace: principles
 kind: design
+abstract: true
 status: active
 provenance:
     type: dialogue
