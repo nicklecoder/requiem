@@ -1,9 +1,41 @@
-<!-- >>> requiem v7 >>> -->
+<!-- >>> requiem v9 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
 in `.requiem/` using requiem, so you can check a new idea against prior
 decisions without loading the whole spec into context.
+
+### Working process
+
+1. **Before proposing anything non-trivial**, run `check` on the relevant
+   namespace. Read the `rejection` results first — those are ideas this
+   project already considered and turned down, and re-proposing one is the
+   most common way to waste the human's time.
+2. If a result conflicts with what you were about to do, say so rather than
+   silently picking a side. Requiem surfaces candidates; judging them is
+   your job, and reporting the conflict is part of judging it.
+3. When a decision is made, `add` it — with `--modality` if it carries
+   normative force, `--status proposed` if it is not settled yet.
+4. `link` it to the principle it refines, so the graph is navigable from
+   both ends, and `reject` the alternatives that lost with `--see-instead`
+   pointing at what replaced them. A rejection costs one command and saves
+   the next agent from re-deriving it.
+5. While implementing, label the code. Labelling a **test** is stronger than
+   labelling an implementation: a passing labelled test is evidence the
+   statement holds, where a comment only asserts intent.
+6. Periodically run `requiem reindex --embed` then `requiem audit`, and
+   record a verdict on every pair it surfaces. An adjudicated pair stops
+   resurfacing and frees the slot for the next candidate.
+7. `requiem commit` when the decision is settled. Nothing is permanent
+   until then, so exploring a dead end and running `discard` leaves no trace.
+
+**Writing a statement that can be found again.** State the decision *and*
+why. "Use Postgres" is not retrievable; "Session state lives in Postgres
+rather than Redis, because it must survive a restart" matches a future draft
+that shares neither word. Retrieval works on the body, so a body that omits
+the reasoning cannot match a draft that arrives at it differently.
+
+### Commands
 
 **Before proposing anything non-trivial**, look for prior decisions and
 previously-rejected ideas:
@@ -70,7 +102,10 @@ refuses a vector from a different model, since cosine similarity across two
 models is meaningless.
 
 `requiem audit` sweeps the whole corpus for pairs that may conflict or
-duplicate each other. Record every verdict with
+duplicate each other, taking each statement's nearest neighbours rather than
+everything above a similarity cutoff — on a real corpus every statement
+shares a vocabulary, so an absolute threshold surfaces most of it or none.
+Record every verdict with
 `requiem link <a> <b> --type conflicts_with|duplicates|not_related` so the
 pair stops resurfacing.
 

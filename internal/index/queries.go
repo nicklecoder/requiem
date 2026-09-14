@@ -351,3 +351,12 @@ func (ix *Index) CodeRefCounts() (map[string]int, bool, error) {
 	}
 	return out, len(out) > 0, nil
 }
+
+// upsertRelationshipForTest records a verdict directly, so a test can
+// simulate an agent adjudicating a pair without writing a statement file.
+func (ix *Index) upsertRelationshipForTest(from, to, relType string) error {
+	_, err := ix.db.Exec(
+		`INSERT OR REPLACE INTO relationships (from_id, to_id, type, note) VALUES (?, ?, ?, '')`,
+		from, to, relType)
+	return err
+}

@@ -10,23 +10,40 @@ import (
 	"github.com/nicklecoder/requiem/internal/requiem"
 )
 
-func newCheckCmd() *cobra.Command {
+// checkLong describes only what is actually available here: advertising
+// --semantic where no endpoint is configured tells a reader to use something
+// that can only fail.
+func checkLong(semantic bool) string {
+	base := "Lexical (FTS) matching alone misses a prior statement worded completely\n" +
+		"differently.\n\n"
+	if semantic {
+		return base +
+			"--semantic also searches by meaning, embedding the query text via the\n" +
+			"endpoint in .requiem/config.yaml. Pass --vector with --model instead to\n" +
+			"supply a query embedding you computed yourself. Results from either path\n" +
+			"are merged and marked via match_kind.\n\n" +
+			"--semantic is opt-in, not the default: check is the most-used command here\n" +
+			"and stays fast and offline unless you ask for the network call."
+	}
+	return base +
+		"Semantic matching is unavailable here: no embedding endpoint is configured\n" +
+		"in .requiem/config.yaml and no vectors are stored. You can still pass\n" +
+		"--vector with --model if you have an embedding from elsewhere, or configure\n" +
+		"an endpoint (any OpenAI-compatible /v1/embeddings, including a local Ollama)\n" +
+		"and re-run to enable --semantic."
+}
+
+func newCheckCmd(semantic bool) *cobra.Command {
 	var namespace, text, vectorJSON, model string
 	var tags []string
 	var limit int
-	var semantic bool
+	var useSemantic bool
 
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Surface compact candidate statements/rejections relevant to a draft idea",
-		Long: "Lexical (FTS) matching alone misses a prior statement worded completely\n" +
-			"differently. --semantic also searches by meaning, embedding the query text\n" +
-			"via the endpoint in .requiem/config.yaml. Pass --vector with --model instead\n" +
-			"to supply a query embedding you computed yourself. Results from either path\n" +
-			"are merged and marked via match_kind.\n\n" +
-			"--semantic is opt-in, not the default: check is the most-used command here\n" +
-			"and stays fast and offline unless you ask for the network call.",
-		Args: cobra.NoArgs,
+		Long:  checkLong(semantic),
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var vec []float32
 			if vectorJSON != "" {
@@ -51,7 +68,7 @@ func newCheckCmd() *cobra.Command {
 				Limit:     limit,
 				Vector:    vec,
 				Model:     model,
-				Semantic:  semantic,
+				Semantic:  useSemantic,
 			})
 			if err != nil {
 				return err
@@ -69,8 +86,13 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags to narrow the search")
 	cmd.Flags().StringVar(&vectorJSON, "vector", "", "JSON array of floats: an embedding of --text, for semantic matching alongside lexical")
 	cmd.Flags().StringVar(&model, "model", "", "name of the embedding model that produced --vector (required with it)")
-	cmd.Flags().BoolVar(&semantic, "semantic", false, "also match by meaning, embedding --text via the configured endpoint")
+	cmd.Flags().BoolVar(&useSemantic, "semantic", false, "also match by meaning, embedding --text via the configured endpoint")
 	cmd.Flags().IntVar(&limit, "limit", index.DefaultCheckLimit, "maximum candidates to return (0 = unlimited)")
+	// --semantic needs an endpoint to embed the query with; --vector does not
+	// and stays available regardless.
+	if !semantic {
+		_ = cmd.Flags().MarkHidden("semantic")
+	}
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("text")
 

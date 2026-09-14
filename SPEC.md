@@ -110,7 +110,17 @@ A statement with no vector is invisible to semantic search, and an empty result 
 
 ### Corpus-wide audit
 
-Where `check` compares one draft against prior decisions, `audit` compares every active statement against every other, surfacing close pairs as conflict or duplicate candidates. Pairs with any recorded relationship are excluded, so an adjudicated pair stops resurfacing. The scan is O(n²) in memory; at the corpus sizes this tool targets (hundreds of statements, so tens of thousands of comparisons over a few hundred floats) that is milliseconds, and no ANN index is warranted. As everywhere else, requiem surfaces the candidate and the agent classifies it.
+Where `check` compares one draft against prior decisions, `audit` compares the corpus against itself, surfacing pairs worth a human's attention. Pairs with any recorded relationship are excluded, so an adjudicated pair stops resurfacing.
+
+**Candidates are each statement's nearest neighbours, not every pair above a similarity threshold.** That is empirical, not a preference. Measured on a real 36-statement corpus with `mxbai-embed-large`, a cosine floor of 0.5 surfaced 69% of all pairs, while 0.85 — the usual near-duplicate cutoff in information retrieval — found none of five planted paraphrases. The usable window is narrow, specific to the model, and moves with how topically uniform the corpus is, which is exactly the property that varies most between projects. Every statement in one project shares a vocabulary, so everything is moderately similar to everything.
+
+Asking each statement for its *k* nearest others needs no constant and produces a candidate count that grows with the number of statements rather than their square. On the same corpus it surfaced 27 pairs — 4.3% — and recovered all five planted paraphrases, where mutual-nearest-neighbour recovered four: requiring mutuality is a precision filter, and it drops a duplicate whose original happens to be closer to something else. Recall is the right objective here, because the agent reading the output is the thing that adjudicates; requiem's job is to put the pair in front of it.
+
+**Ranking is by CSLS**, `2·sim(a,b) − r(a) − r(b)`, where `r(x)` is x's mean similarity to its own nearest neighbours. High-dimensional embedding spaces generically produce *hubs* — points near everything — and subtracting each side's local density measures how unusually close a pair is *for those two statements* rather than on an absolute scale that means nothing alone. It also removes the need for a per-model calibrated constant, the same reason RRF was chosen over score fusion for `check`. On the measured corpus it moved three of five planted duplicates into the top five, against one under raw cosine.
+
+Raw cosine is still reported alongside, because it is the number people have intuitions about. `--min-score` survives as an optional hard floor, defaulting to off.
+
+The scan is O(n²) in memory; at the corpus sizes this tool targets that is milliseconds, and no ANN index is warranted. As everywhere else, requiem surfaces the candidate and the agent classifies it.
 
 ## Data Model
 
@@ -170,7 +180,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | `list` | `[--namespace] [--kind] [--status] [--tag] [--needs-embedding] [--unreferenced] [--direct]` | array of compact summaries |
 | `check` | `--namespace --text [--tags] [--semantic] [--vector --model] [--limit]` | ranked array of compact candidates — id, namespace, kind, status, short excerpt, `match_kind` (`lexical`/`semantic`/`both`), `rank` (lower is more relevant; scale unspecified and comparable only within one result set). Statements and rejections included, distinctly tagged. Defaults to 10 results; `--limit 0` is unlimited. Full bodies are a deliberate second `get` call. |
 | `embed` | `<id> --vector --model [--force]` | stored vector's id, model, dims, timestamp. Manual escape hatch; `reindex --embed` is the normal path. |
-| `audit` | `[--namespace] [--min-score] [--limit]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly |
+| `audit` | `[--namespace] [--neighbors] [--limit] [--min-score]` | ranked array of candidate conflicting/duplicate pairs, excerpt-only, excluding pairs with any recorded relationship; pairs with incompatible modality flagged distinctly and ranked first |
 | `mv` | `<from-id> <to-id> [--leave-link]` | from, to, rewritten inbound references, whether a stub was left |
 | `trace` | `<namespace/id>` | labelled source sites referencing this statement, each classified by what it resolves to |
 | `reindex` | `[--embed]` | counts: added/updated/removed/unchanged. Also rescans the source tree for labels — unlike the lazy reindex the read path performs, which never does. With `--embed`, also fills missing/stale vectors; partial failure persists progress and exits nonzero. |

@@ -14,11 +14,16 @@ import (
 // follow-up `link`, deferring full detail to `get` on whichever side
 // warrants it.
 type PairCandidate struct {
-	A        string  `json:"a"`
-	B        string  `json:"b"`
-	Score    float64 `json:"score"`
-	ExcerptA string  `json:"excerpt_a"`
-	ExcerptB string  `json:"excerpt_b"`
+	A string `json:"a"`
+	B string `json:"b"`
+	// Score is the CSLS value pairs are ranked by: higher is more unusual.
+	// Comparable within one result set, not across corpora.
+	Score float64 `json:"score"`
+	// Similarity is the raw cosine, kept because it is the number people
+	// actually have intuitions about.
+	Similarity float64 `json:"similarity"`
+	ExcerptA   string  `json:"excerpt_a"`
+	ExcerptB   string  `json:"excerpt_b"`
 	// ModalityConflict marks a pair whose normative directions oppose — an
 	// obligation or permission against a prohibition. Set only when both
 	// statements declare a modality, since an absent one asserts nothing and
@@ -33,14 +38,42 @@ type PairCandidate struct {
 	ModalityConflict bool `json:"modality_conflict,omitempty"`
 }
 
-// FindCandidatePairs sweeps active statements (optionally scoped to a
-// namespace, matching itself and anything nested under it) for pairs whose
-// embeddings are close in cosine-similarity terms, excluding any pair that
+// localDensityK is how many neighbours define a statement's local
+// neighbourhood for CSLS. Small because requiem's corpora are small; the
+// value only has to estimate "how close is this statement to things in
+// general", and a handful of neighbours does that stably.
+const localDensityK = 5
+
+// FindCandidatePairs sweeps searchable statements (optionally scoped to a
+// namespace) for pairs worth a human's attention, excluding any pair that
 // already has a relationship recorded between them in either direction —
-// once an agent has judged a pair (conflicts_with, duplicates, not_related,
-// ...), it stops resurfacing. Corpus sizes here are small enough that an
-// in-memory O(n^2) scan is fine; no ANN index is needed.
-func (ix *Index) FindCandidatePairs(namespace string, minScore float64, limit int) ([]PairCandidate, error) {
+// once an agent has judged a pair, it stops resurfacing.
+//
+// Candidates are each statement's `neighbors` nearest others, not every pair
+// above a similarity threshold. That choice is empirical. An absolute
+// threshold fails on a real corpus because every statement in one project
+// shares a vocabulary: measured here, cosine >= 0.5 surfaced 69% of all
+// pairs, while 0.85 — the usual near-duplicate cutoff in information
+// retrieval — found none of five planted duplicates. The usable window is
+// narrow, model-specific, and moves with how topically uniform the corpus
+// is. Asking each statement for its nearest neighbours instead needs no
+// constant, and produces a candidate count that grows with the number of
+// statements rather than their square.
+//
+// Ranking is by CSLS rather than raw cosine: 2*sim(a,b) - r(a) - r(b), where
+// r(x) is x's mean similarity to its own nearest neighbours. High-dimensional
+// spaces generically produce hubs — points that are near everything — and
+// subtracting each side's local density measures how unusually close a pair
+// is *for those two statements*, instead of how close it is on an absolute
+// scale that means nothing on its own.
+//
+// minScore stays available as an optional hard floor but defaults to off:
+// it is a blunt instrument here and calibrating it per model is the problem
+// this design removes.
+//
+// Corpus sizes here are small enough that an in-memory O(n^2) similarity
+// pass is fine; no ANN index is needed.
+func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minScore float64) ([]PairCandidate, error) {
 	query := `SELECT full_id, body, modality FROM statements WHERE ` + searchableStatuses
 	args := []interface{}{}
 	if namespace != "" {
@@ -76,10 +109,6 @@ func (ix *Index) FindCandidatePairs(namespace string, minScore float64, limit in
 		return nil, err
 	}
 
-	// An unembedded corpus would otherwise return an empty list — byte for
-	// byte what "swept everything, found no candidates" looks like. Audit
-	// is only meaningful over embeddings, so say so instead of handing back
-	// a false all-clear.
 	corpus, err := ix.EmbeddingCorpusInfo()
 	if err != nil {
 		return nil, err
@@ -92,54 +121,113 @@ func (ix *Index) FindCandidatePairs(namespace string, minScore float64, limit in
 	if err != nil {
 		return nil, err
 	}
-
 	adjudicated, err := ix.allRelationshipPairs()
 	if err != nil {
 		return nil, err
 	}
 
-	var out []PairCandidate
-	for i := 0; i < len(stmts); i++ {
-		ei, ok := embeddings[stmts[i].fullID]
-		if !ok {
-			continue
+	// Only statements that actually carry a vector can be compared.
+	var embedded []stmt
+	for _, s := range stmts {
+		if _, ok := embeddings[s.fullID]; ok {
+			embedded = append(embedded, s)
 		}
-		for j := i + 1; j < len(stmts); j++ {
-			ej, ok := embeddings[stmts[j].fullID]
-			if !ok {
+	}
+	if len(embedded) < 2 {
+		return nil, nil
+	}
+	if neighbors <= 0 {
+		neighbors = 1
+	}
+
+	sims := make([][]float64, len(embedded))
+	for i := range embedded {
+		sims[i] = make([]float64, len(embedded))
+	}
+	for i := 0; i < len(embedded); i++ {
+		for j := i + 1; j < len(embedded); j++ {
+			v := CosineSimilarity(embeddings[embedded[i].fullID].Vector, embeddings[embedded[j].fullID].Vector)
+			sims[i][j], sims[j][i] = v, v
+		}
+	}
+
+	// r(x): mean similarity to x's own nearest neighbours — the local density
+	// CSLS subtracts out.
+	density := make([]float64, len(embedded))
+	for i := range embedded {
+		row := make([]float64, 0, len(embedded)-1)
+		for j := range embedded {
+			if i != j {
+				row = append(row, sims[i][j])
+			}
+		}
+		sort.Sort(sort.Reverse(sort.Float64Slice(row)))
+		k := localDensityK
+		if k > len(row) {
+			k = len(row)
+		}
+		var sum float64
+		for _, v := range row[:k] {
+			sum += v
+		}
+		density[i] = sum / float64(k)
+	}
+
+	seen := map[string]bool{}
+	var out []PairCandidate
+	for i := range embedded {
+		// Rank this statement's partners, skipping ones already judged, so
+		// adjudicating a pair lets the next candidate surface rather than
+		// leaving the statement with nothing.
+		type cand struct {
+			j   int
+			sim float64
+		}
+		var ranked []cand
+		for j := range embedded {
+			if i == j || adjudicated[pairKey(embedded[i].fullID, embedded[j].fullID)] {
 				continue
 			}
-			if adjudicated[pairKey(stmts[i].fullID, stmts[j].fullID)] {
+			if minScore > 0 && sims[i][j] < minScore {
 				continue
 			}
-			score := CosineSimilarity(ei.Vector, ej.Vector)
-			if score < minScore {
+			ranked = append(ranked, cand{j, sims[i][j]})
+		}
+		sort.Slice(ranked, func(a, b int) bool { return ranked[a].sim > ranked[b].sim })
+		if len(ranked) > neighbors {
+			ranked = ranked[:neighbors]
+		}
+
+		for _, c := range ranked {
+			key := pairKey(embedded[i].fullID, embedded[c.j].fullID)
+			if seen[key] {
 				continue
 			}
+			seen[key] = true
 			out = append(out, PairCandidate{
-				A:                stmts[i].fullID,
-				B:                stmts[j].fullID,
-				Score:            score,
-				ExcerptA:         searchExcerpt(stmts[i].body),
-				ExcerptB:         searchExcerpt(stmts[j].body),
-				ModalityConflict: stmts[i].modality.ConflictsWith(stmts[j].modality),
+				A:                embedded[i].fullID,
+				B:                embedded[c.j].fullID,
+				Score:            2*c.sim - density[i] - density[c.j],
+				Similarity:       c.sim,
+				ExcerptA:         searchExcerpt(embedded[i].body),
+				ExcerptB:         searchExcerpt(embedded[c.j].body),
+				ModalityConflict: embedded[i].modality.ConflictsWith(embedded[c.j].modality),
 			})
 		}
 	}
 
-	// Opposed pairs first, then by similarity. A modality conflict is a
+	// Opposed pairs first, then by CSLS. A modality conflict is a
 	// qualitatively different finding from a near-duplicate: it says the two
 	// statements pull in opposite directions, which is the thing audit exists
 	// to catch, where similarity alone is only evidence of shared subject.
-	// Ordering rather than boosting keeps the score honest — it still means
-	// cosine similarity and nothing else. Note the min-score filter has
-	// already run, so this can only reorder pairs that were close enough to
-	// surface anyway; it never promotes unrelated statements.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].ModalityConflict != out[j].ModalityConflict {
 			return out[i].ModalityConflict
 		}
-		return out[i].Score > out[j].Score
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].A < out[j].A
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]

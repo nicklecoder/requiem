@@ -793,7 +793,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Embed b: %v", err)
 	}
 
-	pairs, _, err := s.Audit("", 0.5, 0)
+	pairs, _, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -805,7 +805,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Link: %v", err)
 	}
 
-	pairs, _, err = s.Audit("", 0.5, 0)
+	pairs, _, err = s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("second Audit: %v", err)
 	}
@@ -1103,7 +1103,7 @@ func TestProposedStatus_ParticipatesInCheckAndAudit(t *testing.T) {
 	}
 
 	// The payoff: audit can tell a proposal it opposes a settled decision.
-	pairs, _, err := s.Audit("", 0.5, 0)
+	pairs, _, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}

@@ -17,13 +17,62 @@ var version = "dev"
 // NewRootCmd builds the full requiem command tree.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "requiem",
-		Short:         "Agent-native requirements, rules, and design-decision tracking",
-		Long:          "Requiem tracks requirements, rules, and design decisions per project so an AI agent can cheaply check whether a new idea conflicts with a prior decision, without loading the whole spec into context.",
+		Use:   "requiem",
+		Short: "Agent-native requirements, rules, and design-decision tracking",
+		Long: `Requiem tracks requirements, rules, and design decisions ("statements") per
+project, so an agent can check whether a new idea conflicts with a prior one
+without holding the whole specification in context.
+
+Statement files under .requiem/ are canonical and git-tracked. A SQLite index
+beside them is disposable and rebuilt from those files on demand, so nothing
+is lost if it is deleted.
+
+WORKFLOW
+
+  Before proposing anything non-trivial
+    check --namespace <area> --text "<the idea>"
+      Read the rejections it returns first: they are ideas this project
+      already considered and turned down, and re-proposing one is the most
+      common way an agent wastes a human's time.
+
+  When a decision is made
+    add     the decision, with --modality if it carries normative force
+    link    it to the principle it refines, so the graph is navigable
+    reject  the alternatives that lost, with --see-instead pointing here
+
+  While implementing it
+    Label the code with a "requiem: <namespace/id>" marker comment. Labelling
+    a test is stronger than labelling an implementation: a passing labelled
+    test is evidence the statement holds, where a comment only asserts intent.
+
+  Periodically
+    reindex --embed   refresh vectors and rescan labels
+    audit             candidate conflicts and duplicates; record each verdict
+                      with link, so a judged pair stops resurfacing
+    list --unreferenced   decisions no code implements
+
+  Nothing is permanent until "requiem commit". Writes auto-stage, so backing
+  out of a dead end with "discard" leaves no trace in history.
+
+CONVENTIONS
+
+  Output is bare JSON on stdout; diagnostics go to stderr, so pipelines stay
+  clean while an agent reading combined output still sees them. Failures exit
+  nonzero.
+
+  Write a statement body that states the decision AND why. "Use Postgres" is
+  not retrievable; "Session state lives in Postgres rather than Redis, because
+  it must survive a restart" matches a future draft that shares neither word.
+`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
 	}
+
+	// Capability is computed once: the embedding-dependent surface is hidden
+	// where it could only fail. `embed --vector` and `check --vector` are not
+	// gated — they take a vector the caller produced and need no endpoint.
+	semantic := semanticAvailable()
 
 	root.AddCommand(
 		newInitCmd(),
@@ -33,13 +82,14 @@ func NewRootCmd() *cobra.Command {
 		newRejectCmd(),
 		newGetCmd(),
 		newListCmd(),
-		newCheckCmd(),
+		newCheckCmd(semantic),
 		newEmbedCmd(),
-		newAuditCmd(),
+		newAuditCmd(semantic),
 		newMvCmd(),
 		newTraceCmd(),
 		newPrecommitCmd(),
-		newReindexCmd(),
+		newManCmd(),
+		newReindexCmd(semantic),
 		newReviewCmd(),
 		newCommitCmd(),
 		newDiscardCmd(),

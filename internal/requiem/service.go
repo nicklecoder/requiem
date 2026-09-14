@@ -766,7 +766,7 @@ func (s *Service) Embed(fullID, embModel string, vec []float32, force bool) (*Em
 // them: SPEC's output convention keeps stdout as bare data with no envelope
 // to unwrap, so the shortfall travels as a second return value and reaches
 // the user on stderr. A Go signature is not the JSON payload.
-func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.PairCandidate, Coverage, error) {
+func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64) ([]index.PairCandidate, Coverage, error) {
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, Coverage{}, err
@@ -777,7 +777,7 @@ func (s *Service) Audit(namespace string, minScore float64, limit int) ([]index.
 		return nil, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
 	}
 
-	pairs, err := ix.FindCandidatePairs(namespace, minScore, limit)
+	pairs, err := ix.FindCandidatePairs(namespace, neighbors, limit, minScore)
 	if err != nil {
 		return nil, Coverage{}, err
 	}
