@@ -9,7 +9,7 @@ import (
 	"github.com/nicklecoder/requiem/internal/requiem"
 )
 
-func newReindexCmd() *cobra.Command {
+func newReindexCmd(semantic bool) *cobra.Command {
 	var withEmbed, force bool
 
 	cmd := &cobra.Command{
@@ -69,6 +69,12 @@ func newReindexCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&withEmbed, "embed", false, "also compute missing/stale embeddings via the configured endpoint")
 	cmd.Flags().BoolVar(&force, "force", false, "re-embed the whole corpus under the configured model, discarding every existing vector")
+
+	// After the flags exist: MarkHidden on an undefined flag is a silent no-op.
+	if !semantic {
+		_ = cmd.Flags().MarkHidden("embed")
+		_ = cmd.Flags().MarkHidden("force")
+	}
 
 	return cmd
 }

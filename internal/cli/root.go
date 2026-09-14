@@ -25,6 +25,11 @@ func NewRootCmd() *cobra.Command {
 		Version:       version,
 	}
 
+	// Capability is computed once: the embedding-dependent surface is hidden
+	// where it could only fail. `embed --vector` and `check --vector` are not
+	// gated — they take a vector the caller produced and need no endpoint.
+	semantic := semanticAvailable()
+
 	root.AddCommand(
 		newInitCmd(),
 		newAddCmd(),
@@ -33,13 +38,13 @@ func NewRootCmd() *cobra.Command {
 		newRejectCmd(),
 		newGetCmd(),
 		newListCmd(),
-		newCheckCmd(),
+		newCheckCmd(semantic),
 		newEmbedCmd(),
-		newAuditCmd(),
+		newAuditCmd(semantic),
 		newMvCmd(),
 		newTraceCmd(),
 		newPrecommitCmd(),
-		newReindexCmd(),
+		newReindexCmd(semantic),
 		newReviewCmd(),
 		newCommitCmd(),
 		newDiscardCmd(),

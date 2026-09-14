@@ -6,7 +6,7 @@ import (
 	"github.com/nicklecoder/requiem/internal/index"
 )
 
-func newAuditCmd() *cobra.Command {
+func newAuditCmd(semantic bool) *cobra.Command {
 	var namespace string
 	var minScore float64
 	var limit int
@@ -45,6 +45,15 @@ func newAuditCmd() *cobra.Command {
 			}
 			return printJSON(candidates)
 		},
+	}
+
+	// Audit compares vectors and can do nothing without them.
+	cmd.Hidden = !semantic
+	if !semantic {
+		cmd.Long += unavailableNote
+		cmd.RunE = func(*cobra.Command, []string) error {
+			return errNoInference("audit")
+		}
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "scope the sweep to this namespace (and anything nested under it)")

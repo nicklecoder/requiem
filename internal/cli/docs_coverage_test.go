@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nicklecoder/requiem/internal/requiem"
 )
 
@@ -53,6 +55,56 @@ func TestUndocumentedCommands_HasNoStaleEntries(t *testing.T) {
 	for name := range undocumentedCommands {
 		if !live[name] {
 			t.Errorf("%q is exempted but no longer a command", name)
+		}
+	}
+}
+
+// Offering a capability that can only fail is worse than not offering it: an
+// agent reading --help has no other way to tell whether --semantic will work.
+func TestSemanticSurface_HiddenWithoutInference(t *testing.T) {
+	find := func(root *cobra.Command, name string) *cobra.Command {
+		for _, c := range root.Commands() {
+			if c.Name() == name {
+				return c
+			}
+		}
+		return nil
+	}
+
+	for _, tc := range []struct{ semantic, wantHidden bool }{{false, true}, {true, false}} {
+		audit := find(&cobra.Command{}, "audit")
+		_ = audit
+		root := cobra.Command{}
+		root.AddCommand(newAuditCmd(tc.semantic), newCheckCmd(tc.semantic), newReindexCmd(tc.semantic))
+
+		if got := find(&root, "audit").Hidden; got != tc.wantHidden {
+			t.Errorf("semantic=%v: audit hidden=%v, want %v", tc.semantic, got, tc.wantHidden)
+		}
+		check := find(&root, "check")
+		if got := check.Flags().Lookup("semantic").Hidden; got != tc.wantHidden {
+			t.Errorf("semantic=%v: --semantic hidden=%v, want %v", tc.semantic, got, tc.wantHidden)
+		}
+		// --vector needs no endpoint and must stay available either way.
+		if check.Flags().Lookup("vector").Hidden {
+			t.Errorf("semantic=%v: --vector must never be hidden; it needs no endpoint", tc.semantic)
+		}
+		if got := find(&root, "reindex").Flags().Lookup("embed").Hidden; got != tc.wantHidden {
+			t.Errorf("semantic=%v: --embed hidden=%v, want %v", tc.semantic, got, tc.wantHidden)
+		}
+	}
+}
+
+// A hidden command that silently succeeds would be the failure this project
+// exists to prevent; it must say why it cannot work and how to enable it.
+func TestAudit_ExplainsItselfWhenUnavailable(t *testing.T) {
+	cmd := newAuditCmd(false)
+	err := cmd.RunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error explaining why audit is unavailable")
+	}
+	for _, want := range []string{"embedding.endpoint", "config.yaml", "reindex --embed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
 		}
 	}
 }
