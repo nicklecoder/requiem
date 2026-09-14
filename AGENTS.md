@@ -1,4 +1,4 @@
-<!-- >>> requiem v5 >>> -->
+<!-- >>> requiem v6 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -91,9 +91,27 @@ the statement holds, where a comment only asserts intent.
 - `requiem audit` flags code still referencing a superseded or rejected
   statement — the decision changed and the code was never brought along.
 - `get`/`list` show `code_refs`, a count, absent where labelling is unused.
+- `requiem list --unreferenced` finds statements no code implements. A
+  statement counts as covered when the statements refining it are labelled;
+  `--direct` suppresses that inference.
+- A label in a `.md` or `.txt` file is a *mention*, not a reference: it does
+  not count toward `code_refs`, but a changed decision still flags it.
+- A mistyped id is reported by `audit` and by `reindex`, which exits nonzero.
 
-Renaming a statement does not fix its labels; `requiem mv` reports the ones
-left behind so you can update them.
+`requiem mv` rewrites labels to the new id and leaves those edits unstaged,
+so review them with `git diff`. `--no-rewrite-refs` reports them instead.
+
+A code commit can also name the decision it implements, which records *when*
+something was built rather than where it lives now:
+
+```
+Enforce single-model embedding
+
+Requiem-Id: embedding/model-pinning
+```
+
+`requiem trace` reports those commits. Requiem only reads them — you write
+them on your own commits.
 
 Full reference: `requiem --help`.
 <!-- <<< requiem <<< -->
