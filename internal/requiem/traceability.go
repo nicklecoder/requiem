@@ -119,6 +119,11 @@ type TraceResult struct {
 	CodeRefs    int             `json:"code_refs"`
 	DocMentions int             `json:"doc_mentions"`
 	Refs        []ClassifiedRef `json:"refs"`
+	// SearchHits are files whose text overlaps this statement's vocabulary,
+	// populated only when asked for. Weaker evidence than a label — the words
+	// appear, which is not the same as the code implementing the decision —
+	// so they are reported apart from Refs rather than mixed in.
+	SearchHits []trace.SearchHit `json:"search_hits,omitempty"`
 	// Commits carry Requiem-Id trailers naming this statement. Labels answer
 	// where a decision lives now; trailers answer when it was implemented and
 	// by what change, which labels structurally cannot.
@@ -131,7 +136,7 @@ type TraceResult struct {
 // direct question about the tree as it is now, and a stale answer to "what
 // implements this" is worse than a slow one. The stored counts exist for the
 // read path, where a hint may lag.
-func (s *Service) Trace(fullID string) (*TraceResult, error) {
+func (s *Service) Trace(fullID string, search bool, searchLimit int) (*TraceResult, error) {
 	ix, err := s.openIndex()
 	if err != nil {
 		return nil, err
@@ -163,6 +168,27 @@ func (s *Service) Trace(fullID string) (*TraceResult, error) {
 		}
 		out.Refs = append(out.Refs, c)
 	}
+	if search {
+		st, err := ix.GetStatement(fullID)
+		if err == nil {
+			hits, err := trace.Search(s.Root, st.Body, searchLimit)
+			if err != nil {
+				return nil, err
+			}
+			// A file already carrying a label needs no weaker evidence for
+			// the same statement.
+			labelled := map[string]bool{}
+			for _, r := range out.Refs {
+				labelled[r.File] = true
+			}
+			for _, h := range hits {
+				if !labelled[h.File] {
+					out.SearchHits = append(out.SearchHits, h)
+				}
+			}
+		}
+	}
+
 	commits, err := trace.Commits(s.Root, fullID)
 	if err != nil {
 		return nil, err
@@ -219,4 +245,54 @@ func ContradictingRefs(refs []ClassifiedRef) []ClassifiedRef {
 		return out[i].Line < out[j].Line
 	})
 	return out
+}
+
+// LabelResult is Label's output.
+type LabelResult struct {
+	FullID string `json:"full_id"`
+	File   string `json:"file"`
+	Line   int    `json:"line"`
+}
+
+// Label inserts a marker comment tying a code location to a statement.
+//
+// The id is resolved before anything is written: labelling is meant to reduce
+// the friction that makes labels get skipped, and a command that cheerfully
+// writes a typo would replace that friction with a dangling reference found
+// weeks later. Rejections resolve too — code referencing a rejected idea is a
+// finding audit reports, not something to refuse at the point of writing.
+func (s *Service) Label(fullID, file string, line int) (*LabelResult, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer ix.Close()
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, err
+	}
+
+	known := false
+	if _, err := ix.GetStatement(fullID); err == nil {
+		known = true
+	} else {
+		rejections, err := ix.AllRejectionIDs()
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range rejections {
+			if id == fullID {
+				known = true
+				break
+			}
+		}
+	}
+	if !known {
+		return nil, fmt.Errorf("no statement or rejection %q: labelling an id that does not exist would leave a dangling reference", fullID)
+	}
+
+	written, err := trace.InsertLabel(s.Root, file, line, fullID)
+	if err != nil {
+		return nil, err
+	}
+	return &LabelResult{FullID: fullID, File: file, Line: written}, nil
 }

@@ -41,15 +41,24 @@ WORKFLOW
     reject  the alternatives that lost, with --see-instead pointing here
 
   While implementing it
-    Label the code with a "requiem: <namespace/id>" marker comment. Labelling
-    a test is stronger than labelling an implementation: a passing labelled
-    test is evidence the statement holds, where a comment only asserts intent.
+    label <namespace/id> <file>:<line>
+      Ties code to the decision it implements. Labelling a test is stronger
+      than labelling an implementation: a passing labelled test is evidence
+      the statement holds, where a comment only asserts intent.
+
+      Labels are a shortcut, not a requirement. Nothing enforces them, and
+      nothing should: deciding whether a change "should" have been labelled is
+      a judgment about intent, and a rule approximating it would be wrong
+      often enough to get disabled. Partial coverage is useful — a labelled
+      site is an exact answer, and "trace --search" still answers from the
+      statement's own words where no label exists.
 
   Periodically
     reindex --embed   refresh vectors and rescan labels
     audit             candidate conflicts and duplicates; record each verdict
                       with link, so a judged pair stops resurfacing
     list --unreferenced   decisions no code implements
+    trace <id> --search   what implements a decision, labelled or not
 
   Nothing is permanent until "requiem commit". Writes auto-stage, so backing
   out of a dead end with "discard" leaves no trace in history.
@@ -87,6 +96,7 @@ CONVENTIONS
 		newAuditCmd(semantic),
 		newMvCmd(),
 		newTraceCmd(),
+		newLabelCmd(),
 		newPrecommitCmd(),
 		newManCmd(),
 		newReindexCmd(semantic),
