@@ -130,7 +130,7 @@ func TestAudit_ReportsPartialCoverage(t *testing.T) {
 		}
 	}
 
-	_, cov, err := s.Audit("", 0.5, 0)
+	_, cov, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}

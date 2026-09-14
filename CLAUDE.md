@@ -1,4 +1,4 @@
-<!-- >>> requiem v7 >>> -->
+<!-- >>> requiem v8 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -70,7 +70,10 @@ refuses a vector from a different model, since cosine similarity across two
 models is meaningless.
 
 `requiem audit` sweeps the whole corpus for pairs that may conflict or
-duplicate each other. Record every verdict with
+duplicate each other, taking each statement's nearest neighbours rather than
+everything above a similarity cutoff — on a real corpus every statement
+shares a vocabulary, so an absolute threshold surfaces most of it or none.
+Record every verdict with
 `requiem link <a> <b> --type conflicts_with|duplicates|not_related` so the
 pair stops resurfacing.
 

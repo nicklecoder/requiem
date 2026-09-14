@@ -1,6 +1,7 @@
 package index
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -162,49 +163,65 @@ func TestReindex_EditingStatementPreservesEmbedding(t *testing.T) {
 	}
 }
 
-func TestFindCandidatePairs_ExcludesAdjudicatedAndAppliesThreshold(t *testing.T) {
+func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *testing.T) {
 	s := newTestStore(t)
 	ix := newTestIndex(t)
-
-	seedStatement(t, s, model.Statement{
-		ID: "a", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
-		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(), Body: "a",
-	})
-	seedStatement(t, s, model.Statement{
-		ID: "b", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
-		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(), Body: "b",
-	})
-	seedStatement(t, s, model.Statement{
-		ID: "c", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
-		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(), Body: "c",
-		Relationships: []model.Relationship{{To: "ns/a", Type: model.RelNotRelated}},
-	})
+	for _, id := range []string{"a", "b", "c"} {
+		seedStatement(t, s, model.Statement{
+			ID: id, Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: id,
+		})
+	}
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-
-	// a/b: identical vectors (score ~1), surfaced. c is orthogonal to both
-	// (score ~0, below threshold) — its not_related link to ns/a exercises
-	// the exclusion path without depending on a coincidental similarity.
 	now := time.Now().UTC()
-	for _, id := range []string{"ns/a", "ns/b"} {
-		if err := ix.UpsertEmbedding(id, "m", 2, []float32{1, 1}, "h", now, false); err != nil {
-			t.Fatalf("UpsertEmbedding %s: %v", id, err)
+	// a is closest to b, then c.
+	for id, v := range map[string][]float32{
+		"ns/a": {1, 0}, "ns/b": {0.99, 0.14}, "ns/c": {0.7, 0.7},
+	} {
+		if err := ix.UpsertEmbedding(id, "m", 2, v, "h-"+id, now, false); err != nil {
+			t.Fatalf("UpsertEmbedding: %v", err)
 		}
 	}
-	if err := ix.UpsertEmbedding("ns/c", "m", 2, []float32{1, -1}, "h", now, false); err != nil {
-		t.Fatalf("UpsertEmbedding ns/c: %v", err)
-	}
 
-	pairs, err := ix.FindCandidatePairs("", 0.5, 0)
+	first, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
-	if len(pairs) != 1 {
-		t.Fatalf("expected exactly 1 surfaced pair (a/c excluded as adjudicated), got %+v", pairs)
+	var sawAB bool
+	for _, p := range first {
+		if pairKey(p.A, p.B) == pairKey("ns/a", "ns/b") {
+			sawAB = true
+		}
 	}
-	if !((pairs[0].A == "ns/a" && pairs[0].B == "ns/b") || (pairs[0].A == "ns/b" && pairs[0].B == "ns/a")) {
-		t.Fatalf("expected the surfaced pair to be ns/a<->ns/b, got %+v", pairs[0])
+	if !sawAB {
+		t.Fatalf("expected a's nearest neighbour surfaced, got %+v", first)
+	}
+
+	// Judging a/b must not leave a with nothing: its next-nearest takes the
+	// slot, so adjudicating makes progress instead of exhausting the sweep.
+	if err := ix.upsertRelationshipForTest("ns/a", "ns/b", "not_related"); err != nil {
+		t.Fatalf("record verdict: %v", err)
+	}
+	second, err := ix.FindCandidatePairs("", 1, 0, 0)
+	if err != nil {
+		t.Fatalf("second FindCandidatePairs: %v", err)
+	}
+	for _, p := range second {
+		if pairKey(p.A, p.B) == pairKey("ns/a", "ns/b") {
+			t.Fatalf("an adjudicated pair must not resurface: %+v", second)
+		}
+	}
+	var sawAC bool
+	for _, p := range second {
+		if pairKey(p.A, p.B) == pairKey("ns/a", "ns/c") {
+			sawAC = true
+		}
+	}
+	if !sawAC {
+		t.Fatalf("expected a's next-nearest to take the freed slot, got %+v", second)
 	}
 }
 
@@ -212,7 +229,7 @@ func TestFindCandidatePairs_ErrorsWhenNothingIsEmbedded(t *testing.T) {
 	ix := newTestIndex(t)
 	// An empty result here would read as "swept the corpus, found no
 	// conflicts" — the exact false all-clear this error prevents.
-	if _, err := ix.FindCandidatePairs("", 0.5, 0); err == nil {
+	if _, err := ix.FindCandidatePairs("", 5, 0, 0); err == nil {
 		t.Fatal("expected an error when no statements are embedded, got nil")
 	}
 }
@@ -321,7 +338,7 @@ func TestFindCandidatePairs_FlagsOpposedModalityAndRanksItFirst(t *testing.T) {
 		}
 	}
 
-	pairs, err := ix.FindCandidatePairs("", 0.5, 0)
+	pairs, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -362,11 +379,55 @@ func TestFindCandidatePairs_NoFlagWhenModalityAbsent(t *testing.T) {
 		}
 	}
 
-	pairs, err := ix.FindCandidatePairs("", 0.5, 0)
+	pairs, err := ix.FindCandidatePairs("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
 	if len(pairs) != 1 || pairs[0].ModalityConflict {
 		t.Fatalf("expected one unflagged pair, got %+v", pairs)
 	}
+}
+
+// The property the whole strategy rests on: candidate volume follows the
+// number of statements, not their square, and does not collapse when every
+// statement in the corpus shares a vocabulary.
+func TestFindCandidatePairs_VolumeIsLinearNotQuadratic(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	const n = 40
+	for i := 0; i < n; i++ {
+		seedStatement(t, s, model.Statement{
+			ID: fmt.Sprintf("s%d", i), Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: fmt.Sprintf("statement %d", i),
+		})
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	// A deliberately homogeneous corpus: every vector nearly identical, which
+	// is what defeats an absolute threshold.
+	now := time.Now().UTC()
+	for i := 0; i < n; i++ {
+		v := []float32{1, float32(i) * 0.001}
+		if err := ix.UpsertEmbedding(fmt.Sprintf("ns/s%d", i), "m", 2, v, fmt.Sprintf("h%d", i), now, false); err != nil {
+			t.Fatalf("UpsertEmbedding: %v", err)
+		}
+	}
+
+	pairs, err := ix.FindCandidatePairs("", 1, 0, 0)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs: %v", err)
+	}
+	total := n * (n - 1) / 2
+	if len(pairs) > n {
+		t.Fatalf("top-1 must yield at most one pair per statement: got %d for %d statements", len(pairs), n)
+	}
+	// The same corpus under the old absolute threshold would surface nearly
+	// everything, which is the failure this replaced.
+	if len(pairs) > total/4 {
+		t.Fatalf("candidate volume collapsed toward quadratic: %d of %d pairs", len(pairs), total)
+	}
+	t.Logf("%d statements -> %d candidates (%.1f%% of %d possible pairs)",
+		n, len(pairs), 100*float64(len(pairs))/float64(total), total)
 }

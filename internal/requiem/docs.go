@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 7
+const docBlockVersion = 8
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -113,7 +113,10 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"models is meaningless.",
 	"",
 	"`requiem audit` sweeps the whole corpus for pairs that may conflict or",
-	"duplicate each other. Record every verdict with",
+	"duplicate each other, taking each statement's nearest neighbours rather than",
+	"everything above a similarity cutoff — on a real corpus every statement",
+	"shares a vocabulary, so an absolute threshold surfaces most of it or none.",
+	"Record every verdict with",
 	"`requiem link <a> <b> --type conflicts_with|duplicates|not_related` so the",
 	"pair stops resurfacing.",
 	"",

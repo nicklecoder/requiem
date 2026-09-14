@@ -9,13 +9,14 @@ import (
 func newAuditCmd(semantic bool) *cobra.Command {
 	var namespace string
 	var minScore float64
-	var limit int
+	var neighbors, limit int
 
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Sweep the corpus for candidate conflicting/duplicate statement pairs",
-		Long: "Ranks statement pairs by embedding similarity, skipping any pair that\n" +
-			"already has a relationship recorded between them. Requiem surfaces the\n" +
+		Long: "Takes each statement's nearest neighbours as candidates and ranks them by\n" +
+			"CSLS, skipping any pair that already has a relationship recorded between\n" +
+			"them. Requiem surfaces the\n" +
 			"candidate only — classifying a pair as a real conflict, a duplicate, or a\n" +
 			"false positive is the calling agent's job, recorded afterward via `link\n" +
 			"--type conflicts_with|duplicates|not_related`.",
@@ -25,7 +26,7 @@ func newAuditCmd(semantic bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, coverage, err := svc.Audit(namespace, minScore, limit)
+			candidates, coverage, err := svc.Audit(namespace, neighbors, limit, minScore)
 			if err != nil {
 				return err
 			}
@@ -57,12 +58,12 @@ func newAuditCmd(semantic bool) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "scope the sweep to this namespace (and anything nested under it)")
-	// 0.5 is calibrated against a small local model (Ollama's all-minilm,
-	// 384-dim): a genuine paraphrase pair scored ~0.69, unrelated pairs
-	// ~0.36-0.37 — small models compress cosine similarity into a narrower
-	// band than one might assume, so don't reuse thresholds tuned for a
-	// different model without recalibrating. Always overridable per call.
-	cmd.Flags().Float64Var(&minScore, "min-score", 0.5, "minimum cosine similarity to surface a pair (tune for your embedding model)")
+	cmd.Flags().IntVar(&neighbors, "neighbors", 2, "candidates to take from each statement's nearest others")
+	// Off by default. An absolute cutoff fails on a real corpus: measured on
+	// a 36-statement set, 0.5 surfaced 69% of all pairs while 0.85 — the
+	// usual near-duplicate cutoff in information retrieval — found none of
+	// five planted duplicates. Kept as a blunt floor for anyone who wants one.
+	cmd.Flags().Float64Var(&minScore, "min-score", 0, "optional hard floor on raw cosine similarity (0 = no floor)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of pairs to return (0 = unlimited)")
 
 	return cmd
