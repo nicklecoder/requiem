@@ -323,6 +323,60 @@ func TestReindex_DetectsRemovedFileWithPreciseCount(t *testing.T) {
 	}
 }
 
+// Migrating a rejection out of a legacy _rejected.md keeps its id but
+// changes its file, and the old row is not swept until after the new file is
+// indexed — so reindex has to treat the two as the same record. It did not,
+// and the whole reindex failed on a UNIQUE violation the moment a real
+// corpus was migrated.
+// requiem: model/one-file-per-record
+func TestReindex_RejectionMovingBetweenFilesIsNotADuplicate(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	nsDir := filepath.Join(s.StatementsDir(), "ns")
+	if err := os.MkdirAll(nsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	entry := "---\nid: moved-idea\nrejected_at: 2026-09-14T00:00:00Z\n---\n\nRejected for a stated reason.\n"
+	legacy := filepath.Join(nsDir, "_rejected.md")
+	if err := os.WriteFile(legacy, []byte(entry), 0o644); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("first Reindex: %v", err)
+	}
+	if err := ix.UpsertEmbedding(RejectionKey("ns/moved-idea"), "m", 2, []float32{1, 0}, "h", time.Now().UTC(), false); err != nil {
+		t.Fatalf("UpsertEmbedding: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(nsDir, "moved-idea.rejected.md"), []byte(entry), 0o644); err != nil {
+		t.Fatalf("write own file: %v", err)
+	}
+	if err := os.Remove(legacy); err != nil {
+		t.Fatalf("remove legacy file: %v", err)
+	}
+
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex after migration: %v", err)
+	}
+	ids, err := ix.AllRejectionIDs()
+	if err != nil {
+		t.Fatalf("AllRejectionIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "ns/moved-idea" {
+		t.Fatalf("expected exactly the one migrated rejection, got %v", ids)
+	}
+
+	// The body did not change, so the vector computed for it is still valid.
+	emb, err := ix.GetEmbedding(RejectionKey("ns/moved-idea"))
+	if err != nil {
+		t.Fatalf("GetEmbedding: %v", err)
+	}
+	if emb == nil {
+		t.Fatal("migrating a rejection between files must not drop its embedding")
+	}
+}
+
 func TestListStatements_Filters(t *testing.T) {
 	s := newTestStore(t)
 	ix := newTestIndex(t)

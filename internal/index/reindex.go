@@ -145,6 +145,17 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 			return err
 		}
 		for _, r := range rf.Rejections {
+			// Also delete by id, not just by the file path above: a
+			// rejection can move between files while keeping its id — which
+			// is exactly what migrating one out of a legacy _rejected.md
+			// does — and its old row is not cleaned up until the
+			// stale-manifest sweep further down, which runs after these
+			// inserts. Deleting by path alone therefore collided with the
+			// record's own surviving row. Statements never had this problem
+			// because they have always deleted by id.
+			if err := deleteRejectionByID(tx, r.FullID()); err != nil {
+				return err
+			}
 			if err := insertRejection(tx, r, rf.RelPath); err != nil {
 				return err
 			}
@@ -255,6 +266,21 @@ func deleteRowsForFile(tx *sql.Tx, relPath string) error {
 	}
 	if _, err := tx.Exec(`DELETE FROM manifest WHERE file_path = ?`, relPath); err != nil {
 		return err
+	}
+	return nil
+}
+
+// deleteRejectionByID removes one rejection and its FTS row, wherever it is
+// currently filed. A moved record is re-inserted immediately afterwards, so
+// its embedding is deliberately left alone: the body did not change, so the
+// vector computed for it is still valid, and the later removal sweep will
+// not find it either — by then the row names its new file.
+func deleteRejectionByID(tx *sql.Tx, fullID string) error {
+	if _, err := tx.Exec(`DELETE FROM rejections_fts WHERE full_id = ?`, fullID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM rejections WHERE full_id = ?`, fullID); err != nil {
+		return fmt.Errorf("delete stale rejection %s: %w", fullID, err)
 	}
 	return nil
 }
