@@ -37,7 +37,7 @@ func TestCheck_FindsRelevantStatementsAndRejections(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("", "session token storage", nil, nil, "", 0)
+	results, err := ix.Check("", "session token storage", nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestCheck_ScopedToNamespace(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("auth", "tokens", nil, nil, "", 0)
+	results, err := ix.Check("auth", "tokens", nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCheck_TagFilterNarrowsAndExcludesRejections(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("", "widgets validated", []string{"security"}, nil, "", 0)
+	results, err := ix.Check("", "widgets validated", []string{"security"}, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestCheck_RankedBestFirst(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	results, err := ix.Check("", "rate limiting", nil, nil, "", 0)
+	results, err := ix.Check("", "rate limiting", nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestCheck_QuoteAndSpecialCharsDoNotErrorOrMisbehave(t *testing.T) {
 
 	// FTS5 query syntax characters (quotes, NOT, -, *, :) appearing in
 	// ordinary draft text must not cause a query error.
-	_, err := ix.Check("", `what about "strict" mode -config NOT:enabled *`, nil, nil, "", 0)
+	_, err := ix.Check("", `what about "strict" mode -config NOT:enabled *`, nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("expected no error from FTS5 special characters in free text, got: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestCheck_QuoteAndSpecialCharsDoNotErrorOrMisbehave(t *testing.T) {
 
 func TestCheck_EmptyTextReturnsNoResults(t *testing.T) {
 	ix := newTestIndex(t)
-	results, err := ix.Check("", "   ", nil, nil, "", 0)
+	results, err := ix.Check("", "   ", nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestCheck_SemanticFindsWhatLexicalCannot(t *testing.T) {
 	ix := newTestIndex(t)
 	seedEmbeddedPair(t, s, ix)
 
-	lexicalOnly, err := ix.Check("", "credential cycling cadence", nil, nil, "", 0)
+	lexicalOnly, err := ix.Check("", "credential cycling cadence", nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check lexical: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestCheck_SemanticFindsWhatLexicalCannot(t *testing.T) {
 		t.Fatalf("expected no lexical overlap for this phrasing, got %+v", lexicalOnly)
 	}
 
-	withVector, err := ix.Check("", "credential cycling cadence", nil, []float32{1, 0}, "m", 0)
+	withVector, err := ix.Check("", "credential cycling cadence", nil, []float32{1, 0}, "m", 0, nil)
 	if err != nil {
 		t.Fatalf("Check semantic: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestCheck_AgreementAcrossPathsIsMergedAndBoosted(t *testing.T) {
 	// "rotated" matches auth/keys/rotate-keys lexically, and the vector
 	// matches it semantically. It must appear once — but marked as found by
 	// both paths, not with one of them suppressed.
-	results, err := ix.Check("", "rotated", nil, []float32{1, 0}, "m", 0)
+	results, err := ix.Check("", "rotated", nil, []float32{1, 0}, "m", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestCheck_BothPathsOutrankASinglePathHit(t *testing.T) {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
 
-	results, err := ix.Check("", "shared wording", nil, []float32{1, 0}, "m", 0)
+	results, err := ix.Check("", "shared wording", nil, []float32{1, 0}, "m", 0, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -377,12 +377,12 @@ func TestCheck_SemanticRejectsMismatchedModelAndDims(t *testing.T) {
 
 	// Same width, different model: cosine would produce a plausible-looking
 	// number that means nothing. This must fail loudly, not silently score.
-	if _, err := ix.Check("", "anything", nil, []float32{1, 0}, "other-model", 0); err == nil {
+	if _, err := ix.Check("", "anything", nil, []float32{1, 0}, "other-model", 0, nil); err == nil {
 		t.Fatal("expected a model-mismatch error, got nil")
 	}
 	// Wrong width scores 0 against everything, so it would otherwise look
 	// exactly like "nothing is semantically similar".
-	if _, err := ix.Check("", "anything", nil, []float32{1, 0, 0}, "m", 0); err == nil {
+	if _, err := ix.Check("", "anything", nil, []float32{1, 0, 0}, "m", 0, nil); err == nil {
 		t.Fatal("expected a dims-mismatch error, got nil")
 	}
 }
@@ -401,7 +401,7 @@ func TestCheck_SemanticErrorsWhenNothingIsEmbedded(t *testing.T) {
 
 	// Silently returning lexical-only results here is the false-all-clear
 	// this error exists to prevent.
-	if _, err := ix.Check("", "some rule", nil, []float32{1, 0}, "m", 0); err == nil {
+	if _, err := ix.Check("", "some rule", nil, []float32{1, 0}, "m", 0, nil); err == nil {
 		t.Fatal("expected an error when no statements are embedded, got nil")
 	}
 }
@@ -420,7 +420,7 @@ func TestCheck_LimitTruncatesLowestRankedFirst(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	all, err := ix.Check("", "shared filler wording", nil, nil, "", 0)
+	all, err := ix.Check("", "shared filler wording", nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("Check unlimited: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestCheck_LimitTruncatesLowestRankedFirst(t *testing.T) {
 		t.Fatalf("expected all 5 unlimited, got %d", len(all))
 	}
 
-	limited, err := ix.Check("", "shared filler wording", nil, nil, "", 2)
+	limited, err := ix.Check("", "shared filler wording", nil, nil, "", 2, nil)
 	if err != nil {
 		t.Fatalf("Check limited: %v", err)
 	}

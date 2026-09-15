@@ -76,7 +76,63 @@ func (ix *Index) ensureSchema() error {
 	if err := migrate(tx); err != nil {
 		return fmt.Errorf("migrate index: %w", err)
 	}
+	if err := ensureDerivation(tx); err != nil {
+		return fmt.Errorf("refresh derived data: %w", err)
+	}
 	return tx.Commit()
+}
+
+// derivationVersion identifies the shape of the data reindex *derives* from
+// statement files — the facet index today, anything of the same character
+// later. Bump it whenever that shape changes.
+//
+// Without it, adding derived data is invisible on an existing index and stays
+// that way: reindex is incremental, so every unmodified file reports
+// unchanged, the code that would populate the new table never runs, and the
+// feature silently does nothing until someone happens to edit each file. That
+// is exactly what happened when facets were added — the whole corpus indexed
+// clean and `check --touches` matched nothing.
+const derivationVersion = "2"
+
+// requiem: model/derived-data-is-versioned
+// ensureDerivation rebuilds everything reindex derives from files when the
+// derivation shape has changed, by clearing the manifest and the derived
+// tables so the next reindex reparses the corpus.
+//
+// Embeddings and code_refs are deliberately left alone. Vectors cannot be
+// recovered by reparsing a file — only by a network call — which is the same
+// reason schema changes here migrate rather than wipe.
+func ensureDerivation(tx *sql.Tx) error {
+	var stored string
+	err := tx.QueryRow(`SELECT value FROM index_meta WHERE key = 'derivation_version'`).Scan(&stored)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if stored == derivationVersion {
+		return nil
+	}
+
+	// Dependents first, manifest last: statements.file_path and
+	// rejections.file_path are foreign keys into it, so clearing the
+	// manifest while its rows are still referenced fails outright.
+	for _, stmt := range []string{
+		`DELETE FROM statements_fts`,
+		`DELETE FROM statement_tags`,
+		`DELETE FROM relationships`,
+		`DELETE FROM statements`,
+		`DELETE FROM rejections_fts`,
+		`DELETE FROM rejections`,
+		`DELETE FROM facets`,
+		`DELETE FROM manifest`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	_, err = tx.Exec(
+		`INSERT INTO index_meta (key, value) VALUES ('derivation_version', ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, derivationVersion)
+	return err
 }
 
 // migrate brings an index created by an older build up to the current shape.

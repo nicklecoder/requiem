@@ -6,6 +6,13 @@ package index
 // database only exists to make queries fast and can be deleted and rebuilt
 // via `reindex` at any time.
 var schema = []string{
+	// index_meta records facts about the index itself, notably which shape
+	// of derived data it was built with — see derivationVersion.
+	`CREATE TABLE IF NOT EXISTS index_meta (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`,
+
 	`CREATE TABLE IF NOT EXISTS manifest (
 		file_path    TEXT PRIMARY KEY,
 		mtime        INTEGER NOT NULL,
@@ -128,6 +135,29 @@ var schema = []string{
 		PRIMARY KEY (full_id, file, line)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_code_refs_full_id ON code_refs(full_id)`,
+
+	// facets holds the concrete identifiers a record names — snake_case
+	// names, dotted paths, symbols, camelCase — extracted from its body.
+	//
+	// This is not a second index in the sense SPEC's Boundary section
+	// forbids: it is derived from the statement files this index already
+	// parses, rebuilt in the same transaction as the row it belongs to, and
+	// it never looks at the source tree. Nothing about it can fall out of
+	// sync that the surrounding row could not.
+	//
+	// It exists because prose similarity cannot pair two records that share
+	// an identifier and nothing else. Measured on a real 255-statement
+	// corpus: three genuine conflicts were never surfaced by nearest-
+	// neighbour search over 1,936 candidate pairs, and every one of them
+	// shared an identifier while sharing almost no wording.
+	// requiem: retrieval/identifier-facets
+	`CREATE TABLE IF NOT EXISTS facets (
+		source_kind TEXT NOT NULL,
+		full_id     TEXT NOT NULL,
+		facet       TEXT NOT NULL,
+		PRIMARY KEY (source_kind, full_id, facet)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_facets_facet ON facets(facet)`,
 
 	// fts5vocab exposes each FTS index's term -> document-frequency table.
 	// It is a view over data FTS5 already maintains, not a second index:

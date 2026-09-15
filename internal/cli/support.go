@@ -111,6 +111,26 @@ func warnNearMisses(misses []requiem.NearMiss) {
 	}
 }
 
+// warnNothingMatched says so when no candidate rose above a weak match.
+//
+// check always fills its limit, so a page of results is not evidence that any
+// of them is relevant — and an agent had no way to conclude "this idea is
+// new". The verdict field carries this per candidate; this line states the
+// conclusion once, on stderr, where a reader skimming combined output will
+// see it without parsing the payload.
+// requiem: retrieval/calibrated-verdict
+func warnNothingMatched(candidates []index.Candidate) {
+	if len(candidates) == 0 {
+		fmt.Fprintln(os.Stderr, "requiem: no candidates matched — nothing in this namespace resembles the draft")
+		return
+	}
+	if index.StrongestVerdict(candidates) == index.VerdictWeak {
+		fmt.Fprintf(os.Stderr,
+			"requiem: %d candidate(s) returned, all weak matches (vocabulary overlap only) — nothing here appears to state this already\n",
+			len(candidates))
+	}
+}
+
 // warnDanglingPointers reports rejections whose see_instead names no
 // statement. A rejection exists to answer "what was done instead", so a
 // pointer resolving to nothing is the one part of it that can rot — and it

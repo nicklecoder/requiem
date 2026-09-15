@@ -798,6 +798,12 @@ type CheckParams struct {
 	Vector []float32
 	Model  string
 
+	// Touches narrows to records naming these identifiers. An identifier is
+	// an exact key where prose is a guess, so this finds a prior decision
+	// about `external_venues.status` even when the draft describes it in
+	// words that decision never used.
+	Touches []string
+
 	// Semantic asks requiem to fetch the query vector from the configured
 	// endpoint instead, so the caller does not have to produce one by hand.
 	// Opt-in rather than automatic: `check` is the most-used command in the
@@ -867,7 +873,7 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 		return nil, Coverage{}, fmt.Errorf("reindex before check: %w", err)
 	}
 
-	candidates, err := ix.Check(p.Namespace, p.Text, p.Tags, vector, embModel, p.Limit)
+	candidates, err := ix.Check(p.Namespace, p.Text, p.Tags, vector, embModel, p.Limit, p.Touches)
 	if err != nil {
 		return nil, Coverage{}, err
 	}

@@ -43,6 +43,33 @@ type Candidate struct {
 	// completely differently, which lexical search structurally cannot.
 	MatchKind string `json:"match_kind,omitempty"`
 
+	// Verdict bands how strongly this candidate resembles the draft: a
+	// duplicate at rank 1 and noise at rank 1 were previously
+	// indistinguishable, because RRF scores position and discards
+	// magnitude. See verdict.go.
+	// requiem: retrieval/calibrated-verdict
+	Verdict Verdict `json:"verdict,omitempty"`
+
+	// Similarity is the raw cosine behind a semantic match, present only
+	// when the semantic path ran. Reported because it is the number people
+	// have intuitions about, and because the verdict band should be
+	// inspectable rather than taken on trust.
+	Similarity *float64 `json:"similarity,omitempty"`
+
+	// SharedFacets are the identifiers this candidate and the draft both
+	// name — the evidence that promotes a pair prose similarity would
+	// leave in the noise.
+	// requiem: retrieval/identifier-facets
+	SharedFacets []string `json:"shared_facets,omitempty"`
+
+	// Challenged marks an active statement that a *proposed* statement
+	// contradicts or would supersede. A corpus of decisions makes existing
+	// decisions easy to honour, which is the point and also the risk: an
+	// agent should know when the decision it is about to respect is itself
+	// under challenge.
+	// requiem: retrieval/challenged-decisions-are-flagged
+	Challenged bool `json:"challenged,omitempty"`
+
 	// Stale reports that the code a code-derived statement was written from
 	// has changed since — the statement may no longer describe the code it
 	// claims to. Nil for a dialogue-derived statement and for a rejection,
@@ -101,7 +128,7 @@ const DefaultCheckLimit = 10
 // looks plausible and means nothing, so it's validated against the corpus's
 // pinned model the same way UpsertEmbedding validates on write.
 // requiem: retrieval/check-result-limit
-func (ix *Index) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]Candidate, error) {
+func (ix *Index) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int, touches []string) ([]Candidate, error) {
 	if len(vector) > 0 {
 		if err := ix.validateQueryVector(vector, embModel); err != nil {
 			return nil, err
@@ -147,9 +174,163 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32, 
 		lists = append(lists, markKind(semantic, matchSemantic))
 	}
 
+	// --touches asks for the records naming an identifier, which is an exact
+	// key rather than a ranking signal: a facet match is added as its own
+	// list so it can surface a record whose prose shares nothing with the
+	// draft at all.
+	// requiem: retrieval/identifier-facets
+	if len(touches) > 0 {
+		byFacet, err := ix.checkTouches(touches, namespace)
+		if err != nil {
+			return nil, fmt.Errorf("check touches: %w", err)
+		}
+		lists = append(lists, markKind(byFacet, matchLexical))
+	}
+
 	out := fuse(lists)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
+	}
+	if err := ix.annotateEvidence(out, text, touches); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// annotateEvidence fills in each surviving candidate's shared facets, term
+// coverage, challenge flag and verdict.
+//
+// Runs after truncation, over at most `limit` records, so the bodies it loads
+// are bounded — the whole corpus is never materialized to score a search.
+func (ix *Index) annotateEvidence(candidates []Candidate, text string, touches []string) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	keys := make([]EmbKey, 0, len(candidates))
+	for _, c := range candidates {
+		keys = append(keys, EmbKey{c.SourceKind, c.FullID})
+	}
+	facets, err := ix.facetsForIDs(keys)
+	if err != nil {
+		return err
+	}
+	bodies, err := ix.bodiesForIDs(keys)
+	if err != nil {
+		return err
+	}
+	challenged, err := ix.ChallengedIDs()
+	if err != nil {
+		return err
+	}
+
+	// --touches names identifiers the caller already knows the change
+	// affects, which is stronger evidence than anything inferred from the
+	// draft's prose, so it joins the query's own facets.
+	queryFacets := ExtractFacets(text)
+	for _, t := range touches {
+		if f := normalizeFacet(t); f != "" {
+			queryFacets = append(queryFacets, f)
+		}
+	}
+	draftTerms := coverageTerms(text)
+
+	for i := range candidates {
+		c := &candidates[i]
+		key := EmbKey{c.SourceKind, c.FullID}
+		c.SharedFacets = sharedFacets(queryFacets, facets[key])
+		if c.SourceKind == SourceKindStatement && challenged[c.FullID] {
+			c.Challenged = true
+		}
+		var sim float64
+		hasSim := c.Similarity != nil
+		if hasSim {
+			sim = *c.Similarity
+		}
+		c.Verdict = classifyVerdict(sim, hasSim, len(c.SharedFacets), termCoverage(draftTerms, bodies[key]))
+	}
+	return nil
+}
+
+// checkTouches finds records naming any of the given identifiers, ranked by
+// how many of them each names.
+func (ix *Index) checkTouches(touches []string, namespace string) ([]Candidate, error) {
+	wanted := make([]string, 0, len(touches))
+	for _, t := range touches {
+		if f := normalizeFacet(t); f != "" {
+			wanted = append(wanted, f)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(wanted)), ",")
+	args := make([]interface{}, 0, len(wanted)+2)
+	for _, f := range wanted {
+		args = append(args, f)
+	}
+	query := `SELECT source_kind, full_id, COUNT(*) AS hits FROM facets
+		WHERE facet IN (` + placeholders + `)
+		GROUP BY source_kind, full_id ORDER BY hits DESC, full_id`
+	rows, err := ix.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var keys []EmbKey
+	for rows.Next() {
+		var kind, id string
+		var hits int
+		if err := rows.Scan(&kind, &id, &hits); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		keys = append(keys, EmbKey{kind, id})
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Resolved through the same enumeration the other paths use, so a
+	// facet hit carries identical metadata and obeys the same status and
+	// namespace scoping.
+	records, err := ix.embeddableRecords(namespace)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[EmbKey]Candidate, len(records))
+	for _, c := range records {
+		byKey[EmbKey{c.SourceKind, c.FullID}] = c
+	}
+	var out []Candidate
+	for _, k := range keys {
+		if c, ok := byKey[k]; ok {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// bodiesForIDs loads full bodies for a bounded set of records.
+func (ix *Index) bodiesForIDs(keys []EmbKey) (map[EmbKey]string, error) {
+	out := make(map[EmbKey]string, len(keys))
+	for _, k := range keys {
+		table := "statements"
+		if k.SourceKind == sourceKindRejection {
+			table = "rejections"
+		}
+		var body string
+		err := ix.db.QueryRow(`SELECT body FROM `+table+` WHERE full_id = ?`, k.FullID).Scan(&body)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[k] = body
 	}
 	return out, nil
 }
@@ -235,6 +416,15 @@ func fuse(lists [][]Candidate) []Candidate {
 				e = &entry{candidate: c, kinds: map[string]bool{}}
 				merged[k] = e
 				order = append(order, k)
+			}
+			// Evidence travels with whichever list carried it. The lexical
+			// path knows no similarity, so a candidate found by both paths
+			// has to keep the number the semantic path measured rather than
+			// the zero value of whichever list merged first — otherwise the
+			// strongest evidence there is would be dropped for exactly the
+			// candidates both paths agreed on.
+			if e.candidate.Similarity == nil && c.Similarity != nil {
+				e.candidate.Similarity = c.Similarity
 			}
 			e.kinds[c.MatchKind] = true
 			e.score += 1.0 / (rrfK + float64(position+1))
@@ -334,6 +524,8 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 		}
 		c.Rank = -score
 		c.MatchKind = matchSemantic
+		sim := score
+		c.Similarity = &sim
 		out = append(out, c)
 	}
 	// full_id breaks ties so a statement and a rejection at identical

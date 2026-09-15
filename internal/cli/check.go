@@ -35,7 +35,7 @@ func checkLong(semantic bool) string {
 
 func newCheckCmd(semantic bool) *cobra.Command {
 	var namespace, text, vectorJSON, model string
-	var tags []string
+	var tags, touches []string
 	var limit int
 	var useSemantic bool
 
@@ -66,6 +66,7 @@ func newCheckCmd(semantic bool) *cobra.Command {
 				Text:      text,
 				Tags:      tags,
 				Limit:     limit,
+				Touches:   touches,
 				Vector:    vec,
 				Model:     model,
 				Semantic:  useSemantic,
@@ -74,6 +75,7 @@ func newCheckCmd(semantic bool) *cobra.Command {
 				return err
 			}
 			warnCoverage(coverage)
+			warnNothingMatched(candidates)
 			if candidates == nil {
 				candidates = []index.Candidate{}
 			}
@@ -84,6 +86,7 @@ func newCheckCmd(semantic bool) *cobra.Command {
 	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to check within (required)")
 	cmd.Flags().StringVar(&text, "text", "", "draft text to check for related/conflicting statements (required)")
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags to narrow the search")
+	cmd.Flags().StringSliceVar(&touches, "touches", nil, "comma-separated identifiers the change touches, e.g. external_venues.status")
 	cmd.Flags().StringVar(&vectorJSON, "vector", "", "JSON array of floats: an embedding of --text, for semantic matching alongside lexical")
 	cmd.Flags().StringVar(&model, "model", "", "name of the embedding model that produced --vector (required with it)")
 	cmd.Flags().BoolVar(&useSemantic, "semantic", false, "also match by meaning, embedding --text via the configured endpoint")

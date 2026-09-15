@@ -106,6 +106,9 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		if _, err := tx.Exec(`DELETE FROM statements_fts WHERE full_id = ?`, fullID); err != nil {
 			return fmt.Errorf("delete stale fts %s: %w", fullID, err)
 		}
+		if err := deleteFacets(tx, sourceKindStatement, fullID); err != nil {
+			return fmt.Errorf("delete stale facets %s: %w", fullID, err)
+		}
 		if err := upsertManifest(tx, sf.RelPath, sf.ModTime, sf.Size); err != nil {
 			return err
 		}
@@ -193,6 +196,9 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		if err := deleteRejectionFTSForFile(tx, relPath); err != nil {
 			return ReindexStats{}, err
 		}
+		if err := deleteFacetsForFile(tx, relPath); err != nil {
+			return ReindexStats{}, err
+		}
 		if err := deleteRowsForFile(tx, relPath); err != nil {
 			return ReindexStats{}, fmt.Errorf("delete removed file %s: %w", relPath, err)
 		}
@@ -277,6 +283,9 @@ func deleteRowsForFile(tx *sql.Tx, relPath string) error {
 // not find it either — by then the row names its new file.
 func deleteRejectionByID(tx *sql.Tx, fullID string) error {
 	if _, err := tx.Exec(`DELETE FROM rejections_fts WHERE full_id = ?`, fullID); err != nil {
+		return err
+	}
+	if err := deleteFacets(tx, sourceKindRejection, fullID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM rejections WHERE full_id = ?`, fullID); err != nil {
@@ -385,6 +394,12 @@ func insertStatement(tx *sql.Tx, st model.Statement, relPath string) error {
 	if err != nil {
 		return fmt.Errorf("insert fts %s: %w", fullID, err)
 	}
+	// Facets are derived from the body in the same transaction as the row,
+	// so they cannot drift from it.
+	// requiem: retrieval/identifier-facets
+	if err := replaceFacets(tx, sourceKindStatement, fullID, st.Body); err != nil {
+		return fmt.Errorf("index facets %s: %w", fullID, err)
+	}
 	return nil
 }
 
@@ -405,6 +420,10 @@ func insertRejection(tx *sql.Tx, r model.Rejection, relPath string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("insert rejection fts %s: %w", fullID, err)
+	}
+	// requiem: retrieval/identifier-facets
+	if err := replaceFacets(tx, sourceKindRejection, fullID, r.Body); err != nil {
+		return fmt.Errorf("index rejection facets %s: %w", fullID, err)
 	}
 	return nil
 }
