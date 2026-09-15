@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 13
+const docBlockVersion = 14
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -110,10 +110,31 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"tagged `statement` or `rejection`. Call `requiem get <namespace/id>` for the",
 	"full body of one that actually matters.",
 	"",
+	"Each candidate carries a `verdict` — `duplicate`, `related` or `weak` — with",
+	"the evidence behind it: the cosine where a vector was compared, and the",
+	"identifiers it shares with your draft. A result set that is entirely `weak`",
+	"is the answer \"nothing here states this already\"; check always fills its",
+	"limit, so the count of results never meant anything on its own.",
+	"",
+	"`--touches <identifier>` retrieves by identifier — a column, field or symbol",
+	"the change touches — which finds a prior decision about",
+	"`external_venues.status` even when it was written in words your draft does",
+	"not use.",
+	"",
+	"**Starting work in an area.** `requiem brief --namespace <area>` returns the",
+	"minimal set in force there: must/must_not rules, the principles they refine,",
+	"and what has already been rejected. Small enough to paste into a prompt, and",
+	"it counts what the cap left out instead of hiding it.",
+	"",
 	"**Recording outcomes.** Writes auto-stage in git but never auto-commit, so a",
 	"dead end leaves no trace if you back out:",
 	"",
-	"- `requiem add` / `update` / `link` — decisions that stand",
+	"- `requiem add` / `update` / `link` — decisions that stand. `add` runs the",
+	"  duplicate check itself and refuses when the corpus already says this,",
+	"  naming what it found; `--duplicate-ok` records it anyway.",
+	"- `requiem batch` — many writes as JSON Lines on stdin, one `{\"op\":...}` per",
+	"  line, with a per-record result for each. A malformed line writes nothing;",
+	"  a refused write is reported against its line while the rest apply.",
 	"- `requiem reject` — ideas explicitly considered and rejected, so they aren't re-proposed",
 	"- `requiem mv <from> <to>` — relocate a statement, rewriting inbound references",
 	"- `requiem review` — describe what is staged but not yet committed",

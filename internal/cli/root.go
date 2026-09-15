@@ -102,6 +102,8 @@ CONVENTIONS
 		newGetCmd(),
 		newListCmd(),
 		newCheckCmd(semantic),
+		newBriefCmd(),
+		newBatchCmd(),
 		newEmbedCmd(),
 		newAuditCmd(semantic),
 		newMvCmd(),
