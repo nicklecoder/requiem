@@ -734,6 +734,62 @@ func findCandidate(t *testing.T, candidates []index.Candidate, fullID string) in
 	return index.Candidate{}
 }
 
+// The check the workflow asks an agent to run by hand, run by the tool at the
+// one moment the corpus can still be kept clean.
+// requiem: model/add-checks-before-writing
+func TestAdd_RefusesADuplicateAndCanBeOverridden(t *testing.T) {
+	s := newTestService(t)
+	body := "Session state lives in Postgres rather than Redis, because it must survive a restart."
+	if _, err := s.Add(AddParams{ID: "session-store", Namespace: "infra", Kind: "design", Body: body}); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+
+	_, err := s.Add(AddParams{
+		ID: "session-storage-choice", Namespace: "infra", Kind: "design",
+		Body: "Session state lives in Postgres rather than Redis, because it has to survive a restart.",
+	})
+	if err == nil {
+		t.Fatal("expected Add to refuse a near-duplicate")
+	}
+	var dup *DuplicateError
+	if !errors.As(err, &dup) {
+		t.Fatalf("expected a DuplicateError, got %T: %v", err, err)
+	}
+	if len(dup.Candidates) == 0 || dup.Candidates[0].FullID != "infra/session-store" {
+		t.Fatalf("expected the existing statement named in the refusal, got %+v", dup.Candidates)
+	}
+	// The refusal has to say how to proceed, or it is just an obstacle.
+	if !strings.Contains(err.Error(), "--duplicate-ok") {
+		t.Fatalf("refusal should name the override, got: %v", err)
+	}
+
+	// Overridden, the same write goes through: requiem states a finding, the
+	// agent still decides.
+	if _, err := s.Add(AddParams{
+		ID: "session-storage-choice", Namespace: "infra", Kind: "design",
+		Body:        "Session state lives in Postgres rather than Redis, because it has to survive a restart.",
+		DuplicateOk: true,
+	}); err != nil {
+		t.Fatalf("Add with DuplicateOk: %v", err)
+	}
+}
+
+func TestAdd_UnrelatedBodyIsNotRefused(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "session-store", Namespace: "infra", Kind: "design",
+		Body: "Session state lives in Postgres rather than Redis, because it must survive a restart.",
+	}); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{
+		ID: "invoice-cents", Namespace: "billing", Kind: "rule",
+		Body: "Monetary amounts are stored as integer cents, never as floating point.",
+	}); err != nil {
+		t.Fatalf("unrelated Add should not be refused: %v", err)
+	}
+}
+
 // The pre-commit notice names the records a commit would approve. A
 // rejection is filed as "<id>.rejected.md", so trimming only ".md" made it
 // offer to approve an id nothing can be looked up by.
@@ -991,8 +1047,14 @@ func TestReindex_ReportsCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	if stats.Added != 2 {
-		t.Fatalf("expected 2 added on first reindex, got stats=%+v", stats)
+	// Add indexes as it goes now, because its duplicate check reads the
+	// index first, so by this point some or all of the corpus is already
+	// indexed. What matters is that every record is accounted for — the
+	// split between added and unchanged is an artifact of when the index was
+	// last touched, not a fact about the corpus.
+	// requiem: model/add-checks-before-writing
+	if stats.Added+stats.Unchanged != 2 {
+		t.Fatalf("expected both statements accounted for on first reindex, got stats=%+v", stats)
 	}
 
 	stats, err = s.Reindex()
@@ -1279,7 +1341,14 @@ func TestCheck_DefaultLimitBoundsResultCount(t *testing.T) {
 	s := newTestService(t)
 	for i := 0; i < 15; i++ {
 		id := fmt.Sprintf("rule-%d", i)
-		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "shared wording across every statement " + id}); err != nil {
+		// These bodies are near-identical on purpose — the point is to
+		// saturate the lexical match — so this is exactly what the override
+		// is for.
+		if _, err := s.Add(AddParams{
+			ID: id, Namespace: "ns", Kind: "rule",
+			Body:        "shared wording across every statement " + id,
+			DuplicateOk: true,
+		}); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}

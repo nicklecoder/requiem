@@ -247,7 +247,7 @@ func (ix *Index) annotateEvidence(candidates []Candidate, text string, touches [
 		if hasSim {
 			sim = *c.Similarity
 		}
-		c.Verdict = classifyVerdict(sim, hasSim, len(c.SharedFacets), termCoverage(draftTerms, bodies[key]))
+		c.Verdict = classifyVerdict(sim, hasSim, len(c.SharedFacets), termCoverage(draftTerms, bodies[key]), len(draftTerms))
 	}
 	return nil
 }

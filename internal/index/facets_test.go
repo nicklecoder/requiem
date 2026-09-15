@@ -137,6 +137,35 @@ func TestCheck_VerdictSeparatesADuplicateFromNoise(t *testing.T) {
 	}
 }
 
+// Vocabulary overlap is meaningless on a very short draft: two words matching
+// two words is 100% overlap and evidence of nothing. Without a floor, `add`
+// would refuse to record anything whose body was a phrase.
+// requiem: retrieval/calibrated-verdict
+func TestCheck_ShortDraftIsNotJudgedADuplicateOnVocabularyAlone(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	seedStatement(t, s, model.Statement{
+		ID: "first", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "body number one",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	results, err := ix.Check("ns", "body number two", nil, nil, "", 0, nil)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected the lexical match to still be returned")
+	}
+	if results[0].Verdict == VerdictDuplicate {
+		t.Fatalf("a two-word draft must not be judged a duplicate on vocabulary alone: %+v", results[0])
+	}
+}
+
 // An agent that reads a settled statement will defend it, so it needs to know
 // when the decision is itself under challenge.
 // requiem: retrieval/challenged-decisions-are-flagged

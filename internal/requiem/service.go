@@ -201,6 +201,67 @@ type AddParams struct {
 	Tags       []string
 	Provenance string // "dialogue" (default) or "code-derived"
 	Source     string // "path/to/file.go:10-14"; required when Provenance == code-derived
+
+	// DuplicateOk writes even though the corpus already carries something
+	// that reads as a duplicate. The override exists so the refusal states a
+	// finding rather than blocking with no way past.
+	DuplicateOk bool
+}
+
+// duplicateCheckLimit bounds the check Add runs on itself. Only the strongest
+// few candidates can matter: a duplicate the draft resembles less than five
+// other records is not a duplicate.
+const duplicateCheckLimit = 5
+
+// DuplicateError reports that Add refused to write because the corpus
+// already says this.
+type DuplicateError struct {
+	FullID     string
+	Candidates []index.Candidate
+}
+
+func (e *DuplicateError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: the corpus already carries %d record(s) that read as duplicates of this body:", e.FullID, len(e.Candidates))
+	for _, c := range e.Candidates {
+		fmt.Fprintf(&b, "\n  %s (%s): %s", c.FullID, c.SourceKind, c.Excerpt)
+	}
+	b.WriteString("\n`requiem get <id>` for the full body. Add --duplicate-ok to record this anyway,")
+	b.WriteString("\nor `update` the existing statement if what you have is a refinement of it.")
+	return b.String()
+}
+
+// duplicatesOf runs check against a draft body and returns whatever comes
+// back as a duplicate.
+//
+// Lexical and facet evidence only, never a query vector: this is a write
+// path, and making it reach the network would mean `add` hangs whenever the
+// embedding endpoint is down — the reason auto-embed-on-read was rejected for
+// the read path, which applies with more force to a write. The cost is worth
+// stating plainly: a duplicate worded in vocabulary this draft does not share
+// will not be caught here, and `check --semantic` stays the way to find it.
+// requiem: model/add-checks-before-writing
+func (s *Service) duplicatesOf(namespace, body string) ([]index.Candidate, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer ix.Close()
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, fmt.Errorf("reindex before duplicate check: %w", err)
+	}
+
+	candidates, err := ix.Check(namespace, body, nil, nil, "", duplicateCheckLimit, nil)
+	if err != nil {
+		return nil, err
+	}
+	var dupes []index.Candidate
+	for _, c := range candidates {
+		if c.Verdict == index.VerdictDuplicate {
+			dupes = append(dupes, c)
+		}
+	}
+	return dupes, nil
 }
 
 // Add creates a new statement. It never overwrites an existing one at the
@@ -212,6 +273,22 @@ func (s *Service) Add(p AddParams) (*model.Statement, error) {
 		return nil, fmt.Errorf("%s: %w", fullID, ErrAlreadyExists)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
+	}
+
+	// The check the workflow asks an agent to run by hand, run by the tool at
+	// the one moment the corpus can still be kept clean. Leaving it to the
+	// caller meant it was skipped: a real ingestion produced 54 duplicates in
+	// 255 statements, and the whole method around it — load a base, check
+	// each batch, merge by hand — existed to compensate for this step.
+	// requiem: model/add-checks-before-writing
+	if !p.DuplicateOk {
+		dupes, err := s.duplicatesOf(p.Namespace, p.Body)
+		if err != nil {
+			return nil, err
+		}
+		if len(dupes) > 0 {
+			return nil, &DuplicateError{FullID: fullID, Candidates: dupes}
+		}
 	}
 
 	provenanceType := model.ProvenanceType(p.Provenance)

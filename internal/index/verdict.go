@@ -51,27 +51,46 @@ const (
 	relatedTermCoverage   = 0.34
 )
 
+// minCoverageTerms is the number of distinctive words a draft needs before
+// vocabulary overlap says anything at all.
+//
+// A floor, for the same reason the document-frequency filter has one: the
+// measure is destructive on small inputs. A two-word draft matching a
+// two-word body scores 100% overlap while being evidence of nothing, and at
+// the limit a one-word draft would make every record containing that word a
+// duplicate. Below the floor, coverage is ignored entirely — a shared
+// identifier or a cosine can still speak, since neither depends on how many
+// words the draft happens to have.
+const minCoverageTerms = 4
+
 // classifyVerdict combines the available evidence into a band. Each argument
 // may be absent: similarity only exists when the semantic path ran, facets
 // only when both sides name identifiers, coverage only when a body was
 // loaded. Absent evidence never promotes a candidate.
-func classifyVerdict(similarity float64, hasSimilarity bool, sharedFacetCount int, termCoverage float64) Verdict {
+func classifyVerdict(similarity float64, hasSimilarity bool, sharedFacetCount int, termCoverage float64, draftTermCount int) Verdict {
+	// Coverage is only admissible evidence above the floor; see
+	// minCoverageTerms.
+	coverage := termCoverage
+	if draftTermCount < minCoverageTerms {
+		coverage = 0
+	}
+
 	switch {
 	case hasSimilarity && similarity >= duplicateSimilarity:
 		return VerdictDuplicate
 	case hasSimilarity && sharedFacetCount > 0 && similarity >= duplicateSimilarityWithFacet:
 		return VerdictDuplicate
-	case !hasSimilarity && sharedFacetCount >= 2 && termCoverage >= relatedTermCoverage:
+	case !hasSimilarity && sharedFacetCount >= 2 && coverage >= relatedTermCoverage:
 		// Two shared identifiers and real vocabulary overlap is the
 		// strongest evidence available with no vectors at all.
 		return VerdictDuplicate
-	case !hasSimilarity && termCoverage >= duplicateTermCoverage:
+	case !hasSimilarity && coverage >= duplicateTermCoverage:
 		return VerdictDuplicate
 	case hasSimilarity && similarity >= relatedSimilarity:
 		return VerdictRelated
 	case sharedFacetCount > 0:
 		return VerdictRelated
-	case termCoverage >= relatedTermCoverage:
+	case coverage >= relatedTermCoverage:
 		return VerdictRelated
 	default:
 		return VerdictWeak

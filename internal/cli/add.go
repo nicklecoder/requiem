@@ -8,29 +8,36 @@ import (
 
 func newAddCmd() *cobra.Command {
 	var id, namespace, kind, modality, status, body, provenance, source string
-	var abstract bool
+	var abstract, duplicateOk bool
 	var tags []string
 
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Create a new statement",
-		Args:  cobra.NoArgs,
+		Long: "Runs check against the body first and refuses to write when the corpus\n" +
+			"already carries a record that reads as a duplicate, naming what it found.\n" +
+			"--duplicate-ok records it anyway.\n\n" +
+			"The check is lexical and identifier-based, never a network call, so a\n" +
+			"duplicate worded in vocabulary this draft does not share can still get\n" +
+			"through; `check --semantic` is how to find that one.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := openService()
 			if err != nil {
 				return err
 			}
 			st, err := svc.Add(requiem.AddParams{
-				ID:         id,
-				Namespace:  namespace,
-				Kind:       kind,
-				Modality:   modality,
-				Status:     status,
-				Abstract:   abstract,
-				Body:       body,
-				Tags:       tags,
-				Provenance: provenance,
-				Source:     source,
+				ID:          id,
+				Namespace:   namespace,
+				Kind:        kind,
+				Modality:    modality,
+				Status:      status,
+				Abstract:    abstract,
+				Body:        body,
+				Tags:        tags,
+				Provenance:  provenance,
+				Source:      source,
+				DuplicateOk: duplicateOk,
 			})
 			if err != nil {
 				return err
@@ -49,6 +56,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags")
 	cmd.Flags().StringVar(&provenance, "provenance", "dialogue", "dialogue or code-derived")
 	cmd.Flags().StringVar(&source, "source", "", "file:line-line, required when --provenance=code-derived")
+	cmd.Flags().BoolVar(&duplicateOk, "duplicate-ok", false, "record this even though an existing record reads as a duplicate")
 	_ = cmd.MarkFlagRequired("id")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("kind")
