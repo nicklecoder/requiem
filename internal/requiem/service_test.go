@@ -734,6 +734,39 @@ func findCandidate(t *testing.T, candidates []index.Candidate, fullID string) in
 	return index.Candidate{}
 }
 
+// The pre-commit notice names the records a commit would approve. A
+// rejection is filed as "<id>.rejected.md", so trimming only ".md" made it
+// offer to approve an id nothing can be looked up by.
+// requiem: model/one-file-per-record
+func TestPendingApproval_NamesARejectionByItsID(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-expiry", Namespace: "auth",
+		Body: "Rejected: unbounded blast radius on leak.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	pending, err := s.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval: %v", err)
+	}
+	var ids []string
+	found := false
+	for _, p := range pending {
+		ids = append(ids, p.FullID)
+		if p.FullID == "auth/sliding-expiry" {
+			found = true
+		}
+		if strings.HasSuffix(p.FullID, ".rejected") {
+			t.Fatalf("pending change names a file, not a record: %q", p.FullID)
+		}
+	}
+	if !found {
+		t.Fatalf("expected auth/sliding-expiry among pending changes, got %v", ids)
+	}
+}
+
 // seedSeeInstead adds the statement the rejection tests point at, since a
 // see_instead naming nothing is now refused.
 func seedSeeInstead(t *testing.T, s *Service) {

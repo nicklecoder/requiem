@@ -27,6 +27,10 @@ import (
 // a disposable cache, never the canonical data.
 const indexFile = "index.sqlite"
 
+// statementFileExt is the extension every record file shares, used only to
+// derive a readable id from a git path.
+const statementFileExt = ".md"
+
 // requiemDir is the directory name Open() nests the store under, relative
 // to the project root — also the pathspec used to scope git operations
 // (review/commit/"discard everything") to requiem's own files only.
@@ -1326,7 +1330,15 @@ func (s *Service) Commit(message string) (*CommitResult, error) {
 // git-relative statement path carries, for a readable default commit message.
 func labelForGitPath(p string) string {
 	rel := strings.TrimPrefix(p, requiemDir+"/statements/")
-	return strings.TrimSuffix(rel, ".md")
+	// A rejection is filed as "<id>.rejected.md", so trimming only ".md"
+	// named a record that does not exist — the pre-commit notice offered to
+	// approve "cli/coverage-envelope.rejected", which nothing can be looked
+	// up by.
+	// requiem: model/one-file-per-record
+	if trimmed := strings.TrimSuffix(rel, ".rejected"+statementFileExt); trimmed != rel {
+		return trimmed
+	}
+	return strings.TrimSuffix(rel, statementFileExt)
 }
 
 // defaultCommitMessage is prefixed "spec:" so it's easy to filter out of a
