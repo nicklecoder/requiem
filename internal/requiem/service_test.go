@@ -490,8 +490,11 @@ func TestGetList_ReflectWritesWithoutExplicitReindex(t *testing.T) {
 	}
 }
 
-func TestReject_AppendsToStore(t *testing.T) {
+// requiem: model/one-file-per-record
+func TestReject_WritesItsOwnFile(t *testing.T) {
 	s := newTestService(t)
+	seedSeeInstead(t, s)
+
 	r, err := s.Reject(RejectParams{
 		ID: "sliding-session-expiration", Namespace: "auth/session",
 		Body:       "Proposed sliding expiration. Rejected: unbounded blast radius on leak.",
@@ -504,12 +507,242 @@ func TestReject_AppendsToStore(t *testing.T) {
 		t.Fatal("expected RejectedAt to be set")
 	}
 
-	got, err := s.Store.ReadRejections("auth/session")
+	got, err := s.Store.ReadRejection("auth/session/sliding-session-expiration")
 	if err != nil {
-		t.Fatalf("ReadRejections: %v", err)
+		t.Fatalf("ReadRejection: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "sliding-session-expiration" {
-		t.Fatalf("unexpected rejections: %+v", got)
+	if got.ID != "sliding-session-expiration" || got.SeeInstead != "auth/session/no-plaintext-tokens" {
+		t.Fatalf("unexpected rejection: %+v", got)
+	}
+
+	path := filepath.Join(s.Store.Root, "statements", "auth", "session", "sliding-session-expiration.rejected.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected the rejection in its own file at %s: %v", path, err)
+	}
+}
+
+// see_instead is the half of a rejection that answers "what was done
+// instead", so a pointer to nothing is refused at the point of writing
+// rather than left to rot unreported.
+// requiem: model/see-instead-is-checked
+func TestReject_RefusesASeeInsteadThatNamesNothing(t *testing.T) {
+	s := newTestService(t)
+	_, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body:       "Rejected: unbounded blast radius on leak.",
+		SeeInstead: "auth/session/does-not-exist",
+	})
+	if err == nil {
+		t.Fatal("expected Reject to refuse a see_instead naming no statement")
+	}
+	if !strings.Contains(err.Error(), "no such statement") {
+		t.Fatalf("error should say the target does not exist, got: %v", err)
+	}
+}
+
+// Discarding a rejection used to be impossible: discard resolved only
+// "<id>.md", so the record stayed and had to be removed with `git rm`.
+func TestDiscard_RemovesARejection(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body: "Rejected: unbounded blast radius on leak.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	res, err := s.Discard("auth/session/sliding-session-expiration")
+	if err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	if len(res.Files) == 0 {
+		t.Fatal("expected Discard to report the rejection file it reverted")
+	}
+	if _, err := s.Store.ReadRejection("auth/session/sliding-session-expiration"); err == nil {
+		t.Fatal("expected the rejection to be gone after discard")
+	}
+}
+
+// A rejection's reasoning can be wrong, and the shared-file layout left no
+// way to correct it.
+func TestUpdateRejection_CorrectsBodyAndRepoints(t *testing.T) {
+	s := newTestService(t)
+	seedSeeInstead(t, s)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body: "Rejected for the wrong reason.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	r, err := s.UpdateRejection("auth/session/sliding-session-expiration", UpdateRejectionParams{
+		Body:       "Rejected: unbounded blast radius on leak, which rotation does not bound.",
+		SeeInstead: "auth/session/no-plaintext-tokens",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRejection: %v", err)
+	}
+	if !strings.Contains(r.Body, "unbounded blast radius") || r.SeeInstead != "auth/session/no-plaintext-tokens" {
+		t.Fatalf("unexpected rejection after update: %+v", r)
+	}
+
+	if _, err := s.UpdateRejection("auth/session/sliding-session-expiration", UpdateRejectionParams{
+		SeeInstead: "auth/session/nope",
+	}); err == nil {
+		t.Fatal("expected re-pointing at a missing statement to be refused")
+	}
+}
+
+// mv rewrote the statement graph but left see_instead pointing at the old
+// id, with nothing reporting the break.
+// requiem: model/see-instead-is-checked
+func TestMove_RewritesRejectionSeeInstead(t *testing.T) {
+	s := newTestService(t)
+	seedSeeInstead(t, s)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body:       "Rejected: unbounded blast radius on leak.",
+		SeeInstead: "auth/session/no-plaintext-tokens",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	res, err := s.Move("auth/session/no-plaintext-tokens", "auth/tokens/never-plaintext", false, true)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	var sawRejection bool
+	for _, id := range res.UpdatedReferences {
+		if id == "auth/session/sliding-session-expiration" {
+			sawRejection = true
+		}
+	}
+	if !sawRejection {
+		t.Fatalf("expected the rejection among updated references, got %v", res.UpdatedReferences)
+	}
+
+	got, err := s.Store.ReadRejection("auth/session/sliding-session-expiration")
+	if err != nil {
+		t.Fatalf("ReadRejection: %v", err)
+	}
+	if got.SeeInstead != "auth/tokens/never-plaintext" {
+		t.Fatalf("see_instead should follow the move, got %q", got.SeeInstead)
+	}
+
+	dangling, err := s.DanglingPointers()
+	if err != nil {
+		t.Fatalf("DanglingPointers: %v", err)
+	}
+	if len(dangling) != 0 {
+		t.Fatalf("expected no dangling pointers after the move, got %+v", dangling)
+	}
+}
+
+// A rejection with no vector could only ever score the lexical half of the
+// fusion, so every statement outranked every rejection in a --semantic
+// search — in the one command documented to surface rejections first.
+// requiem: retrieval/rejections-embedded
+func TestCheck_SemanticFindsARejectionByMeaning(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "hashed-at-rest", Namespace: "auth", Kind: "rule",
+		Body: "Session tokens are hashed at rest.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-expiry", Namespace: "auth",
+		Body: "Sliding expiry was proposed and rejected: unbounded blast radius on leak.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := s.Embed("auth/hashed-at-rest", "m", []float32{0, 1}, false, false); err != nil {
+		t.Fatalf("Embed statement: %v", err)
+	}
+	if _, err := s.Embed("auth/sliding-expiry", "m", []float32{1, 0}, false, true); err != nil {
+		t.Fatalf("Embed rejection: %v", err)
+	}
+
+	candidates, _, err := s.Check(CheckParams{
+		Namespace: "auth",
+		Text:      "vocabulary sharing nothing whatsoever",
+		Vector:    []float32{1, 0},
+		Model:     "m",
+	})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected the rejection to be found by meaning alone")
+	}
+	top := candidates[0]
+	if top.SourceKind != index.SourceKindRejection || top.FullID != "auth/sliding-expiry" {
+		t.Fatalf("expected the rejection ranked first, got %+v", candidates)
+	}
+	if top.MatchKind != "semantic" {
+		t.Fatalf("expected a semantic match, got %q", top.MatchKind)
+	}
+}
+
+// Staleness was stored and compared on `get` but never travelled with a
+// ranked result, leaving the anti-rot mechanism half-built.
+// requiem: retrieval/staleness-travels-with-results
+func TestCheck_ReportsStaleOnACodeDerivedCandidate(t *testing.T) {
+	s := newTestService(t)
+	src := filepath.Join(s.Root, "billing.go")
+	if err := os.WriteFile(src, []byte("func amount() int {\n\treturn cents\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if _, err := s.Add(AddParams{
+		ID: "integer-cents", Namespace: "billing", Kind: "rule",
+		Body:       "Monetary amounts are stored as integer cents, never floats.",
+		Provenance: "code-derived", Source: "billing.go:1-3",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	candidates, _, err := s.Check(CheckParams{Namespace: "billing", Text: "monetary amounts integer cents"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	fresh := findCandidate(t, candidates, "billing/integer-cents")
+	if fresh.Stale == nil || *fresh.Stale {
+		t.Fatalf("expected stale=false before the source changed, got %+v", fresh.Stale)
+	}
+
+	if err := os.WriteFile(src, []byte("func amount() float64 {\n\treturn dollars\n}\n"), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	candidates, _, err = s.Check(CheckParams{Namespace: "billing", Text: "monetary amounts integer cents"})
+	if err != nil {
+		t.Fatalf("Check after edit: %v", err)
+	}
+	drifted := findCandidate(t, candidates, "billing/integer-cents")
+	if drifted.Stale == nil || !*drifted.Stale {
+		t.Fatalf("expected stale=true once the source range changed, got %+v", drifted.Stale)
+	}
+}
+
+func findCandidate(t *testing.T, candidates []index.Candidate, fullID string) index.Candidate {
+	t.Helper()
+	for _, c := range candidates {
+		if c.FullID == fullID {
+			return c
+		}
+	}
+	t.Fatalf("expected %s among candidates, got %+v", fullID, candidates)
+	return index.Candidate{}
+}
+
+// seedSeeInstead adds the statement the rejection tests point at, since a
+// see_instead naming nothing is now refused.
+func seedSeeInstead(t *testing.T, s *Service) {
+	t.Helper()
+	if _, err := s.Add(AddParams{
+		ID: "no-plaintext-tokens", Namespace: "auth/session", Kind: "rule",
+		Body: "Session tokens are never stored in plaintext.",
+	}); err != nil {
+		t.Fatalf("Add see_instead target: %v", err)
 	}
 }
 
@@ -752,7 +985,7 @@ func TestEmbed_GetReflectsFreshMissingStale(t *testing.T) {
 		t.Fatalf("expected missing before any embed call, got %q", got.EmbeddingStatus)
 	}
 
-	if _, err := s.Embed("ns/x", "test-model", []float32{0.1, 0.2, 0.3}, false); err != nil {
+	if _, err := s.Embed("ns/x", "test-model", []float32{0.1, 0.2, 0.3}, false, false); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	got, err = s.Get("ns/x")
@@ -783,13 +1016,13 @@ func TestEmbed_ModelMismatchRequiresForce(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "b"}); err != nil {
 		t.Fatalf("Add b: %v", err)
 	}
-	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3}, false); err != nil {
+	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3}, false, false); err != nil {
 		t.Fatalf("Embed a: %v", err)
 	}
-	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, false); err == nil {
+	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, false, false); err == nil {
 		t.Fatal("expected error embedding with a different model/dims than the corpus is pinned to")
 	}
-	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, true); err != nil {
+	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, true, false); err != nil {
 		t.Fatalf("Embed b with force: %v", err)
 	}
 }
@@ -802,7 +1035,7 @@ func TestList_NeedsEmbeddingFilter(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "missing", Namespace: "ns", Kind: "rule", Body: "has none"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := s.Embed("ns/embedded", "m", []float32{1, 2}, false); err != nil {
+	if _, err := s.Embed("ns/embedded", "m", []float32{1, 2}, false, false); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 
@@ -826,10 +1059,10 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 	// Same vector for both — stands in for two differently-worded
 	// statements an embedding model would judge semantically close, which
 	// lexical FTS (near-zero shared vocabulary) would miss entirely.
-	if _, err := s.Embed("ns/a", "m", []float32{1, 1, 0}, false); err != nil {
+	if _, err := s.Embed("ns/a", "m", []float32{1, 1, 0}, false, false); err != nil {
 		t.Fatalf("Embed a: %v", err)
 	}
-	if _, err := s.Embed("ns/b", "m", []float32{1, 1, 0}, false); err != nil {
+	if _, err := s.Embed("ns/b", "m", []float32{1, 1, 0}, false, false); err != nil {
 		t.Fatalf("Embed b: %v", err)
 	}
 
@@ -987,7 +1220,7 @@ func TestMove_CarriesEmbeddingToNewID(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "target", Namespace: "auth/session", Kind: "rule", Body: "the body"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := s.Embed("auth/session/target", "m", []float32{1, 0}, false); err != nil {
+	if _, err := s.Embed("auth/session/target", "m", []float32{1, 0}, false, false); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	if _, err := s.Commit("test setup: target"); err != nil {

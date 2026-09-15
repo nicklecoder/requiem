@@ -129,7 +129,7 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 	// Only statements that actually carry a vector can be compared.
 	var embedded []stmt
 	for _, s := range stmts {
-		if _, ok := embeddings[s.fullID]; ok {
+		if _, ok := embeddings[StatementKey(s.fullID)]; ok {
 			embedded = append(embedded, s)
 		}
 	}
@@ -146,7 +146,7 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 	}
 	for i := 0; i < len(embedded); i++ {
 		for j := i + 1; j < len(embedded); j++ {
-			v := CosineSimilarity(embeddings[embedded[i].fullID].Vector, embeddings[embedded[j].fullID].Vector)
+			v := CosineSimilarity(embeddings[StatementKey(embedded[i].fullID)].Vector, embeddings[StatementKey(embedded[j].fullID)].Vector)
 			sims[i][j], sims[j][i] = v, v
 		}
 	}

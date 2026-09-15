@@ -285,7 +285,7 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 		st.Stale = boolPtr(computeStale(s.Root, st.Provenance))
 	}
 
-	emb, err := ix.GetEmbedding(fullID)
+	emb, err := ix.GetEmbedding(index.StatementKey(fullID))
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +336,34 @@ func embeddingStatus(emb *index.Embedding, body string) string {
 // failure (file deleted, range now out of bounds, ...) is itself treated
 // as stale: if the claim can no longer even be verified, it shouldn't read
 // as confirmed-fresh.
+// markStale fills in each candidate's Stale flag by rehashing the source
+// range it was derived from, the same read-time comparison Get makes.
+//
+// Every result carries it, rather than waiting for a follow-up `get`: the
+// provenance hash was already stored and already compared on one path, which
+// left the anti-rot mechanism half-built — an agent reading a ranked list had
+// no way to tell that the code under a candidate had moved since it was
+// written.
+// requiem: retrieval/staleness-travels-with-results
+func markStale(root string, candidates []index.Candidate) {
+	for i := range candidates {
+		c := &candidates[i]
+		if c.SourceKind != index.SourceKindStatement {
+			continue
+		}
+		if c.SourceFile == "" || c.SourceHash == "" || c.LineStart == 0 {
+			continue
+		}
+		stale := computeStale(root, model.Provenance{
+			Type:      model.ProvenanceCodeDerived,
+			File:      c.SourceFile,
+			LineRange: &model.LineRange{Start: c.LineStart, End: c.LineEnd},
+			Hash:      c.SourceHash,
+		})
+		c.Stale = boolPtr(stale)
+	}
+}
+
 func computeStale(root string, p model.Provenance) bool {
 	current, err := hash.HashRange(root, p.File, *p.LineRange)
 	if err != nil {
@@ -486,13 +514,120 @@ func (s *Service) Reject(p RejectParams) (*model.Rejection, error) {
 		SeeInstead: p.SeeInstead,
 		Body:       p.Body,
 	}
-	if err := s.Store.AppendRejection(r); err != nil {
+	if _, err := s.Store.ReadRejection(r.FullID()); err == nil {
+		return nil, fmt.Errorf("rejection %s: %w", r.FullID(), ErrAlreadyExists)
+	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	if err := s.stagePath(s.Store.RejectionsRelPath(r.Namespace)); err != nil {
+	if err := s.checkSeeInstead(p.SeeInstead); err != nil {
+		return nil, err
+	}
+	if err := s.Store.WriteRejection(r); err != nil {
+		return nil, err
+	}
+	rel, err := s.Store.RejectionRelPath(r.FullID())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.stagePath(rel); err != nil {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// checkSeeInstead refuses a pointer to a statement that does not exist.
+//
+// Validated on write because this is the half of a rejection that can rot,
+// and it used to rot silently: nothing reported a dangling see_instead, so
+// the answer to "what was done instead" quietly became nothing at all.
+// requiem: model/see-instead-is-checked
+func (s *Service) checkSeeInstead(seeInstead string) error {
+	if seeInstead == "" {
+		return nil
+	}
+	if _, err := s.Store.ReadStatement(seeInstead); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("--see-instead %s: no such statement — see_instead names the decision taken instead, so it must already exist (add it first, or leave the flag off)", seeInstead)
+		}
+		return err
+	}
+	return nil
+}
+
+// UpdateRejectionParams are the inputs to UpdateRejection. Body and
+// SeeInstead are left untouched when empty, so correcting one does not
+// silently clear the other.
+type UpdateRejectionParams struct {
+	Body       string
+	SeeInstead string
+	// ClearSeeInstead removes the pointer, which an empty SeeInstead cannot
+	// express.
+	ClearSeeInstead bool
+}
+
+// UpdateRejection edits a rejection's body or re-points its see_instead —
+// the operation the shared per-namespace file made impossible, so a
+// rejection recorded with the wrong reasoning could only be deleted by hand.
+//
+// A record still living in a legacy _rejected.md is migrated to its own file
+// as part of the edit: rewriting one entry of a shared file is exactly the
+// hazard the current layout removes, so the write moves it out rather than
+// reproducing it.
+func (s *Service) UpdateRejection(fullID string, p UpdateRejectionParams) (*model.Rejection, error) {
+	r, err := s.Store.ReadRejection(fullID)
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := s.Store.RejectionIsLegacy(fullID)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.Body != "" {
+		r.Body = p.Body
+	}
+	switch {
+	case p.ClearSeeInstead:
+		r.SeeInstead = ""
+	case p.SeeInstead != "":
+		if err := s.checkSeeInstead(p.SeeInstead); err != nil {
+			return nil, err
+		}
+		r.SeeInstead = p.SeeInstead
+	}
+
+	if err := s.Store.WriteRejection(r); err != nil {
+		return nil, err
+	}
+	rel, err := s.Store.RejectionRelPath(fullID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.stagePath(rel); err != nil {
+		return nil, err
+	}
+	if legacy {
+		if err := s.Store.RemoveRejection(fullID); err != nil {
+			return nil, err
+		}
+		if err := s.stagePath(s.Store.LegacyRejectionsRelPath(r.Namespace)); err != nil {
+			return nil, err
+		}
+	}
+	return &r, nil
+}
+
+// DanglingPointers reports rejections whose see_instead names no statement.
+func (s *Service) DanglingPointers() ([]index.DanglingPointer, error) {
+	ix, err := s.openIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer ix.Close()
+	if _, err := ix.Reindex(s.Store); err != nil {
+		return nil, fmt.Errorf("reindex before pointer check: %w", err)
+	}
+	return ix.DanglingSeeInstead()
 }
 
 // StatementSummary is the compact form returned by List (and, from M4,
@@ -602,7 +737,7 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 	out := make([]StatementSummary, 0, len(statements))
 	for _, st := range statements {
 		var emb *index.Embedding
-		if e, ok := embeddings[st.FullID()]; ok {
+		if e, ok := embeddings[index.StatementKey(st.FullID())]; ok {
 			emb = &e
 		}
 		summary := summarize(st, emb)
@@ -732,6 +867,7 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 	if err != nil {
 		return nil, Coverage{}, err
 	}
+	markStale(s.Root, candidates)
 	if len(vector) == 0 {
 		return candidates, Coverage{}, nil
 	}
@@ -756,10 +892,25 @@ type EmbedResult struct {
 // detect drift, and stores the vector for cosine-similarity lookups. This
 // is index-only data: nothing under .requiem/statements/ changes, so
 // there's no file to stage in git.
-func (s *Service) Embed(fullID, embModel string, vec []float32, force bool) (*EmbedResult, error) {
-	st, err := s.Store.ReadStatement(fullID)
-	if err != nil {
-		return nil, err
+func (s *Service) Embed(fullID, embModel string, vec []float32, force, rejection bool) (*EmbedResult, error) {
+	var body string
+	key := index.StatementKey(fullID)
+	if rejection {
+		// A rejection carries a vector like a statement does, so a project
+		// with no endpoint can still supply one by hand — otherwise the
+		// rejections would stay invisible to semantic search precisely where
+		// requiem cannot fetch vectors itself.
+		r, err := s.Store.ReadRejection(fullID)
+		if err != nil {
+			return nil, err
+		}
+		body, key = r.Body, index.RejectionKey(fullID)
+	} else {
+		st, err := s.Store.ReadStatement(fullID)
+		if err != nil {
+			return nil, err
+		}
+		body = st.Body
 	}
 	if len(vec) == 0 {
 		return nil, fmt.Errorf("vector must not be empty")
@@ -772,8 +923,8 @@ func (s *Service) Embed(fullID, embModel string, vec []float32, force bool) (*Em
 	defer ix.Close()
 
 	now := time.Now().UTC()
-	sourceHash := hash.HashBody(st.Body)
-	if err := ix.UpsertEmbedding(fullID, embModel, len(vec), vec, sourceHash, now, force); err != nil {
+	sourceHash := hash.HashBody(body)
+	if err := ix.UpsertEmbedding(key, embModel, len(vec), vec, sourceHash, now, force); err != nil {
 		return nil, err
 	}
 	return &EmbedResult{FullID: fullID, Model: embModel, Dims: len(vec), ComputedAt: now.Format(time.RFC3339Nano)}, nil
@@ -925,6 +1076,17 @@ func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveR
 	if err != nil {
 		return nil, err
 	}
+	// Rejections point at statements too, through see_instead, and those
+	// pointers used to survive a move untouched: mv rewrote the statement
+	// graph, reindex exited 0, audit stayed silent, and `get` reported
+	// rejected_alternatives as null. The pointer is the whole value of a
+	// rejection — it answers "what was done instead" — so it moves with the
+	// statement.
+	// requiem: model/see-instead-is-checked
+	pointing, err := ix.RejectionsPointingAt(fromID)
+	if err != nil {
+		return nil, err
+	}
 
 	updated := []string{}
 	for _, refID := range referrers {
@@ -954,6 +1116,35 @@ func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveR
 		}
 		touched = append(touched, rel)
 		updated = append(updated, refID)
+	}
+
+	for _, rejID := range pointing {
+		r, err := s.Store.ReadRejection(rejID)
+		if err != nil {
+			return nil, fmt.Errorf("rejection %s: %w", rejID, err)
+		}
+		legacy, err := s.Store.RejectionIsLegacy(rejID)
+		if err != nil {
+			return nil, err
+		}
+		r.SeeInstead = toID
+		if err := s.Store.WriteRejection(r); err != nil {
+			return nil, err
+		}
+		rejRel, err := s.Store.RejectionRelPath(rejID)
+		if err != nil {
+			return nil, err
+		}
+		touched = append(touched, rejRel)
+		if legacy {
+			// The record leaves the shared file as part of being rewritten,
+			// so both paths need staging.
+			if err := s.Store.RemoveRejection(rejID); err != nil {
+				return nil, err
+			}
+			touched = append(touched, s.Store.LegacyRejectionsRelPath(r.Namespace))
+		}
+		updated = append(updated, rejID)
 	}
 
 	oldRel, err := s.Store.StatementRelPath(fromID)
@@ -990,7 +1181,7 @@ func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveR
 	// recommends after `audit` flags a duplicate. With --leave-link this is
 	// also what detaches the vector from the stub, whose body is now just
 	// "Moved to ...".
-	if err := ix.RekeyEmbedding(fromID, toID); err != nil {
+	if err := ix.RekeyEmbedding(index.SourceKindStatement, fromID, toID); err != nil {
 		return nil, err
 	}
 
@@ -1162,11 +1353,11 @@ type DiscardResult struct {
 func (s *Service) Discard(fullID string) (*DiscardResult, error) {
 	var files []string
 	if fullID != "" {
-		rel, err := s.Store.StatementRelPath(fullID)
+		paths, err := s.discardPathsFor(fullID)
 		if err != nil {
 			return nil, err
 		}
-		files = []string{filepath.ToSlash(filepath.Join(requiemDir, rel))}
+		files = paths
 	} else {
 		staged, err := s.Git.StagedFiles(requiemDir)
 		if err != nil {
@@ -1182,6 +1373,67 @@ func (s *Service) Discard(fullID string) (*DiscardResult, error) {
 		return nil, err
 	}
 	return &DiscardResult{Files: files}, nil
+}
+
+// discardPathsFor resolves one id to the files that hold it.
+//
+// A statement and a rejection can share an id, and a rejection has its own
+// file, so resolving only "<id>.md" left `discard` unable to remove a
+// rejection at all — the record stayed and had to be cleaned up with
+// `git rm` by hand. Every path that actually holds the record is discarded,
+// and nothing else.
+func (s *Service) discardPathsFor(fullID string) ([]string, error) {
+	gitPath := func(rel string) string { return filepath.ToSlash(filepath.Join(requiemDir, rel)) }
+
+	staged, err := s.Git.StagedFiles(requiemDir)
+	if err != nil {
+		return nil, err
+	}
+	isStaged := make(map[string]bool, len(staged))
+	for _, f := range staged {
+		isStaged[f] = true
+	}
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(s.Store.Root, rel))
+		return err == nil
+	}
+
+	var out []string
+	stmtRel, err := s.Store.StatementRelPath(fullID)
+	if err != nil {
+		return nil, err
+	}
+	if exists(stmtRel) || isStaged[gitPath(stmtRel)] {
+		out = append(out, gitPath(stmtRel))
+	}
+
+	rejRel, err := s.Store.RejectionRelPath(fullID)
+	if err != nil {
+		return nil, err
+	}
+	rejStaged := isStaged[gitPath(rejRel)]
+	if exists(rejRel) || rejStaged {
+		out = append(out, gitPath(rejRel))
+	}
+
+	// A rejection still living in a legacy _rejected.md is held by that file
+	// instead — and a record mid-migration out of one is held by both.
+	namespace := fullID
+	if i := strings.LastIndex(fullID, "/"); i >= 0 {
+		namespace = fullID[:i]
+	}
+	legacyRel := s.Store.LegacyRejectionsRelPath(namespace)
+	legacyStaged := isStaged[gitPath(legacyRel)]
+	if legacyStaged || exists(legacyRel) {
+		inLegacy, err := s.Store.RejectionIsLegacy(fullID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+		if inLegacy || (rejStaged && legacyStaged) {
+			out = append(out, gitPath(legacyRel))
+		}
+	}
+	return out, nil
 }
 
 // requiem: cli/approval-by-accident

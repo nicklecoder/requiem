@@ -110,8 +110,8 @@ func TestWalkStatements_SkipsRejectedFile(t *testing.T) {
 	if err := s.WriteStatement(sampleStatement()); err != nil {
 		t.Fatalf("WriteStatement: %v", err)
 	}
-	if err := s.AppendRejection(sampleRejection()); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+	if err := s.WriteRejection(sampleRejection()); err != nil {
+		t.Fatalf("WriteRejection: %v", err)
 	}
 
 	var seen []string
@@ -133,21 +133,22 @@ func TestWalkStatements_SkipsRejectedFile(t *testing.T) {
 	}
 }
 
-func TestWalkRejectionFiles_GroupsEntriesByFile(t *testing.T) {
+// requiem: model/one-file-per-record
+func TestWalkRejectionFiles_OneFilePerRejection(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendRejection(sampleRejection()); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+	if err := s.WriteRejection(sampleRejection()); err != nil {
+		t.Fatalf("WriteRejection: %v", err)
 	}
 	second := sampleRejection()
 	second.ID = "another-rejected-idea"
-	if err := s.AppendRejection(second); err != nil {
-		t.Fatalf("AppendRejection(second): %v", err)
+	if err := s.WriteRejection(second); err != nil {
+		t.Fatalf("WriteRejection(second): %v", err)
 	}
 	other := sampleRejection()
 	other.Namespace = "billing/invoicing"
 	other.ID = "unrelated-rejected-idea"
-	if err := s.AppendRejection(other); err != nil {
-		t.Fatalf("AppendRejection(other): %v", err)
+	if err := s.WriteRejection(other); err != nil {
+		t.Fatalf("WriteRejection(other): %v", err)
 	}
 
 	var files []RejectionFile
@@ -158,20 +159,130 @@ func TestWalkRejectionFiles_GroupsEntriesByFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WalkRejectionFiles: %v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("expected 2 _rejected.md files, got %d", len(files))
+	if len(files) != 3 {
+		t.Fatalf("expected one file per rejection (3), got %d", len(files))
 	}
 	for _, f := range files {
 		if f.RelPath == "" || f.ModTime.IsZero() {
 			t.Fatalf("expected file identity populated, got %+v", f)
 		}
+		if len(f.Rejections) != 1 {
+			t.Fatalf("expected exactly one entry per file, got %d in %s", len(f.Rejections), f.RelPath)
+		}
+		if f.Legacy {
+			t.Fatalf("%s should not be reported as legacy", f.RelPath)
+		}
+		if !strings.HasSuffix(f.RelPath, rejectionExt) {
+			t.Fatalf("expected a %s file, got %s", rejectionExt, f.RelPath)
+		}
 	}
-	total := 0
-	for _, f := range files {
-		total += len(f.Rejections)
+}
+
+// The superseded layout — one append-only _rejected.md per namespace — is
+// still read, so a corpus written by an older requiem keeps working and
+// keeps being searchable. Nothing writes it any more.
+// requiem: model/validate-write-tolerate-read
+func TestWalkRejectionFiles_StillReadsLegacyPerNamespaceFile(t *testing.T) {
+	s := newTestStore(t)
+	writeLegacyRejections(t, s, "auth/session", sampleRejection(), func() model.Rejection {
+		r := sampleRejection()
+		r.ID = "another-rejected-idea"
+		r.Body = "Second legacy entry."
+		return r
+	}())
+
+	var files []RejectionFile
+	if err := s.WalkRejectionFiles(func(rf RejectionFile) error {
+		files = append(files, rf)
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkRejectionFiles: %v", err)
 	}
-	if total != 3 {
-		t.Fatalf("expected 3 total rejection entries across files, got %d", total)
+	if len(files) != 1 {
+		t.Fatalf("expected the one legacy file, got %d", len(files))
+	}
+	if !files[0].Legacy {
+		t.Fatal("expected the legacy file to be marked Legacy")
+	}
+	if len(files[0].Rejections) != 2 {
+		t.Fatalf("expected both legacy entries, got %d", len(files[0].Rejections))
+	}
+
+	// Addressable individually despite sharing a file, which is what lets
+	// update and discard reach a record written under the old layout.
+	got, err := s.ReadRejection("auth/session/another-rejected-idea")
+	if err != nil {
+		t.Fatalf("ReadRejection from legacy file: %v", err)
+	}
+	if got.Body != "Second legacy entry." {
+		t.Fatalf("unexpected body: %q", got.Body)
+	}
+	legacy, err := s.RejectionIsLegacy("auth/session/another-rejected-idea")
+	if err != nil || !legacy {
+		t.Fatalf("expected RejectionIsLegacy true, got %v err=%v", legacy, err)
+	}
+}
+
+// Removing one entry of a legacy file must leave the others intact — the
+// bug that made `discard` unable to remove a rejection at all.
+func TestRemoveRejection_FromLegacyFileKeepsSiblings(t *testing.T) {
+	s := newTestStore(t)
+	keep := sampleRejection()
+	keep.ID = "kept-idea"
+	keep.Body = "Still rejected."
+	writeLegacyRejections(t, s, "auth/session", sampleRejection(), keep)
+
+	if err := s.RemoveRejection("auth/session/sliding-session-expiration"); err != nil {
+		t.Fatalf("RemoveRejection: %v", err)
+	}
+	if _, err := s.ReadRejection("auth/session/sliding-session-expiration"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected the removed entry to be gone, got err=%v", err)
+	}
+	survivor, err := s.ReadRejection("auth/session/kept-idea")
+	if err != nil {
+		t.Fatalf("expected the sibling to survive: %v", err)
+	}
+	if survivor.Body != "Still rejected." {
+		t.Fatalf("sibling body mangled: %q", survivor.Body)
+	}
+}
+
+// Removing the last entry removes the file, rather than leaving an empty
+// shell that reindex would keep walking.
+func TestRemoveRejection_LastLegacyEntryRemovesFile(t *testing.T) {
+	s := newTestStore(t)
+	writeLegacyRejections(t, s, "auth/session", sampleRejection())
+
+	if err := s.RemoveRejection("auth/session/sliding-session-expiration"); err != nil {
+		t.Fatalf("RemoveRejection: %v", err)
+	}
+	path := filepath.Join(s.StatementsDir(), "auth", "session", legacyRejectionsFile)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s removed, stat err=%v", path, err)
+	}
+}
+
+// writeLegacyRejections hand-writes the superseded per-namespace layout,
+// since no exported call produces it any more.
+func writeLegacyRejections(t *testing.T, s *Store, namespace string, rejections ...model.Rejection) {
+	t.Helper()
+	var out []byte
+	for i, r := range rejections {
+		entry, err := serializeRejection(r)
+		if err != nil {
+			t.Fatalf("serializeRejection: %v", err)
+		}
+		if i > 0 {
+			out = append(out, []byte(entrySep)...)
+		}
+		out = append(out, entry...)
+	}
+	dir := filepath.Join(s.StatementsDir(), filepath.FromSlash(namespace))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, legacyRejectionsFile), out, 0o644); err != nil {
+		t.Fatalf("write legacy rejections: %v", err)
 	}
 }
 
@@ -185,47 +296,74 @@ func sampleRejection() model.Rejection {
 	}
 }
 
-func TestAppendReadRejection_RoundTrip(t *testing.T) {
+func TestWriteReadRejection_RoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	want := sampleRejection()
-	if err := s.AppendRejection(want); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+	if err := s.WriteRejection(want); err != nil {
+		t.Fatalf("WriteRejection: %v", err)
 	}
 
-	got, err := s.ReadRejections("auth/session")
+	got, err := s.ReadRejection(want.FullID())
 	if err != nil {
-		t.Fatalf("ReadRejections: %v", err)
+		t.Fatalf("ReadRejection: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 rejection, got %d", len(got))
+	if got.ID != want.ID || got.SeeInstead != want.SeeInstead || got.Body != want.Body {
+		t.Fatalf("round trip mismatch: got %+v, want %+v", got, want)
 	}
-	if got[0].ID != want.ID || got[0].SeeInstead != want.SeeInstead || got[0].Body != want.Body {
-		t.Fatalf("round trip mismatch: got %+v, want %+v", got[0], want)
+	if got.Namespace != want.Namespace {
+		t.Fatalf("namespace should come from the file's location: got %q", got.Namespace)
 	}
-	if !got[0].RejectedAt.Equal(want.RejectedAt) {
-		t.Fatalf("rejected_at mismatch: got %v, want %v", got[0].RejectedAt, want.RejectedAt)
+	if !got.RejectedAt.Equal(want.RejectedAt) {
+		t.Fatalf("rejected_at mismatch: got %v, want %v", got.RejectedAt, want.RejectedAt)
 	}
 }
 
-func TestAppendRejection_MultipleEntriesWithEmbeddedDelimiterInBody(t *testing.T) {
+func TestReadRejection_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.ReadRejection("nothing/here"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// A rejection's body can be corrected or re-pointed, which the shared-file
+// layout made impossible: there was no way to rewrite one entry.
+func TestWriteRejection_ReplacesAnExistingRecord(t *testing.T) {
+	s := newTestStore(t)
+	r := sampleRejection()
+	if err := s.WriteRejection(r); err != nil {
+		t.Fatalf("WriteRejection: %v", err)
+	}
+	r.Body = "Corrected reasoning for the rejection."
+	r.SeeInstead = "auth/session/rotate-keys"
+	if err := s.WriteRejection(r); err != nil {
+		t.Fatalf("WriteRejection (replace): %v", err)
+	}
+
+	got, err := s.ReadRejection(r.FullID())
+	if err != nil {
+		t.Fatalf("ReadRejection: %v", err)
+	}
+	if got.Body != r.Body || got.SeeInstead != r.SeeInstead {
+		t.Fatalf("expected the rewritten record, got %+v", got)
+	}
+}
+
+// A markdown rule inside a body must not read as the entry separator. The
+// case only arises in the legacy multi-entry layout, which is still parsed,
+// so the regression is asserted there.
+func TestLegacyRejections_MultipleEntriesWithEmbeddedDelimiterInBody(t *testing.T) {
 	s := newTestStore(t)
 
 	first := sampleRejection()
 	first.Body = "First idea, rejected.\n\n---\n\nIt had a markdown rule in its own body."
-	if err := s.AppendRejection(first); err != nil {
-		t.Fatalf("AppendRejection(first): %v", err)
-	}
-
 	second := sampleRejection()
 	second.ID = "another-rejected-idea"
 	second.Body = "Second, unrelated rejected idea."
-	if err := s.AppendRejection(second); err != nil {
-		t.Fatalf("AppendRejection(second): %v", err)
-	}
+	writeLegacyRejections(t, s, "auth/session", first, second)
 
-	got, err := s.ReadRejections("auth/session")
+	got, err := s.readLegacyRejections("auth/session")
 	if err != nil {
-		t.Fatalf("ReadRejections: %v", err)
+		t.Fatalf("readLegacyRejections: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 rejections (embedded --- must not be mistaken for the entry separator), got %d: %+v", len(got), got)
@@ -240,14 +378,14 @@ func TestAppendRejection_MultipleEntriesWithEmbeddedDelimiterInBody(t *testing.T
 
 func TestWalkRejections_AllNamespaces(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendRejection(sampleRejection()); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+	if err := s.WriteRejection(sampleRejection()); err != nil {
+		t.Fatalf("WriteRejection: %v", err)
 	}
 	other := sampleRejection()
 	other.Namespace = "billing/invoicing"
 	other.ID = "unrelated-rejected-idea"
-	if err := s.AppendRejection(other); err != nil {
-		t.Fatalf("AppendRejection(other): %v", err)
+	if err := s.WriteRejection(other); err != nil {
+		t.Fatalf("WriteRejection(other): %v", err)
 	}
 
 	var seen []string
@@ -263,9 +401,9 @@ func TestWalkRejections_AllNamespaces(t *testing.T) {
 	}
 }
 
-func TestReadRejections_MissingNamespaceReturnsEmpty(t *testing.T) {
+func TestReadLegacyRejections_MissingNamespaceReturnsEmpty(t *testing.T) {
 	s := newTestStore(t)
-	got, err := s.ReadRejections("nothing/here")
+	got, err := s.readLegacyRejections("nothing/here")
 	if err != nil {
 		t.Fatalf("expected no error for missing _rejected.md, got %v", err)
 	}

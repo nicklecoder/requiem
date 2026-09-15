@@ -35,7 +35,7 @@ func (c Coverage) Warning() string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"requiem: warning: %d of %d in-scope statements lack a fresh embedding (%d missing, %d stale); results are incomplete — run `requiem reindex --embed`",
+		"requiem: warning: %d of %d in-scope records lack a fresh embedding (%d missing, %d stale); results are incomplete — run `requiem reindex --embed`",
 		c.Shortfall(), c.Total, c.Missing, c.Stale)
 }
 
@@ -49,7 +49,12 @@ func (c Coverage) Warning() string {
 // report a shortfall that no amount of embedding could close.
 // requiem: embedding/coverage-warning
 func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
-	statements, err := ix.ListStatements(index.ListFilter{Namespace: namespace})
+	// Counts exactly what the semantic paths search, from the same
+	// enumeration they use — statements *and* rejections. Counting only
+	// statements would report complete coverage while every rejection in
+	// scope was still invisible to a --semantic search, which is the
+	// false all-clear this whole mechanism exists to prevent.
+	records, err := ix.EmbeddableRecords(namespace)
 	if err != nil {
 		return Coverage{}, err
 	}
@@ -59,19 +64,13 @@ func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
 	}
 
 	var c Coverage
-	for _, st := range statements {
-		// Count exactly what the semantic paths search, via the same
-		// predicate they use: counting a deprecated statement would report a
-		// shortfall no amount of embedding could ever close.
-		if !st.Status.Searchable() {
-			continue
-		}
+	for _, r := range records {
 		c.Total++
 		var existing *index.Embedding
-		if e, ok := embeddings[st.FullID()]; ok {
+		if e, ok := embeddings[index.EmbKey{SourceKind: r.SourceKind, FullID: r.FullID}]; ok {
 			existing = &e
 		}
-		switch embeddingStatus(existing, st.Body) {
+		switch embeddingStatus(existing, r.Body) {
 		case "fresh":
 			c.Fresh++
 		case "stale":

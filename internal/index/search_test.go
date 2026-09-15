@@ -26,12 +26,12 @@ func TestCheck_FindsRelevantStatementsAndRejections(t *testing.T) {
 		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
 		Body: "All monetary amounts are stored as integer cents.",
 	})
-	if err := s.AppendRejection(model.Rejection{
+	if err := s.WriteRejection(model.Rejection{
 		ID: "sliding-session-expiration", Namespace: "auth/session",
 		RejectedAt: time.Now().UTC(), SeeInstead: "auth/session/no-plaintext-tokens",
 		Body: "Proposed sliding session expiration. Rejected: unbounded blast radius on token leak.",
 	}); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+		t.Fatalf("WriteRejection: %v", err)
 	}
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("Reindex: %v", err)
@@ -123,11 +123,11 @@ func TestCheck_TagFilterNarrowsAndExcludesRejections(t *testing.T) {
 		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
 		Body: "widgets must be validated too, but untagged",
 	})
-	if err := s.AppendRejection(model.Rejection{
+	if err := s.WriteRejection(model.Rejection{
 		ID: "r1", Namespace: "ns", RejectedAt: time.Now().UTC(),
 		Body: "widgets validated differently, rejected",
 	}); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+		t.Fatalf("WriteRejection: %v", err)
 	}
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("Reindex: %v", err)
@@ -224,10 +224,10 @@ func seedEmbeddedPair(t *testing.T, s *store.Store, ix *Index) {
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	if err := ix.UpsertEmbedding("auth/keys/rotate-keys", "m", 2, []float32{1, 0}, "h1", time.Now().UTC(), false); err != nil {
+	if err := ix.UpsertEmbedding(StatementKey("auth/keys/rotate-keys"), "m", 2, []float32{1, 0}, "h1", time.Now().UTC(), false); err != nil {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
-	if err := ix.UpsertEmbedding("billing/invoice-cents", "m", 2, []float32{0, 1}, "h2", time.Now().UTC(), false); err != nil {
+	if err := ix.UpsertEmbedding(StatementKey("billing/invoice-cents"), "m", 2, []float32{0, 1}, "h2", time.Now().UTC(), false); err != nil {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
 }
@@ -311,10 +311,10 @@ func TestCheck_BothPathsOutrankASinglePathHit(t *testing.T) {
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	if err := ix.UpsertEmbedding("ns/agreed", "m", 2, []float32{1, 0}, "h1", time.Now().UTC(), false); err != nil {
+	if err := ix.UpsertEmbedding(StatementKey("ns/agreed"), "m", 2, []float32{1, 0}, "h1", time.Now().UTC(), false); err != nil {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
-	if err := ix.UpsertEmbedding("ns/lexical-only", "m", 2, []float32{0, 1}, "h2", time.Now().UTC(), false); err != nil {
+	if err := ix.UpsertEmbedding(StatementKey("ns/lexical-only"), "m", 2, []float32{0, 1}, "h2", time.Now().UTC(), false); err != nil {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
 
@@ -545,11 +545,11 @@ func TestBuildMatchQuery_FrequenciesAreScopedPerTable(t *testing.T) {
 	ix := newTestIndex(t)
 	seedCorpus(t, s, ix, 30, "token")
 	for i := 0; i < 30; i++ {
-		if err := s.AppendRejection(model.Rejection{
+		if err := s.WriteRejection(model.Rejection{
 			ID: fmt.Sprintf("r%d", i), Namespace: "ns", RejectedAt: time.Now().UTC(),
 			Body: fmt.Sprintf("caching proposal %d", i),
 		}); err != nil {
-			t.Fatalf("AppendRejection: %v", err)
+			t.Fatalf("WriteRejection: %v", err)
 		}
 	}
 	if _, err := ix.Reindex(s); err != nil {

@@ -75,13 +75,21 @@ var schema = []string{
 	// (see reindex.go). Staleness (body changed since source_hash was
 	// captured) is a read-time comparison, computed in the service layer —
 	// never written back here, matching the code-derived staleness pattern.
+	//
+	// Keyed by (source_kind, full_id), not full_id alone: rejections are
+	// embedded too, and a statement and a rejection may legitimately share
+	// a full_id (see fuse in search.go), so one key would fuse two
+	// different records' vectors into one row.
+	// requiem: retrieval/rejections-embedded
 	`CREATE TABLE IF NOT EXISTS embeddings (
-		full_id     TEXT PRIMARY KEY,
+		source_kind TEXT NOT NULL DEFAULT 'statement',
+		full_id     TEXT NOT NULL,
 		model       TEXT NOT NULL,
 		dims        INTEGER NOT NULL,
 		vector      BLOB NOT NULL,
 		source_hash TEXT NOT NULL,
-		computed_at TEXT NOT NULL
+		computed_at TEXT NOT NULL,
+		PRIMARY KEY (source_kind, full_id)
 	)`,
 
 	// embedding_meta pins the whole corpus to a single model/dims: cosine

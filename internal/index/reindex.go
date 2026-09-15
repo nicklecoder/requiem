@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,16 @@ type ReindexStats struct {
 	Updated   int `json:"updated"`
 	Removed   int `json:"removed"`
 	Unchanged int `json:"unchanged"`
+	// The ids behind each count, because a bare "removed: 1" cannot be
+	// acted on: the one thing a reader needs to know is *what* left the
+	// index, and only requiem knows which file_path held which record.
+	// Unchanged ids are deliberately absent — that list is the whole corpus
+	// on a normal run, and naming every one of them buries the three that
+	// moved.
+	// requiem: cli/index-diffs-name-ids
+	AddedIDs   []string `json:"added_ids,omitempty"`
+	UpdatedIDs []string `json:"updated_ids,omitempty"`
+	RemovedIDs []string `json:"removed_ids,omitempty"`
 }
 
 type manifestEntry struct {
@@ -103,8 +114,10 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		}
 		if existed {
 			stats.Updated++
+			stats.UpdatedIDs = append(stats.UpdatedIDs, fullID)
 		} else {
 			stats.Added++
+			stats.AddedIDs = append(stats.AddedIDs, fullID)
 		}
 		return nil
 	})
@@ -136,10 +149,14 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 				return err
 			}
 		}
-		if existed {
-			stats.Updated += len(rf.Rejections)
-		} else {
-			stats.Added += len(rf.Rejections)
+		for _, r := range rf.Rejections {
+			if existed {
+				stats.Updated++
+				stats.UpdatedIDs = append(stats.UpdatedIDs, r.FullID())
+			} else {
+				stats.Added++
+				stats.AddedIDs = append(stats.AddedIDs, r.FullID())
+			}
 		}
 		return nil
 	})
@@ -152,7 +169,7 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		if seen[relPath] {
 			continue
 		}
-		n, err := countRowsForFile(tx, relPath)
+		ids, err := idsForFile(tx, relPath)
 		if err != nil {
 			return ReindexStats{}, err
 		}
@@ -168,8 +185,10 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		if err := deleteRowsForFile(tx, relPath); err != nil {
 			return ReindexStats{}, fmt.Errorf("delete removed file %s: %w", relPath, err)
 		}
-		stats.Removed += n
+		stats.Removed += len(ids)
+		stats.RemovedIDs = append(stats.RemovedIDs, ids...)
 	}
+	sort.Strings(stats.RemovedIDs)
 
 	if err := tx.Commit(); err != nil {
 		return ReindexStats{}, err
@@ -196,19 +215,32 @@ func loadManifest(tx *sql.Tx) (map[string]manifestEntry, error) {
 	return out, rows.Err()
 }
 
-// countRowsForFile counts rows across both statements and rejections for a
-// file path — the caller doesn't need to know which kind of file it was.
-func countRowsForFile(tx *sql.Tx, relPath string) (int, error) {
-	var n int
-	row := tx.QueryRow(
-		`SELECT (SELECT COUNT(*) FROM statements WHERE file_path = ?) +
-		        (SELECT COUNT(*) FROM rejections WHERE file_path = ?)`,
+// idsForFile lists the ids stored for a file path, across both statements
+// and rejections — the caller doesn't need to know which kind of file it
+// was. Names rather than a bare count, because "removed: 1" with no id is
+// not something a reader can act on.
+// requiem: cli/index-diffs-name-ids
+func idsForFile(tx *sql.Tx, relPath string) ([]string, error) {
+	rows, err := tx.Query(
+		`SELECT full_id FROM statements WHERE file_path = ?
+		 UNION ALL
+		 SELECT full_id FROM rejections WHERE file_path = ?`,
 		relPath, relPath,
 	)
-	if err := row.Scan(&n); err != nil {
-		return 0, err
+	if err != nil {
+		return nil, err
 	}
-	return n, nil
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func deleteRowsForFile(tx *sql.Tx, relPath string) error {

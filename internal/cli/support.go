@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/requiem"
 	"github.com/nicklecoder/requiem/internal/trace"
 )
@@ -107,6 +109,37 @@ func warnNearMisses(misses []requiem.NearMiss) {
 		fmt.Fprintf(os.Stderr, "requiem:   %s:%d  requiem: %s\n", m.File, m.Line, m.FullID)
 		fmt.Fprintf(os.Stderr, "requiem:     did you mean %s?\n", m.DidYouMean)
 	}
+}
+
+// warnDanglingPointers reports rejections whose see_instead names no
+// statement. A rejection exists to answer "what was done instead", so a
+// pointer resolving to nothing is the one part of it that can rot — and it
+// rotted silently: `mv` rewrote statement relationships but not these, and
+// nothing reported the break.
+// requiem: model/see-instead-is-checked
+func warnDanglingPointers(dangling []index.DanglingPointer) {
+	if len(dangling) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "requiem: %d rejection(s) point at a statement that does not exist:\n", len(dangling))
+	for _, d := range dangling {
+		fmt.Fprintf(os.Stderr, "requiem:   %s: see_instead %s\n", d.Rejection, d.SeeInstead)
+	}
+	fmt.Fprintln(os.Stderr, "requiem: re-point each with `requiem update <id> --rejection --see-instead <statement>`")
+}
+
+// warnIndexDiff names the records a reindex added, updated or removed.
+//
+// The counts alone could not be acted on: "removed: 1" with no id left the
+// reader unable to tell what had left the index, and only requiem knows
+// which file path held which record.
+// requiem: cli/index-diffs-name-ids
+func warnIndexDiff(stats index.ReindexStats) {
+	if len(stats.RemovedIDs) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "requiem: %d record(s) removed from the index: %s\n",
+		len(stats.RemovedIDs), strings.Join(stats.RemovedIDs, ", "))
 }
 
 // warnRewrittenRefs reports source files mv edited. Source edits are the one

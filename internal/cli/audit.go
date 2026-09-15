@@ -41,6 +41,11 @@ func newAuditCmd(semantic bool) *cobra.Command {
 				return err
 			}
 			warnNearMisses(misses)
+			dangling, err := svc.DanglingPointers()
+			if err != nil {
+				return err
+			}
+			warnDanglingPointers(dangling)
 			if candidates == nil {
 				candidates = []index.PairCandidate{}
 			}

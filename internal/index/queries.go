@@ -152,6 +152,78 @@ func (ix *Index) InboundRelationships(fullID string) ([]model.InboundRef, error)
 	return out, rows.Err()
 }
 
+// RejectionRow is one stored rejection. A rejection has no lifecycle of its
+// own — it is a record that an idea lost — so this is the whole of it.
+type RejectionRow struct {
+	FullID     string `json:"full_id"`
+	Namespace  string `json:"namespace"`
+	Body       string `json:"body"`
+	SeeInstead string `json:"see_instead,omitempty"`
+}
+
+// ListRejections returns every rejection, optionally scoped to a namespace
+// and anything nested under it.
+func (ix *Index) ListRejections(namespace string) ([]RejectionRow, error) {
+	query := `SELECT full_id, namespace, body, COALESCE(see_instead, '') FROM rejections`
+	args := []interface{}{}
+	if namespace != "" {
+		query += ` WHERE (namespace = ? OR namespace LIKE ?)`
+		args = append(args, namespace, namespace+"/%")
+	}
+	query += ` ORDER BY full_id`
+
+	rows, err := ix.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RejectionRow
+	for rows.Next() {
+		var r RejectionRow
+		if err := rows.Scan(&r.FullID, &r.Namespace, &r.Body, &r.SeeInstead); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DanglingPointer is a rejection whose see_instead names no statement.
+type DanglingPointer struct {
+	Rejection  string `json:"rejection"`
+	SeeInstead string `json:"see_instead"`
+}
+
+// DanglingSeeInstead finds rejections pointing at a statement that does not
+// exist. A rejection's whole value is answering "what was done instead", so
+// a pointer that resolves to nothing is the one part of it that can rot —
+// and it used to rot in silence: `mv` rewrote statement relationships but
+// not these, reindex exited 0, and `get` reported rejected_alternatives as
+// null with nothing saying why.
+// requiem: model/see-instead-is-checked
+func (ix *Index) DanglingSeeInstead() ([]DanglingPointer, error) {
+	rows, err := ix.db.Query(
+		`SELECT full_id, see_instead FROM rejections
+		 WHERE see_instead IS NOT NULL AND see_instead != ''
+		   AND see_instead NOT IN (SELECT full_id FROM statements)
+		 ORDER BY full_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DanglingPointer
+	for rows.Next() {
+		var d DanglingPointer
+		if err := rows.Scan(&d.Rejection, &d.SeeInstead); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // RejectionsPointingAt returns rejections naming fullID in see_instead — the
 // alternatives turned down in favour of this statement.
 func (ix *Index) RejectionsPointingAt(fullID string) ([]string, error) {

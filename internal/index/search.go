@@ -10,6 +10,15 @@ import (
 	"github.com/nicklecoder/requiem/internal/model"
 )
 
+// SourceKindStatement and SourceKindRejection are the two kinds of record
+// requiem retrieves and embeds. Exported because a candidate's kind decides
+// what the service layer may do with it — only a statement can be stale
+// against a source range — and because embeddings are keyed by it.
+const (
+	SourceKindStatement = "statement"
+	SourceKindRejection = "rejection"
+)
+
 // Candidate is a compact, ranked search result — statements and rejections
 // share this shape (distinctly tagged via SourceKind) so Check can surface
 // both without the caller needing to know which table something came from.
@@ -33,6 +42,26 @@ type Candidate struct {
 	// agreed. A semantic hit can surface a related statement worded
 	// completely differently, which lexical search structurally cannot.
 	MatchKind string `json:"match_kind,omitempty"`
+
+	// Stale reports that the code a code-derived statement was written from
+	// has changed since — the statement may no longer describe the code it
+	// claims to. Nil for a dialogue-derived statement and for a rejection,
+	// where the question does not arise.
+	//
+	// Carried on every result rather than left to a follow-up `get`: this is
+	// the anti-rot signal, and an agent weighing a candidate needs to know
+	// the ground moved under it at the moment it is reading the excerpt.
+	// requiem: retrieval/staleness-travels-with-results
+	Stale *bool `json:"stale,omitempty"`
+
+	// Provenance carriers, for the service layer to rehash against the
+	// working tree. Not serialized: `get` is where provenance is reported,
+	// and repeating it on every candidate would cost context budget for
+	// something the reader did not ask for.
+	SourceFile string `json:"-"`
+	LineStart  int    `json:"-"`
+	LineEnd    int    `json:"-"`
+	SourceHash string `json:"-"`
 }
 
 // minSemanticScore is a lenient floor for check's ad hoc semantic lookup —
@@ -44,8 +73,8 @@ type Candidate struct {
 const minSemanticScore = 0.5
 
 const (
-	sourceKindStatement = "statement"
-	sourceKindRejection = "rejection"
+	sourceKindStatement = SourceKindStatement
+	sourceKindRejection = SourceKindRejection
 )
 
 // DefaultCheckLimit caps how many candidates Check returns by default.
@@ -265,9 +294,17 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 	return candidates
 }
 
-// checkSemantic finds active statements whose stored embedding is close to
-// vector, skipping anything lacking an embedding. Rejections aren't embedded
-// (Embed only applies to statements), so this only ever searches statements.
+// checkSemantic finds searchable statements *and* rejections whose stored
+// embedding is close to vector, skipping anything lacking an embedding.
+//
+// Rejections are included because excluding them broke the workflow this
+// tool is built around. Without a vector a rejection could only score the
+// lexical half of the fusion, so every statement outscored every rejection
+// in a --semantic search: a test with an already-rejected idea returned no
+// rejections in the top ten, with the exact match at position 37 of 55. The
+// documentation says to read the rejections first, which the default path
+// then made impossible.
+// requiem: retrieval/rejections-embedded
 //
 // Candidates a lexical search also found are deliberately *not* excluded:
 // fusion merges them and adds both contributions, so appearing in both lists
@@ -276,28 +313,79 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 // Returned in its own best-first order, because RRF reads position — an
 // unsorted list would hand arbitrary positions to the fusion step.
 func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate, error) {
-	query := `SELECT full_id, namespace, kind, modality, status, body FROM statements WHERE ` + searchableStatuses
-	args := []interface{}{}
-	if namespace != "" {
-		query += ` AND (namespace = ? OR namespace LIKE ?)`
-		args = append(args, namespace, namespace+"/%")
-	}
-	rows, err := ix.db.Query(query, args...)
+	records, err := ix.embeddableRecords(namespace)
 	if err != nil {
 		return nil, err
 	}
-	type stmt struct {
-		fullID, namespace, kind, status, body string
-		modality                              sql.NullString
+	embeddings, err := ix.AllEmbeddings()
+	if err != nil {
+		return nil, err
 	}
-	var stmts []stmt
+
+	var out []Candidate
+	for _, c := range records {
+		emb, ok := embeddings[EmbKey{c.SourceKind, c.FullID}]
+		if !ok {
+			continue
+		}
+		score := CosineSimilarity(vector, emb.Vector)
+		if score < minSemanticScore {
+			continue
+		}
+		c.Rank = -score
+		c.MatchKind = matchSemantic
+		out = append(out, c)
+	}
+	// full_id breaks ties so a statement and a rejection at identical
+	// similarity keep a stable order between runs.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rank != out[j].Rank {
+			return out[i].Rank < out[j].Rank
+		}
+		return out[i].FullID < out[j].FullID
+	})
+	return out, nil
+}
+
+// embeddableRecords returns every record semantic search can rank — the
+// searchable statements and every rejection — as candidates with excerpt and
+// metadata filled in but no rank yet. Shared with the coverage and backfill
+// paths through EmbeddableRecords, so all of them agree on what should carry
+// a vector: a disagreement there would let coverage claim completeness over
+// a set search does not actually cover.
+func (ix *Index) embeddableRecords(namespace string) ([]Candidate, error) {
+	var out []Candidate
+
+	stmtQuery := `SELECT full_id, namespace, kind, modality, status, body,
+			source_file, source_line_start, source_line_end, source_hash
+		FROM statements WHERE ` + searchableStatuses
+	args := []interface{}{}
+	if namespace != "" {
+		stmtQuery += ` AND (namespace = ? OR namespace LIKE ?)`
+		args = append(args, namespace, namespace+"/%")
+	}
+	rows, err := ix.db.Query(stmtQuery, args...)
+	if err != nil {
+		return nil, err
+	}
 	for rows.Next() {
-		var s stmt
-		if err := rows.Scan(&s.fullID, &s.namespace, &s.kind, &s.modality, &s.status, &s.body); err != nil {
+		var c Candidate
+		var kind, status, body string
+		var modality, sourceFile, sourceHash sql.NullString
+		var lineStart, lineEnd sql.NullInt64
+		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body,
+			&sourceFile, &lineStart, &lineEnd, &sourceHash); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		stmts = append(stmts, s)
+		c.SourceKind = sourceKindStatement
+		c.Kind = model.Kind(kind)
+		c.Modality = model.Modality(modality.String)
+		c.Status = model.Status(status)
+		c.Excerpt = searchExcerpt(body)
+		c.SourceFile, c.SourceHash = sourceFile.String, sourceHash.String
+		c.LineStart, c.LineEnd = int(lineStart.Int64), int(lineEnd.Int64)
+		out = append(out, c)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -306,34 +394,109 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 		return nil, err
 	}
 
-	embeddings, err := ix.AllEmbeddings()
+	rejQuery := `SELECT full_id, namespace, body FROM rejections`
+	rejArgs := []interface{}{}
+	if namespace != "" {
+		rejQuery += ` WHERE (namespace = ? OR namespace LIKE ?)`
+		rejArgs = append(rejArgs, namespace, namespace+"/%")
+	}
+	rejRows, err := ix.db.Query(rejQuery, rejArgs...)
 	if err != nil {
 		return nil, err
 	}
+	for rejRows.Next() {
+		var c Candidate
+		var body string
+		if err := rejRows.Scan(&c.FullID, &c.Namespace, &body); err != nil {
+			rejRows.Close()
+			return nil, err
+		}
+		c.SourceKind = sourceKindRejection
+		c.Excerpt = searchExcerpt(body)
+		out = append(out, c)
+	}
+	if err := rejRows.Close(); err != nil {
+		return nil, err
+	}
+	return out, rejRows.Err()
+}
 
-	var out []Candidate
-	for _, s := range stmts {
-		emb, ok := embeddings[s.fullID]
-		if !ok {
-			continue
-		}
-		score := CosineSimilarity(vector, emb.Vector)
-		if score < minSemanticScore {
-			continue
-		}
-		out = append(out, Candidate{
-			FullID:     s.fullID,
-			Namespace:  s.namespace,
-			SourceKind: sourceKindStatement,
-			Kind:       model.Kind(s.kind),
-			Modality:   model.Modality(s.modality.String),
-			Status:     model.Status(s.status),
-			Excerpt:    searchExcerpt(s.body),
-			Rank:       -score,
-			MatchKind:  matchSemantic,
+// EmbeddableRecord is one record semantic search ranks, for callers outside
+// this package that need to know what should carry a vector.
+type EmbeddableRecord struct {
+	SourceKind string
+	FullID     string
+	Body       string
+}
+
+// EmbeddableRecords lists every record that should carry a vector — the
+// searchable statements plus every rejection — with the body to embed.
+func (ix *Index) EmbeddableRecords(namespace string) ([]EmbeddableRecord, error) {
+	records, err := ix.embeddableRecords(namespace)
+	if err != nil {
+		return nil, err
+	}
+	bodies, err := ix.recordBodies(namespace)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EmbeddableRecord, 0, len(records))
+	for _, c := range records {
+		key := EmbKey{c.SourceKind, c.FullID}
+		out = append(out, EmbeddableRecord{
+			SourceKind: c.SourceKind,
+			FullID:     c.FullID,
+			Body:       bodies[key],
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Rank < out[j].Rank })
+	return out, nil
+}
+
+// recordBodies loads full bodies for the embeddable records. Kept apart from
+// embeddableRecords because every other caller wants an excerpt and would
+// otherwise pay for the whole corpus's prose to produce a short list.
+func (ix *Index) recordBodies(namespace string) (map[EmbKey]string, error) {
+	out := map[EmbKey]string{}
+
+	stmtQuery := `SELECT full_id, body FROM statements WHERE ` + searchableStatuses
+	args := []interface{}{}
+	if namespace != "" {
+		stmtQuery += ` AND (namespace = ? OR namespace LIKE ?)`
+		args = append(args, namespace, namespace+"/%")
+	}
+	rejQuery := `SELECT full_id, body FROM rejections`
+	rejArgs := []interface{}{}
+	if namespace != "" {
+		rejQuery += ` WHERE (namespace = ? OR namespace LIKE ?)`
+		rejArgs = append(rejArgs, namespace, namespace+"/%")
+	}
+
+	for _, src := range []struct {
+		kind, query string
+		args        []interface{}
+	}{
+		{sourceKindStatement, stmtQuery, args},
+		{sourceKindRejection, rejQuery, rejArgs},
+	} {
+		rows, err := ix.db.Query(src.query, src.args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id, body string
+			if err := rows.Scan(&id, &body); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[EmbKey{src.kind, id}] = body
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 
@@ -350,7 +513,8 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 	// makes them a lighter-weight companion precisely so the record of what
 	// was turned down can accumulate cheaply. A retired statement is still
 	// reachable through `list --status deprecated`.
-	query := `SELECT s.full_id, s.namespace, s.kind, s.modality, s.status, s.body, fts.rank
+	query := `SELECT s.full_id, s.namespace, s.kind, s.modality, s.status, s.body,
+			s.source_file, s.source_line_start, s.source_line_end, s.source_hash, fts.rank
 		FROM statements_fts fts
 		JOIN statements s ON s.full_id = fts.full_id
 		WHERE statements_fts MATCH ? AND ` + searchableStatusesCol
@@ -380,8 +544,10 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 	for rows.Next() {
 		var c Candidate
 		var kind, status, body string
-		var modality sql.NullString
-		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body, &c.Rank); err != nil {
+		var modality, sourceFile, sourceHash sql.NullString
+		var lineStart, lineEnd sql.NullInt64
+		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body,
+			&sourceFile, &lineStart, &lineEnd, &sourceHash, &c.Rank); err != nil {
 			return nil, err
 		}
 		c.SourceKind = sourceKindStatement
@@ -389,6 +555,8 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 		c.Modality = model.Modality(modality.String)
 		c.Status = model.Status(status)
 		c.Excerpt = searchExcerpt(body)
+		c.SourceFile, c.SourceHash = sourceFile.String, sourceHash.String
+		c.LineStart, c.LineEnd = int(lineStart.Int64), int(lineEnd.Int64)
 		out = append(out, c)
 	}
 	return out, rows.Err()

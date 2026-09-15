@@ -12,7 +12,6 @@ import (
 	"github.com/nicklecoder/requiem/internal/embed"
 	"github.com/nicklecoder/requiem/internal/hash"
 	"github.com/nicklecoder/requiem/internal/index"
-	"github.com/nicklecoder/requiem/internal/model"
 )
 
 // EmbedFailure records one statement requiem could not embed, with the
@@ -21,7 +20,10 @@ import (
 // 40 times for forty reasons.
 type EmbedFailure struct {
 	FullID string `json:"full_id"`
-	Reason string `json:"reason"`
+	// SourceKind distinguishes a statement from a rejection, since the two
+	// may share a full_id.
+	SourceKind string `json:"source_kind,omitempty"`
+	Reason     string `json:"reason"`
 }
 
 // EmbedAllResult summarizes a reindex --embed run.
@@ -72,7 +74,12 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 		return nil, fmt.Errorf("reindex before embed: %w", err)
 	}
 
-	statements, err := ix.ListStatements(index.ListFilter{})
+	// Statements *and* rejections: a rejection without a vector can only
+	// score the lexical half of a --semantic search, which put every
+	// rejection below every statement in the one command whose documented
+	// job is to surface rejections first.
+	// requiem: retrieval/rejections-embedded
+	records, err := ix.EmbeddableRecords("")
 	if err != nil {
 		return nil, err
 	}
@@ -95,20 +102,20 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 			client.Model(), corpus.Model, corpus.Dims)
 	}
 
-	var pending []model.Statement
+	var pending []index.EmbeddableRecord
 	result := &EmbedAllResult{Repinned: modelChanged}
-	for _, st := range statements {
+	for _, r := range records {
 		if !modelChanged {
 			var existing *index.Embedding
-			if e, ok := embeddings[st.FullID()]; ok {
+			if e, ok := embeddings[index.EmbKey{SourceKind: r.SourceKind, FullID: r.FullID}]; ok {
 				existing = &e
 			}
-			if embeddingStatus(existing, st.Body) == "fresh" {
+			if embeddingStatus(existing, r.Body) == "fresh" {
 				result.Skipped++
 				continue
 			}
 		}
-		pending = append(pending, st)
+		pending = append(pending, r)
 	}
 	if len(pending) == 0 {
 		return result, nil
@@ -116,13 +123,18 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 
 	// Deterministic order so batching, and therefore any failure grouping,
 	// is reproducible between runs.
-	sort.Slice(pending, func(i, j int) bool { return pending[i].FullID() < pending[j].FullID() })
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].SourceKind != pending[j].SourceKind {
+			return pending[i].SourceKind < pending[j].SourceKind
+		}
+		return pending[i].FullID < pending[j].FullID
+	})
 
 	timeout, err := cfg.Embedding.ResolvedTimeout()
 	if err != nil {
 		return nil, err
 	}
-	batches := batchStatements(pending, cfg.Embedding.ResolvedBatchSize())
+	batches := batchRecords(pending, cfg.Embedding.ResolvedBatchSize())
 
 	outcomes := make([][]itemOutcome, len(batches))
 
@@ -130,7 +142,7 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	var wg sync.WaitGroup
 	for i, batch := range batches {
 		wg.Add(1)
-		go func(i int, batch []model.Statement) {
+		go func(i int, batch []index.EmbeddableRecord) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -147,15 +159,16 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	repin := force
 	for _, batch := range outcomes {
 		for _, out := range batch {
+			key := index.EmbKey{SourceKind: out.record.SourceKind, FullID: out.record.FullID}
 			if out.err != nil {
-				result.Failures = append(result.Failures, EmbedFailure{FullID: out.statement.FullID(), Reason: out.err.Error()})
+				result.Failures = append(result.Failures, EmbedFailure{FullID: out.record.FullID, SourceKind: out.record.SourceKind, Reason: out.err.Error()})
 				result.Failed++
 				continue
 			}
-			err := ix.UpsertEmbedding(out.statement.FullID(), client.Model(), len(out.vector), out.vector,
-				hash.HashBody(out.statement.Body), now, repin)
+			err := ix.UpsertEmbedding(key, client.Model(), len(out.vector), out.vector,
+				hash.HashBody(out.record.Body), now, repin)
 			if err != nil {
-				result.Failures = append(result.Failures, EmbedFailure{FullID: out.statement.FullID(), Reason: err.Error()})
+				result.Failures = append(result.Failures, EmbedFailure{FullID: out.record.FullID, SourceKind: out.record.SourceKind, Reason: err.Error()})
 				result.Failed++
 				continue
 			}
@@ -174,9 +187,9 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 // itemOutcome is per-statement rather than per-batch so one bad input
 // cannot be reported as a failure of everything it happened to travel with.
 type itemOutcome struct {
-	statement model.Statement
-	vector    []float32
-	err       error
+	record index.EmbeddableRecord
+	vector []float32
+	err    error
 }
 
 // embedBatch sends a batch, and on failure retries each member individually.
@@ -189,11 +202,11 @@ type itemOutcome struct {
 // on the failure path, where an accurate attribution is worth more than the
 // round trips.
 // requiem: embedding/batch-isolation
-func embedBatch(client *embed.Client, batch []model.Statement, timeout time.Duration) []itemOutcome {
-	call := func(statements []model.Statement) ([][]float32, error) {
-		inputs := make([]string, len(statements))
-		for i, st := range statements {
-			inputs[i] = st.Body
+func embedBatch(client *embed.Client, batch []index.EmbeddableRecord, timeout time.Duration) []itemOutcome {
+	call := func(records []index.EmbeddableRecord) ([][]float32, error) {
+		inputs := make([]string, len(records))
+		for i, r := range records {
+			inputs[i] = r.Body
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
@@ -202,34 +215,34 @@ func embedBatch(client *embed.Client, batch []model.Statement, timeout time.Dura
 
 	out := make([]itemOutcome, len(batch))
 	if vecs, err := call(batch); err == nil {
-		for i, st := range batch {
-			out[i] = itemOutcome{statement: st, vector: vecs[i]}
+		for i, r := range batch {
+			out[i] = itemOutcome{record: r, vector: vecs[i]}
 		}
 		return out
 	} else if len(batch) == 1 {
-		out[0] = itemOutcome{statement: batch[0], err: err}
+		out[0] = itemOutcome{record: batch[0], err: err}
 		return out
 	}
 
-	for i, st := range batch {
-		vecs, err := call([]model.Statement{st})
+	for i, r := range batch {
+		vecs, err := call([]index.EmbeddableRecord{r})
 		if err != nil {
-			out[i] = itemOutcome{statement: st, err: err}
+			out[i] = itemOutcome{record: r, err: err}
 			continue
 		}
-		out[i] = itemOutcome{statement: st, vector: vecs[0]}
+		out[i] = itemOutcome{record: r, vector: vecs[0]}
 	}
 	return out
 }
 
-func batchStatements(statements []model.Statement, size int) [][]model.Statement {
-	var out [][]model.Statement
-	for i := 0; i < len(statements); i += size {
+func batchRecords(records []index.EmbeddableRecord, size int) [][]index.EmbeddableRecord {
+	var out [][]index.EmbeddableRecord
+	for i := 0; i < len(records); i += size {
 		end := i + size
-		if end > len(statements) {
-			end = len(statements)
+		if end > len(records) {
+			end = len(records)
 		}
-		out = append(out, statements[i:end])
+		out = append(out, records[i:end])
 	}
 	return out
 }

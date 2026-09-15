@@ -113,12 +113,12 @@ func TestReindex_IndexesRejections(t *testing.T) {
 	s := newTestStore(t)
 	ix := newTestIndex(t)
 
-	if err := s.AppendRejection(model.Rejection{
+	if err := s.WriteRejection(model.Rejection{
 		ID: "sliding-session-expiration", Namespace: "auth/session",
 		RejectedAt: time.Now().UTC(), SeeInstead: "auth/session/no-plaintext-tokens",
 		Body: "Rejected: unbounded blast radius on leak.",
 	}); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+		t.Fatalf("WriteRejection: %v", err)
 	}
 
 	stats, err := ix.Reindex(s)
@@ -278,34 +278,44 @@ func TestReindex_DetectsRemovedFileWithPreciseCount(t *testing.T) {
 		ID: "a", Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
 		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(), Body: "a",
 	})
-	if err := s.AppendRejection(model.Rejection{
+	if err := s.WriteRejection(model.Rejection{
 		ID: "r1", Namespace: "ns", RejectedAt: time.Now().UTC(), Body: "first rejected idea",
 	}); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+		t.Fatalf("WriteRejection: %v", err)
 	}
-	if err := s.AppendRejection(model.Rejection{
+	if err := s.WriteRejection(model.Rejection{
 		ID: "r2", Namespace: "ns", RejectedAt: time.Now().UTC(), Body: "second rejected idea",
 	}); err != nil {
-		t.Fatalf("AppendRejection: %v", err)
+		t.Fatalf("WriteRejection: %v", err)
 	}
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("first Reindex: %v", err)
 	}
 
-	if err := os.Remove(filepath.Join(s.StatementsDir(), "ns", "a.md")); err != nil {
-		t.Fatalf("remove statement file: %v", err)
-	}
-	if err := os.Remove(filepath.Join(s.StatementsDir(), "ns", "_rejected.md")); err != nil {
-		t.Fatalf("remove rejections file: %v", err)
+	for _, name := range []string{"a.md", "r1.rejected.md", "r2.rejected.md"} {
+		if err := os.Remove(filepath.Join(s.StatementsDir(), "ns", name)); err != nil {
+			t.Fatalf("remove %s: %v", name, err)
+		}
 	}
 
 	stats, err := ix.Reindex(s)
 	if err != nil {
 		t.Fatalf("second Reindex: %v", err)
 	}
-	// 1 statement + 2 rejection entries in that one removed _rejected.md file.
 	if stats.Removed != 3 || stats.Added != 0 || stats.Updated != 0 {
 		t.Fatalf("expected 3 removed (1 statement + 2 rejections), got %+v", stats)
+	}
+	// A bare count cannot be acted on: the reader needs to know which
+	// records left the index.
+	// requiem: cli/index-diffs-name-ids
+	want := []string{"ns/a", "ns/r1", "ns/r2"}
+	if len(stats.RemovedIDs) != len(want) {
+		t.Fatalf("expected removed ids %v, got %v", want, stats.RemovedIDs)
+	}
+	for i, id := range want {
+		if stats.RemovedIDs[i] != id {
+			t.Fatalf("expected removed ids %v, got %v", want, stats.RemovedIDs)
+		}
 	}
 
 	if _, err := ix.GetStatement("ns/a"); !errors.Is(err, ErrNotFound) {

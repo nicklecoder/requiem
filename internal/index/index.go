@@ -116,6 +116,56 @@ func migrate(tx *sql.Tx) error {
 			return fmt.Errorf("add %s.%s: %w", m.table, m.column, err)
 		}
 	}
+	return migrateRebuilds(tx)
+}
+
+// migrateRebuilds handles the changes ALTER TABLE cannot express — a new
+// primary key, in practice. Each step is still guarded by a missing column,
+// so it is skipped on a fresh index built from the full schema, and each
+// copies the old rows forward: the whole reason to migrate rather than wipe
+// is that embeddings cannot be rebuilt from files.
+func migrateRebuilds(tx *sql.Tx) error {
+	rebuilds := []struct {
+		table, column string
+		steps         []string
+	}{
+		// embeddings gains source_kind and is re-keyed on
+		// (source_kind, full_id) so rejections can carry vectors too.
+		// Existing rows are all statements, by construction: nothing else
+		// could be embedded before.
+		{"embeddings", "source_kind", []string{
+			`CREATE TABLE embeddings_migrated (
+				source_kind TEXT NOT NULL DEFAULT 'statement',
+				full_id     TEXT NOT NULL,
+				model       TEXT NOT NULL,
+				dims        INTEGER NOT NULL,
+				vector      BLOB NOT NULL,
+				source_hash TEXT NOT NULL,
+				computed_at TEXT NOT NULL,
+				PRIMARY KEY (source_kind, full_id)
+			)`,
+			`INSERT INTO embeddings_migrated
+				(source_kind, full_id, model, dims, vector, source_hash, computed_at)
+			 SELECT 'statement', full_id, model, dims, vector, source_hash, computed_at
+			 FROM embeddings`,
+			`DROP TABLE embeddings`,
+			`ALTER TABLE embeddings_migrated RENAME TO embeddings`,
+		}},
+	}
+	for _, r := range rebuilds {
+		has, err := hasColumn(tx, r.table, r.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		for _, step := range r.steps {
+			if _, err := tx.Exec(step); err != nil {
+				return fmt.Errorf("rebuild %s for %s: %w", r.table, r.column, err)
+			}
+		}
+	}
 	return nil
 }
 
