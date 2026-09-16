@@ -11,6 +11,9 @@ relationships:
     - to: principles/files-canonical
       type: refines
       note: what makes the index genuinely disposable for vectors
+    - to: embedding/configured-endpoint
+      type: depends_on
+      note: There is a config worth committing only because the endpoint is configured rather than bundled.
 ---
 
 The embedding endpoint and model live in a committed config file. Vectors cannot be rebuilt by reparsing statement files the way every other index table can, so the index is only genuinely disposable because the pipeline that reproduces it is in version control.
