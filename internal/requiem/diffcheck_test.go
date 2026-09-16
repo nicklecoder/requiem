@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/nicklecoder/requiem/internal/trace"
 )
 
 // commitFile writes a file and commits it, so a later edit shows up as a diff
@@ -35,12 +37,12 @@ func TestCheckDiff_LabelInsideAnEditedHunkCoversTheChange(t *testing.T) {
 	}
 
 	commitFile(t, s, "tokens.go", "package auth\n\n"+
-		"// requiem: auth/hashed-tokens\n"+
+		"// "+trace.Marker+" auth/hashed-tokens\n"+
 		"func store() {\n\tsave()\n}\n")
 
 	// Edit inside the labelled function.
 	if err := os.WriteFile(filepath.Join(s.Root, "tokens.go"), []byte("package auth\n\n"+
-		"// requiem: auth/hashed-tokens\n"+
+		"// "+trace.Marker+" auth/hashed-tokens\n"+
 		"func store() {\n\tsave(hashed())\n}\n"), 0o644); err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
@@ -138,10 +140,10 @@ func TestCheckDiff_GateFailsOnlyOnCheckableFacts(t *testing.T) {
 
 	// Code labelled with an idea the project rejected, edited in this change.
 	commitFile(t, s, "session.go", "package auth\n\n"+
-		"// requiem: auth/sliding-expiry\n"+
+		"// "+trace.Marker+" auth/sliding-expiry\n"+
 		"func extend() {\n\ttouch()\n}\n")
 	if err := os.WriteFile(filepath.Join(s.Root, "session.go"), []byte("package auth\n\n"+
-		"// requiem: auth/sliding-expiry\n"+
+		"// "+trace.Marker+" auth/sliding-expiry\n"+
 		"func extend() {\n\ttouch(now())\n}\n"), 0o644); err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}

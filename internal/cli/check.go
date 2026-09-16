@@ -160,6 +160,6 @@ func reportDiffGate(res *requiem.DiffCheck) error {
 	if res.Failing() {
 		return fmt.Errorf("%d finding(s) contradict a recorded decision (gate: error)", len(findings))
 	}
-	fmt.Fprintln(os.Stderr, "requiem: reporting only (gate: warn)")
+	fmt.Fprintln(os.Stderr, "requiem: reporting only (gate: warn)") // requiem:ignore message text, not a label
 	return nil
 }

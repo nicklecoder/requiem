@@ -205,6 +205,16 @@ func (s *Service) CheckDiff(rev string) (*DiffCheck, error) {
 			out.Contradictions = append(out.Contradictions, ref)
 			continue
 		}
+		// A label naming nothing is not a decision covering this change. The
+		// marker matches anywhere in a tracked file, so prose — or a stderr
+		// message whose text happens to take the marker's shape — scans as
+		// one, and reporting it here would put a decision that does not exist
+		// in front of a reader. Dangling labels stay visible through `trace`,
+		// where someone is asking about one specific id and can judge it.
+		// requiem: traceability/label-false-positives
+		if ref.Class == RefDangling {
+			continue
+		}
 		add(DiffCoverage{FullID: ref.FullID, Reason: ReasonLabel, File: ref.File, Line: ref.Line})
 	}
 

@@ -123,6 +123,7 @@ func warnAuditBacklog(shown, remaining int) {
 		return
 	}
 	fmt.Fprintf(os.Stderr,
+		// requiem:ignore message text, not a label
 		"requiem: showing %d of %d unadjudicated pair(s); each verdict recorded frees its slot for the next candidate\n",
 		shown, remaining)
 }
@@ -137,7 +138,7 @@ func warnAuditBacklog(shown, remaining int) {
 // requiem: retrieval/calibrated-verdict
 func warnNothingMatched(candidates []index.Candidate) {
 	if len(candidates) == 0 {
-		fmt.Fprintln(os.Stderr, "requiem: no candidates matched — nothing in this namespace resembles the draft")
+		fmt.Fprintln(os.Stderr, "requiem: no candidates matched — nothing in this namespace resembles the draft") // requiem:ignore message text, not a label
 		return
 	}
 	if index.StrongestVerdict(candidates) == index.VerdictWeak {
@@ -161,7 +162,7 @@ func warnDanglingPointers(dangling []index.DanglingPointer) {
 	for _, d := range dangling {
 		fmt.Fprintf(os.Stderr, "requiem:   %s: see_instead %s\n", d.Rejection, d.SeeInstead)
 	}
-	fmt.Fprintln(os.Stderr, "requiem: re-point each with `requiem update <id> --rejection --see-instead <statement>`")
+	fmt.Fprintln(os.Stderr, "requiem: re-point each with `requiem update <id> --rejection --see-instead <statement>`") // requiem:ignore message text, not a label
 }
 
 // warnIndexDiff names the records a reindex added, updated or removed.

@@ -47,7 +47,7 @@ func newBatchCmd() *cobra.Command {
 			if failed > 0 {
 				for _, r := range results {
 					if !r.Applied {
-						fmt.Fprintf(os.Stderr, "requiem:   line %d (%s) %s: %s\n", r.Line, r.Op, r.FullID, r.Error)
+						fmt.Fprintf(os.Stderr, "requiem:   line %d (%s) %s: %s\n", r.Line, r.Op, r.FullID, r.Error) // requiem:ignore message text, not a label
 					}
 				}
 				return fmt.Errorf("%d record(s) did not apply", failed)
