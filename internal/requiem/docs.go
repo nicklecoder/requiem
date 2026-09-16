@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 18
+const docBlockVersion = 21
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -103,12 +103,18 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"previously-rejected ideas:",
 	"",
 	"```sh",
-	"requiem check --namespace <area> --text \"<the idea>\"",
+	"requiem check --text \"<the idea>\"",
 	"```",
 	"",
 	"Returns ranked, excerpt-only candidates (top 10; `--limit` to change), each",
 	"tagged `statement` or `rejection`. Call `requiem get <namespace/id>` for the",
 	"full body of one that actually matters.",
+	"",
+	"`--namespace <area>` narrows to one namespace and its children. Omit it and",
+	"check searches every namespace, which is the better default: a cross-area",
+	"decision is the one you are least likely to think of looking for, and a",
+	"wrong guess at the scope returns an empty result that reads as \"nothing",
+	"here states this\".",
 	"",
 	"Each candidate carries a `verdict` — `duplicate`, `related` or `weak` — with",
 	"the evidence behind it: the cosine where a vector was compared, and the",
@@ -178,6 +184,12 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"requiem update <question> --status superseded",
 	"```",
 	"",
+	"Both steps are needed: `link` records the edge and deliberately leaves the",
+	"target's status alone, because a decision can supersede another while that",
+	"one stays in force through a migration window. It says so on stderr, since",
+	"an `active` statement keeps turning up in `check` and `audit` as a decision",
+	"still in force.",
+	"",
 	"That keeps the question's history instead of erasing it. Six research agents on",
 	"one real project produced about 120 open questions and recorded five, because",
 	"writing one looked like it needed a normative force it does not have; two",
@@ -209,7 +221,7 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"the query text for you:",
 	"",
 	"```sh",
-	"requiem check --namespace <area> --text \"<the idea>\" --semantic",
+	"requiem check --text \"<the idea>\" --semantic",
 	"```",
 	"",
 	"It is opt-in because a plain `check` stays offline and fast. Without an",
@@ -276,6 +288,10 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"  do X\" is implemented by absence, so there is no site to label. A",
 	"  prohibition enforced by a specific guard is the exception: label the",
 	"  guard. `audit` flags an abstract statement if code references it anyway.",
+	"  It is an assertion nothing can verify, so `list --abstract` shows every",
+	"  one of them: review them the way you would review a file's nolint",
+	"  pragmas, because a statement marked abstract to quiet `--unreferenced`",
+	"  hides a real gap permanently.",
 	"- `list --unreferenced` reports only live decisions. A superseded or",
 	"  deprecated one has no implementation because it was withdrawn, which is",
 	"  true and useless.",

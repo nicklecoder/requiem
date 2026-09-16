@@ -8,7 +8,7 @@ import (
 
 func newListCmd() *cobra.Command {
 	var namespace, kind, status, tag string
-	var needsEmbedding, unreferenced, direct bool
+	var needsEmbedding, unreferenced, direct, abstract bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -27,6 +27,7 @@ func newListCmd() *cobra.Command {
 				NeedsEmbedding: needsEmbedding,
 				Unreferenced:   unreferenced,
 				Direct:         direct,
+				Abstract:       abstract,
 			})
 			if err != nil {
 				return err
@@ -45,6 +46,10 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&needsEmbedding, "needs-embedding", false, "only statements with a missing or stale embedding")
 	cmd.Flags().BoolVar(&unreferenced, "unreferenced", false, "only statements no labelled code site references (empty where labelling is unused)")
 	cmd.Flags().BoolVar(&direct, "direct", false, "with --unreferenced, ignore coverage inherited from refining statements")
+	// The declaration is an unverifiable author assertion that quiets
+	// --unreferenced, so it has to be reviewable in bulk.
+	// requiem: traceability/abstract-declarations-are-reviewable
+	cmd.Flags().BoolVar(&abstract, "abstract", false, "only statements declared unimplementable by their author")
 
 	return cmd
 }

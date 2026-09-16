@@ -1,4 +1,4 @@
-<!-- >>> requiem v18 >>> -->
+<!-- >>> requiem v21 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -60,12 +60,18 @@ the reasoning cannot match a draft that arrives at it differently.
 previously-rejected ideas:
 
 ```sh
-requiem check --namespace <area> --text "<the idea>"
+requiem check --text "<the idea>"
 ```
 
 Returns ranked, excerpt-only candidates (top 10; `--limit` to change), each
 tagged `statement` or `rejection`. Call `requiem get <namespace/id>` for the
 full body of one that actually matters.
+
+`--namespace <area>` narrows to one namespace and its children. Omit it and
+check searches every namespace, which is the better default: a cross-area
+decision is the one you are least likely to think of looking for, and a
+wrong guess at the scope returns an empty result that reads as "nothing
+here states this".
 
 Each candidate carries a `verdict` — `duplicate`, `related` or `weak` — with
 the evidence behind it: the cosine where a vector was compared, and the
@@ -135,6 +141,12 @@ requiem link <decision> <question> --type supersedes
 requiem update <question> --status superseded
 ```
 
+Both steps are needed: `link` records the edge and deliberately leaves the
+target's status alone, because a decision can supersede another while that
+one stays in force through a migration window. It says so on stderr, since
+an `active` statement keeps turning up in `check` and `audit` as a decision
+still in force.
+
 That keeps the question's history instead of erasing it. Six research agents on
 one real project produced about 120 open questions and recorded five, because
 writing one looked like it needed a normative force it does not have; two
@@ -166,7 +178,7 @@ Add `--semantic` to search by meaning as well as vocabulary — requiem embeds
 the query text for you:
 
 ```sh
-requiem check --namespace <area> --text "<the idea>" --semantic
+requiem check --text "<the idea>" --semantic
 ```
 
 It is opt-in because a plain `check` stays offline and fast. Without an
@@ -233,6 +245,10 @@ the statement holds, where a comment only asserts intent.
   do X" is implemented by absence, so there is no site to label. A
   prohibition enforced by a specific guard is the exception: label the
   guard. `audit` flags an abstract statement if code references it anyway.
+  It is an assertion nothing can verify, so `list --abstract` shows every
+  one of them: review them the way you would review a file's nolint
+  pragmas, because a statement marked abstract to quiet `--unreferenced`
+  hides a real gap permanently.
 - `list --unreferenced` reports only live decisions. A superseded or
   deprecated one has no implementation because it was withdrawn, which is
   true and useless.

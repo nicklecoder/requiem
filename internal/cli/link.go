@@ -18,11 +18,15 @@ func newLinkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := svc.Link(args[0], args[1], model.RelationshipType(relType), note)
+			res, err := svc.Link(args[0], args[1], model.RelationshipType(relType), note)
 			if err != nil {
 				return err
 			}
-			return printJSON(st)
+			// Recording that A supersedes B leaves B active on purpose, so
+			// the one thing the caller must not do is miss that it did.
+			// requiem: model/supersedes-does-not-retire
+			warnLink(res)
+			return printJSON(res.Statement)
 		},
 	}
 

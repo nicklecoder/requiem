@@ -39,7 +39,8 @@ without being told each session.
 
 ```sh
 # Before proposing something non-trivial, look for prior decisions.
-requiem check --namespace auth --text "should sessions use sliding expiry"
+requiem check --text "should sessions use sliding expiry"
+requiem check --namespace auth --text "..."   # narrow to one area and its children
 
 # Record a decision, and the alternative that lost.
 requiem add --id no-plaintext-tokens --namespace auth/session --kind rule \
@@ -112,7 +113,7 @@ embedding:
 
 ```sh
 requiem reindex --embed                      # fetch missing/stale vectors
-requiem check --namespace auth --text "..." --semantic
+requiem check --text "..." --semantic
 requiem audit                                # corpus-wide duplicate/conflict sweep
 ```
 

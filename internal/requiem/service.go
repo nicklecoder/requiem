@@ -541,7 +541,28 @@ func (s *Service) UpdateBlastRadius(fullID string) ([]ClassifiedRef, error) {
 
 // Link adds a typed relationship from one statement to another. Both ends
 // must already exist.
-func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note string) (*model.Statement, error) {
+// LinkResult is Link's output: the statement the edge was written to, plus
+// anything about the *target* the caller now has to act on. Shaped like
+// Coverage — the type owns the message, the CLI decides where it goes — so
+// every write path that links gets the same diagnostic for free.
+type LinkResult struct {
+	Statement *model.Statement
+
+	// SupersededTargetActive names a target that something now supersedes
+	// while it is still in force. Empty on every other link.
+	SupersededTargetActive string
+}
+
+// Warning renders the diagnostic, or "" when there is nothing to say.
+func (r LinkResult) Warning() string {
+	if r.SupersededTargetActive == "" {
+		return ""
+	}
+	return fmt.Sprintf("requiem: %s is still active and will keep appearing as a decision in force; retire it with `requiem update %s --status superseded`",
+		r.SupersededTargetActive, r.SupersededTargetActive)
+}
+
+func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note string) (*LinkResult, error) {
 	// A dismissal is recorded, not linked. The type stays readable so a
 	// corpus written by an older requiem still parses — validated on write,
 	// tolerated on read, as everywhere else.
@@ -554,7 +575,8 @@ func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note
 	if err != nil {
 		return nil, fmt.Errorf("from %s: %w", fromID, err)
 	}
-	if _, err := s.Store.ReadStatement(toID); err != nil {
+	to, err := s.Store.ReadStatement(toID)
+	if err != nil {
 		return nil, fmt.Errorf("to %s: %w", toID, err)
 	}
 	// Linking a pair again updates the existing entry instead of appending a
@@ -580,7 +602,18 @@ func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note
 	if err := s.stageStatement(from.FullID()); err != nil {
 		return nil, err
 	}
-	return &from, nil
+
+	// The status is deliberately left alone: A superseding B while B stays
+	// in force through a migration window is a real state, and inferring
+	// the retirement would overwrite the author's intent with the tool's.
+	// The silence was the defect — a superseded statement stays Searchable,
+	// so check and audit keep offering it as a current decision.
+	// requiem: model/supersedes-does-not-retire
+	res := &LinkResult{Statement: &from}
+	if relType == model.RelSupersedes && to.Status.Searchable() {
+		res.SupersededTargetActive = toID
+	}
+	return res, nil
 }
 
 // RejectParams are the inputs to Reject.
@@ -784,6 +817,13 @@ type ListFilter struct {
 	// inference — refiners may implement only part of what they refine — so
 	// the unfiltered answer stays reachable rather than being replaced.
 	Direct bool
+	// Abstract, when true, narrows results to statements declared
+	// unimplementable by their author. That declaration suppresses
+	// Unreferenced and nothing can verify it, so the one thing it must not
+	// be is unreviewable — the same reason every linter shipping a nolint
+	// pragma grows a way to list them.
+	// requiem: traceability/abstract-declarations-are-reviewable
+	Abstract bool
 }
 
 // List returns compact summaries of every statement matching filter. Like
@@ -835,6 +875,14 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			summary.CodeRefs = &n
 		}
 		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
+			continue
+		}
+		// A filter rather than a field on the summary: a bool that is false
+		// for nine rows in ten costs context in every result an agent reads,
+		// to answer a question asked during review and almost never
+		// otherwise.
+		// requiem: traceability/abstract-declarations-are-reviewable
+		if filter.Abstract && !st.Abstract {
 			continue
 		}
 		if filter.Unreferenced {
