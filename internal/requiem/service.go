@@ -616,6 +616,90 @@ func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note
 	return res, nil
 }
 
+// UnlinkResult is Unlink's output: the statement the edges were removed from
+// and which ones went, so a caller can confirm it took back what it meant to.
+type UnlinkResult struct {
+	Statement *model.Statement `json:"statement"`
+	// Removed names the relationship types taken off this pair, in the order
+	// they were recorded.
+	Removed []model.RelationshipType `json:"removed"`
+}
+
+// Unlink removes recorded relationships from one statement to another. An
+// empty relType removes every edge joining the pair; naming one narrows it.
+//
+// Without this the only way to take an edge back was to hand-edit the
+// statement file, and a resolved audit finding is exactly the edge that needs
+// taking back: audit skips any pair already carrying a relationship, so a
+// conflicts_with recorded during adjudication keeps the pair out of the queue
+// permanently while the graph goes on asserting a conflict nobody believes.
+// requiem: model/relationships-are-removable
+func (s *Service) Unlink(fromID, toID string, relType model.RelationshipType) (*UnlinkResult, error) {
+	if relType != "" && !relType.Known() {
+		return nil, fmt.Errorf("unknown relationship type %q", relType)
+	}
+
+	from, err := s.Store.ReadStatement(fromID)
+	if err != nil {
+		return nil, fmt.Errorf("from %s: %w", fromID, err)
+	}
+
+	kept := make([]model.Relationship, 0, len(from.Relationships))
+	var removed []model.RelationshipType
+	for _, rel := range from.Relationships {
+		if rel.To == toID && (relType == "" || rel.Type == relType) {
+			removed = append(removed, rel.Type)
+			continue
+		}
+		kept = append(kept, rel)
+	}
+
+	if len(removed) == 0 {
+		// Relationships are directional, and b refines a is a different
+		// claim from a refines b — so an edge the caller did not name is
+		// never quietly deleted. Naming the reverse costs them one retry.
+		// requiem: model/relationships-are-removable
+		if s.hasReverseEdge(fromID, toID, relType) {
+			return nil, fmt.Errorf("no relationship from %s to %s, but %s has one pointing back at %s: relationships are directional, so unlink them in that order",
+				fromID, toID, toID, fromID)
+		}
+		if relType != "" {
+			return nil, fmt.Errorf("no %s relationship from %s to %s", relType, fromID, toID)
+		}
+		return nil, fmt.Errorf("no relationship from %s to %s", fromID, toID)
+	}
+
+	// An emptied list is written as absent rather than as an empty one, so a
+	// statement that has had its last edge removed reads exactly like one
+	// that never had any.
+	if len(kept) == 0 {
+		kept = nil
+	}
+	from.Relationships = kept
+	if err := s.Store.WriteStatement(from); err != nil {
+		return nil, err
+	}
+	if err := s.stageStatement(from.FullID()); err != nil {
+		return nil, err
+	}
+	return &UnlinkResult{Statement: &from, Removed: removed}, nil
+}
+
+// hasReverseEdge reports whether toID points back at fromID, so a caller who
+// got the direction backwards is told which way round it is.
+func (s *Service) hasReverseEdge(fromID, toID string, relType model.RelationshipType) bool {
+	reverse, err := s.Store.ReadStatement(toID)
+	if err != nil {
+		return false
+	}
+	for _, rel := range reverse.Relationships {
+		if rel.To == fromID && (relType == "" || rel.Type == relType) {
+			return true
+		}
+	}
+	return false
+}
+
 // RejectParams are the inputs to Reject.
 type RejectParams struct {
 	ID         string

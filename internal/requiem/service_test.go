@@ -1866,3 +1866,175 @@ func TestList_AbstractComposesWithTheOtherFilters(t *testing.T) {
 		t.Fatalf("expected alpha's one abstract statement, got %+v", got)
 	}
 }
+
+// audit skips any pair that already carries a relationship, so an edge
+// recorded during adjudication and later resolved kept the pair out of the
+// queue for good while the graph went on asserting a conflict nobody
+// believed — and the only way to take it back was to hand-edit YAML.
+// requiem: model/relationships-are-removable
+func TestUnlink_RemovesARecordedRelationship(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Link("ns/a", "ns/b", model.RelConflictsWith, "flagged by audit"); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	res, err := s.Unlink("ns/a", "ns/b", "")
+	if err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != model.RelConflictsWith {
+		t.Fatalf("expected the conflicts_with edge named as removed, got %+v", res.Removed)
+	}
+
+	persisted, err := s.Store.ReadStatement("ns/a")
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if len(persisted.Relationships) != 0 {
+		t.Fatalf("expected no relationships left on disk, got %+v", persisted.Relationships)
+	}
+}
+
+// A pair legitimately carries two relationships of different types, so
+// removing one must leave the other exactly where it was — this is the case
+// that rules out a replacing link.
+// requiem: model/relationships-are-removable
+func TestUnlink_TypeNarrowsToOneEdge(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Link("ns/a", "ns/b", model.RelConflictsWith, "flagged by audit"); err != nil {
+		t.Fatalf("Link conflicts_with: %v", err)
+	}
+	if _, err := s.Link("ns/a", "ns/b", model.RelDependsOn, "recorded months earlier"); err != nil {
+		t.Fatalf("Link depends_on: %v", err)
+	}
+
+	res, err := s.Unlink("ns/a", "ns/b", model.RelConflictsWith)
+	if err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != model.RelConflictsWith {
+		t.Fatalf("expected only conflicts_with removed, got %+v", res.Removed)
+	}
+	left := res.Statement.Relationships
+	if len(left) != 1 || left[0].Type != model.RelDependsOn || left[0].Note != "recorded months earlier" {
+		t.Fatalf("the unrelated edge must survive intact, got %+v", left)
+	}
+}
+
+// Retyping is unlink then link. The point of the test is that the result
+// holds exactly one edge, where linking a second type over the first left the
+// corpus asserting both.
+// requiem: model/relationships-are-removable
+func TestUnlink_ThenLinkRetypesAPair(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Link("ns/a", "ns/b", model.RelConflictsWith, "looks like a conflict"); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if _, err := s.Unlink("ns/a", "ns/b", model.RelConflictsWith); err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	res, err := s.Link("ns/a", "ns/b", model.RelRefines, "actually it refines it")
+	if err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+	rels := res.Statement.Relationships
+	if len(rels) != 1 || rels[0].Type != model.RelRefines {
+		t.Fatalf("a retyped pair must carry exactly one edge, got %+v", rels)
+	}
+}
+
+// Relationships are directional: "b refines a" is a different claim from "a
+// refines b", so an edge the caller did not name is never quietly deleted.
+// requiem: model/relationships-are-removable
+func TestUnlink_WrongDirectionNamesTheReverseEdge(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Link("ns/b", "ns/a", model.RelRefines, ""); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	_, err := s.Unlink("ns/a", "ns/b", "")
+	if err == nil {
+		t.Fatal("expected an error rather than a silent no-op")
+	}
+	if !strings.Contains(err.Error(), "directional") || !strings.Contains(err.Error(), "ns/b") {
+		t.Fatalf("the error must point at the edge that does exist, got %v", err)
+	}
+
+	// And the reverse edge is still there — nothing was destroyed.
+	persisted, err := s.Store.ReadStatement("ns/b")
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if len(persisted.Relationships) != 1 {
+		t.Fatalf("the reverse edge must survive, got %+v", persisted.Relationships)
+	}
+}
+
+// requiem: model/relationships-are-removable
+func TestUnlink_RefusesWhatItCannotDo(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := s.Unlink("ns/a", "ns/b", ""); err == nil {
+		t.Fatal("expected an error when no relationship joins the pair")
+	}
+	if _, err := s.Unlink("ns/a", "ns/b", "invented_type"); err == nil {
+		t.Fatal("expected an unknown relationship type to be refused")
+	}
+	if _, err := s.Unlink("ns/missing", "ns/b", ""); err == nil {
+		t.Fatal("expected a missing source statement to be refused")
+	}
+}
+
+// The batch path gets unlink too, or a bulk adjudication can record edges it
+// cannot take back.
+// requiem: model/relationships-are-removable
+func TestBatch_UnlinkOp(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	in := strings.NewReader(
+		`{"op":"link","from":"ns/a","to":"ns/b","type":"conflicts_with"}` + "\n" +
+			`{"op":"unlink","from":"ns/a","to":"ns/b"}` + "\n")
+
+	results, err := s.BatchApply(in)
+	if err != nil {
+		t.Fatalf("BatchApply: %v", err)
+	}
+	if len(results) != 2 || !results[0].Applied || !results[1].Applied {
+		t.Fatalf("expected both records applied, got %+v", results)
+	}
+	persisted, err := s.Store.ReadStatement("ns/a")
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if len(persisted.Relationships) != 0 {
+		t.Fatalf("expected the edge removed, got %+v", persisted.Relationships)
+	}
+}

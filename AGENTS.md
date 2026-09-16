@@ -1,4 +1,4 @@
-<!-- >>> requiem v22 >>> -->
+<!-- >>> requiem v23 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -117,6 +117,13 @@ dead end leaves no trace if you back out:
 - `requiem batch` — many writes as JSON Lines on stdin, one `{"op":...}` per
   line, with a per-record result for each. A malformed line writes nothing;
   a refused write is reported against its line while the rest apply.
+- `requiem unlink <from> <to> [--type]` — take an edge back. Without
+  `--type` every relationship joining the pair goes; with it, just that
+  one. This is what an audit finding that turned out to be wrong needs:
+  `audit` skips any pair already carrying a relationship, so a stale
+  `conflicts_with` keeps that pair out of the queue for good. Retyping is
+  `unlink` then `link` — a pair can carry two types, so a replacing link
+  would have to guess which one you meant to destroy.
 - `requiem reject` — ideas explicitly considered and rejected, so they aren't re-proposed
 - `requiem mv <from> <to>` — relocate a statement, rewriting inbound references
 - `requiem review` — describe what is staged but not yet committed

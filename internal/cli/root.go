@@ -119,6 +119,7 @@ CONVENTIONS
 		newAddCmd(),
 		newUpdateCmd(),
 		newLinkCmd(),
+		newUnlinkCmd(),
 		newRejectCmd(),
 		newGetCmd(),
 		newListCmd(),

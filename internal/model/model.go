@@ -144,6 +144,12 @@ const (
 	RelNotRelated RelationshipType = "not_related"
 )
 
+// Known reports whether t is a relationship type this binary understands.
+// Exported for callers that validate a type before it reaches a statement —
+// `unlink` names a type without writing one, so it has nothing to hand to
+// Statement.Validate.
+func (t RelationshipType) Known() bool { return t.valid() }
+
 func (t RelationshipType) valid() bool {
 	switch t {
 	case RelConflictsWith, RelSupersedes, RelDependsOn, RelRefines,
