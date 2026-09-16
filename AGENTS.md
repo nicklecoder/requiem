@@ -1,4 +1,4 @@
-<!-- >>> requiem v15 >>> -->
+<!-- >>> requiem v17 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -117,6 +117,28 @@ Two optional fields on `add`/`update`:
   conflicts with something before committing to it. `list --status proposed`
   is the queue of open decisions — and the only one, which is why an open
   question must never be written into an active statement's body instead.
+
+**Recording an open question.** There is no separate question record and none
+is needed: `kind` is a free string and `modality` is optional, so
+
+```sh
+requiem add --namespace <area> --id <slug> --kind question --status proposed \
+  --body "Open question: ... . What hangs on it: ..."
+```
+
+is a question, and `list --status proposed` is the queue that holds it.
+
+Answer it by adding the decision, then:
+
+```sh
+requiem link <decision> <question> --type supersedes
+requiem update <question> --status superseded
+```
+
+That keeps the question's history instead of erasing it. Six research agents on
+one real project produced about 120 open questions and recorded five, because
+writing one looked like it needed a normative force it does not have; two
+defects later traced back to questions that never entered the corpus.
 
 `requiem get` also reports what points *at* a statement: `referenced_by` for
 statements refining or depending on it, and `rejected_alternatives` for ideas

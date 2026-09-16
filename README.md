@@ -90,7 +90,7 @@ records it anyway: requiem states a finding, you still decide.
 
 | | |
 |---|---|
-| `--kind` | Open string: requirement, rule, design, whatever suits. Deliberately carries no semantics; it exists for grouping and retrieval. |
+| `--kind` | Open string: requirement, rule, design, `question`, whatever suits. Deliberately carries no semantics; it exists for grouping and retrieval. `--kind question --status proposed` is how an open question is recorded — no separate record type is needed, since `modality` is optional and a question carries no normative force. Answer it by adding the decision, `link`ing it at the question with `--type supersedes`, then setting the question `--status superseded`. |
 | `--modality` | Closed: `must`, `should`, `may`, `must_not`, `should_not`. The one field requiem reasons with — `audit` flags a pair whose modalities oppose. Optional. |
 | `--status` | `proposed` → `active` → `superseded`/`deprecated`. A proposal is searched and audited like a decision, so you learn whether it conflicts before committing to it. An open question belongs here, never hedged into an active statement's body — `list --status proposed` is the only queue that lists it. |
 | `--abstract` | No code can implement this: a principle, a process rule, or a prohibition — "must not do X" is implemented by absence, so there is no site to label. Keeps it out of `list --unreferenced`. |

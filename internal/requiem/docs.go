@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 15
+const docBlockVersion = 17
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -160,6 +160,28 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"  conflicts with something before committing to it. `list --status proposed`",
 	"  is the queue of open decisions — and the only one, which is why an open",
 	"  question must never be written into an active statement's body instead.",
+	"",
+	"**Recording an open question.** There is no separate question record and none",
+	"is needed: `kind` is a free string and `modality` is optional, so",
+	"",
+	"```sh",
+	"requiem add --namespace <area> --id <slug> --kind question --status proposed \\",
+	"  --body \"Open question: ... . What hangs on it: ...\"",
+	"```",
+	"",
+	"is a question, and `list --status proposed` is the queue that holds it.",
+	"",
+	"Answer it by adding the decision, then:",
+	"",
+	"```sh",
+	"requiem link <decision> <question> --type supersedes",
+	"requiem update <question> --status superseded",
+	"```",
+	"",
+	"That keeps the question's history instead of erasing it. Six research agents on",
+	"one real project produced about 120 open questions and recorded five, because",
+	"writing one looked like it needed a normative force it does not have; two",
+	"defects later traced back to questions that never entered the corpus.",
 	"",
 	"`requiem get` also reports what points *at* a statement: `referenced_by` for",
 	"statements refining or depending on it, and `rejected_alternatives` for ideas",
