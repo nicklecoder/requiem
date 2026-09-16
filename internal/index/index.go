@@ -92,7 +92,7 @@ func (ix *Index) ensureSchema() error {
 // feature silently does nothing until someone happens to edit each file. That
 // is exactly what happened when facets were added — the whole corpus indexed
 // clean and `check --touches` matched nothing.
-const derivationVersion = "2"
+const derivationVersion = "3"
 
 // requiem: model/derived-data-is-versioned
 // ensureDerivation rebuilds everything reindex derives from files when the
@@ -123,6 +123,7 @@ func ensureDerivation(tx *sql.Tx) error {
 		`DELETE FROM rejections_fts`,
 		`DELETE FROM rejections`,
 		`DELETE FROM facets`,
+		`DELETE FROM verdicts`,
 		`DELETE FROM manifest`,
 	} {
 		if _, err := tx.Exec(stmt); err != nil {

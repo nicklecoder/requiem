@@ -106,6 +106,7 @@ CONVENTIONS
 		newBatchCmd(),
 		newEmbedCmd(),
 		newAuditCmd(semantic),
+		newDismissCmd(),
 		newMvCmd(),
 		newTraceCmd(),
 		newPrecommitCmd(),

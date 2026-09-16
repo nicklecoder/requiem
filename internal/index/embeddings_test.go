@@ -186,7 +186,7 @@ func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *te
 		}
 	}
 
-	first, err := ix.FindCandidatePairs("", 1, 0, 0)
+	first, _, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *te
 	if err := ix.upsertRelationshipForTest("ns/a", "ns/b", "not_related"); err != nil {
 		t.Fatalf("record verdict: %v", err)
 	}
-	second, err := ix.FindCandidatePairs("", 1, 0, 0)
+	second, _, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("second FindCandidatePairs: %v", err)
 	}
@@ -225,12 +225,136 @@ func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *te
 	}
 }
 
-func TestFindCandidatePairs_ErrorsWhenNothingIsEmbedded(t *testing.T) {
+// With neither vectors nor identifiers there is genuinely nothing to compare,
+// and an empty result would read as "swept the corpus, found no conflicts" —
+// the false all-clear this error exists to prevent.
+func TestFindCandidatePairs_ErrorsWithNeitherVectorsNorIdentifiers(t *testing.T) {
+	s := newTestStore(t)
 	ix := newTestIndex(t)
-	// An empty result here would read as "swept the corpus, found no
-	// conflicts" — the exact false all-clear this error prevents.
-	if _, err := ix.FindCandidatePairs("", 5, 0, 0); err == nil {
-		t.Fatal("expected an error when no statements are embedded, got nil")
+	for _, tc := range []struct{ id, body string }{
+		{"tokens", "tokens are encrypted at rest"},
+		{"invoices", "invoices are stored in minor units"},
+	} {
+		seedStatement(t, s, model.Statement{
+			ID: tc.id, Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: tc.body,
+		})
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	if _, _, err := ix.FindCandidatePairs("", 5, 0, 0); err == nil {
+		t.Fatal("expected an error when nothing can be compared, got nil")
+	}
+}
+
+// The headline case the field report named: three genuine conflicts that
+// nearest-neighbour search over 1,936 pairs never surfaced, every one of them
+// sharing an identifier while sharing almost no prose. Embeddings cannot pair
+// these; an identifier can.
+// requiem: retrieval/audit-pairs-share-identifiers
+func TestFindCandidatePairs_PairsStatementsSharingAnIdentifier(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	seed := func(id, body string) {
+		t.Helper()
+		seedStatement(t, s, model.Statement{
+			ID: id, Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: body,
+		})
+	}
+	// Two decisions about one column, worded with nothing in common.
+	seed("ingest-key", "Showtimes are matched on provider_venue_id when the feed arrives.")
+	seed("dedupe-rule", "Duplicate cinema records collapse by comparing provider_venue_id only.")
+	// A pair that is merely similar in wording, naming no identifier.
+	seed("prose-a", "Invoices are rendered as archival documents for the finance team.")
+	seed("prose-b", "Invoices are rendered as archival documents for the accounts team.")
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	now := time.Now().UTC()
+	// The identifier pair is orthogonal in embedding space; the prose pair is
+	// identical. Similarity alone would rank the identifier pair last.
+	for id, vec := range map[string][]float32{
+		"ns/ingest-key":  {1, 0},
+		"ns/dedupe-rule": {0, 1},
+		"ns/prose-a":     {0.7, 0.7},
+		"ns/prose-b":     {0.7, 0.7},
+	} {
+		if err := ix.UpsertEmbedding(StatementKey(id), "m", 2, vec, "h-"+id, now, false); err != nil {
+			t.Fatalf("UpsertEmbedding %s: %v", id, err)
+		}
+	}
+
+	pairs, remaining, err := ix.FindCandidatePairs("", 1, 0, 0)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs: %v", err)
+	}
+	if len(pairs) == 0 {
+		t.Fatal("expected candidates")
+	}
+	top := pairs[0]
+	if top.A != "ns/dedupe-rule" || top.B != "ns/ingest-key" {
+		t.Fatalf("expected the identifier-sharing pair ranked first, got %+v", pairs)
+	}
+	if len(top.SharedFacets) != 1 || top.SharedFacets[0] != "provider_venue_id" {
+		t.Fatalf("expected the shared identifier reported as the reason, got %+v", top.SharedFacets)
+	}
+	if remaining < len(pairs) {
+		t.Fatalf("remaining (%d) must count every unadjudicated pair, at least those shown (%d)", remaining, len(pairs))
+	}
+}
+
+// A dismissal keeps a pair out of the sweep exactly as a relationship does,
+// without putting an edge in the graph.
+// requiem: model/verdicts-are-not-edges
+func TestFindCandidatePairs_ExcludesADismissedPair(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	for _, id := range []string{"alpha", "beta"} {
+		seedStatement(t, s, model.Statement{
+			ID: id, Namespace: "ns", Kind: model.KindRule, Status: model.StatusActive,
+			Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+			Body: "Showtimes are matched on provider_venue_id in the " + id + " path.",
+		})
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	pairs, _, err := ix.FindCandidatePairs("", 1, 0, 0)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("expected the identifier pair before dismissal, got %+v", pairs)
+	}
+
+	// Written by hand: the store layer owns this format, and the index only
+	// has to read it.
+	verdictDir := filepath.Join(s.Root, "verdicts")
+	if err := os.MkdirAll(verdictDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	verdict := "---\na: ns/alpha\nb: ns/beta\nverdict: not_related\ndecided_at: 2026-09-15T00:00:00Z\n---\n\nDifferent paths, same column by coincidence.\n"
+	if err := os.WriteFile(filepath.Join(verdictDir, "ns-alpha__ns-beta.md"), []byte(verdict), 0o644); err != nil {
+		t.Fatalf("write verdict: %v", err)
+	}
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex after dismissal: %v", err)
+	}
+
+	pairs, remaining, err := ix.FindCandidatePairs("", 1, 0, 0)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs after dismissal: %v", err)
+	}
+	if len(pairs) != 0 || remaining != 0 {
+		t.Fatalf("a dismissed pair must stop resurfacing, got %+v (remaining %d)", pairs, remaining)
 	}
 }
 
@@ -302,7 +426,11 @@ func TestEmbeddingCorpusInfo_ReportsPinnedModelAndCount(t *testing.T) {
 // The value of the flag is that it combines with similarity: the score filter
 // runs first, so an opposed pair only surfaces when the statements are already
 // close enough to plausibly concern the same subject.
-func TestFindCandidatePairs_FlagsOpposedModalityAndRanksItFirst(t *testing.T) {
+// Modality opposition is flagged but does not promote: ranking by it pushed
+// 48 unrelated pairs into the top 50 of a real audit, because a must set
+// against a must_not on different subjects is ordinary and says nothing.
+// requiem: model/modality-is-not-conflict-detection
+func TestFindCandidatePairs_ModalityIsATiebreakNotARanking(t *testing.T) {
 	s := newTestStore(t)
 	ix := newTestIndex(t)
 
@@ -338,23 +466,30 @@ func TestFindCandidatePairs_FlagsOpposedModalityAndRanksItFirst(t *testing.T) {
 		}
 	}
 
-	pairs, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
 	if len(pairs) < 2 {
 		t.Fatalf("expected both pairs to surface, got %+v", pairs)
 	}
-	if !pairs[0].ModalityConflict {
-		t.Fatalf("the opposed pair must rank first even though it scores lower: %+v", pairs)
+	// The closer pair ranks first on its own evidence, opposed or not.
+	if pairs[0].Score < pairs[1].Score {
+		t.Fatalf("pairs must be ranked by score, got %+v", pairs)
 	}
-	if pairs[0].Score >= pairs[1].Score {
-		t.Fatalf("test is not exercising the reorder — the opposed pair should score lower: %+v", pairs)
+	if pairs[0].ModalityConflict {
+		t.Fatalf("opposed modality must not outrank a better-scoring pair: %+v", pairs)
 	}
-	for _, p := range pairs[1:] {
-		if p.ModalityConflict {
-			t.Fatalf("the agreeing pair must not be flagged: %+v", p)
+	// It is still reported, because it is a real if narrow signal — just not
+	// one that decides the order.
+	var sawFlag bool
+	for _, p := range pairs {
+		if p.A == "ns/encrypt-no" && p.B == "ns/encrypt-yes" {
+			sawFlag = p.ModalityConflict
 		}
+	}
+	if !sawFlag {
+		t.Fatalf("the opposed pair must still be flagged: %+v", pairs)
 	}
 }
 
@@ -379,7 +514,7 @@ func TestFindCandidatePairs_NoFlagWhenModalityAbsent(t *testing.T) {
 		}
 	}
 
-	pairs, err := ix.FindCandidatePairs("", 5, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -415,7 +550,7 @@ func TestFindCandidatePairs_VolumeIsLinearNotQuadratic(t *testing.T) {
 		}
 	}
 
-	pairs, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}

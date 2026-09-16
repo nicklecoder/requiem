@@ -542,6 +542,14 @@ func (s *Service) UpdateBlastRadius(fullID string) ([]ClassifiedRef, error) {
 // Link adds a typed relationship from one statement to another. Both ends
 // must already exist.
 func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note string) (*model.Statement, error) {
+	// A dismissal is recorded, not linked. The type stays readable so a
+	// corpus written by an older requiem still parses — validated on write,
+	// tolerated on read, as everywhere else.
+	// requiem: model/verdicts-are-not-edges
+	if relType == model.RelNotRelated {
+		return nil, fmt.Errorf("not_related is recorded as a verdict rather than an edge, so dismissals do not accumulate in the graph: use `requiem dismiss <a> <b>` (or Service.DismissPair)")
+	}
+
 	from, err := s.Store.ReadStatement(fromID)
 	if err != nil {
 		return nil, fmt.Errorf("from %s: %w", fromID, err)
@@ -1030,26 +1038,59 @@ func (s *Service) Embed(fullID, embModel string, vec []float32, force, rejection
 // them: SPEC's output convention keeps stdout as bare data with no envelope
 // to unwrap, so the shortfall travels as a second return value and reaches
 // the user on stderr. A Go signature is not the JSON payload.
-func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64) ([]index.PairCandidate, Coverage, error) {
+func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64) ([]index.PairCandidate, int, Coverage, error) {
 	ix, err := s.openIndex()
 	if err != nil {
-		return nil, Coverage{}, err
+		return nil, 0, Coverage{}, err
 	}
 	defer ix.Close()
 
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
+		return nil, 0, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
 	}
 
-	pairs, err := ix.FindCandidatePairs(namespace, neighbors, limit, minScore)
+	pairs, remaining, err := ix.FindCandidatePairs(namespace, neighbors, limit, minScore)
 	if err != nil {
-		return nil, Coverage{}, err
+		return nil, 0, Coverage{}, err
 	}
 	cov, err := embeddingCoverage(ix, namespace)
 	if err != nil {
-		return nil, Coverage{}, err
+		return nil, 0, Coverage{}, err
 	}
-	return pairs, cov, nil
+	return pairs, remaining, cov, nil
+}
+
+// DismissPair records that a candidate pair was looked at and judged
+// unrelated, so it stops resurfacing — without putting an edge in the graph.
+//
+// A dismissal is not a semantic relationship. One real corpus accumulated 75
+// not_related edges: permanent noise in a structure people read to understand
+// how decisions fit together, every one of them asserting only that somebody
+// had already looked. Real findings — conflicts_with, duplicates, supersedes
+// — stay edges, because they say something about the decisions.
+// requiem: model/verdicts-are-not-edges
+func (s *Service) DismissPair(a, b, note string) (*model.AuditVerdict, error) {
+	for _, id := range []string{a, b} {
+		if _, err := s.Store.ReadStatement(id); err != nil {
+			return nil, fmt.Errorf("%s: %w", id, err)
+		}
+	}
+	v := model.NewAuditVerdict(a, b, model.VerdictNotRelated, note, time.Now().UTC())
+	if err := s.Store.WriteVerdict(v); err != nil {
+		return nil, err
+	}
+	if err := s.stagePath(s.Store.VerdictRelPath(v.A, v.B)); err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// RestorePair removes a dismissal, returning the pair to the audit queue.
+func (s *Service) RestorePair(a, b string) error {
+	if err := s.Store.RemoveVerdict(a, b); err != nil {
+		return err
+	}
+	return s.stagePath(s.Store.VerdictRelPath(a, b))
 }
 
 // AuditRefs reports labelled code contradicting a recorded decision: sites

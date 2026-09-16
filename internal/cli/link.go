@@ -26,7 +26,7 @@ func newLinkCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&relType, "type", "", "conflicts_with, supersedes, depends_on, refines, duplicates, moved_to, or not_related (required)")
+	cmd.Flags().StringVar(&relType, "type", "", "conflicts_with, supersedes, depends_on, refines, duplicates, or moved_to (required); dismiss an unrelated pair with `requiem dismiss`")
 	cmd.Flags().StringVar(&note, "note", "", "optional note explaining the relationship")
 	_ = cmd.MarkFlagRequired("type")
 

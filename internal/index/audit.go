@@ -9,32 +9,37 @@ import (
 )
 
 // PairCandidate is a ranked, compact result from FindCandidatePairs — like
-// Candidate, excerpts only, never full bodies: the agent classifies the
-// pair (conflict, duplicate, or false positive) and records that via a
-// follow-up `link`, deferring full detail to `get` on whichever side
-// warrants it.
+// Candidate, excerpts only, never full bodies: the agent classifies the pair
+// (conflict, duplicate, or false positive) and records that afterwards,
+// deferring full detail to `get` on whichever side warrants it.
 type PairCandidate struct {
 	A string `json:"a"`
 	B string `json:"b"`
-	// Score is the CSLS value pairs are ranked by: higher is more unusual.
-	// Comparable within one result set, not across corpora.
+	// Score ranks the pair: higher is more worth a look. It is CSLS where
+	// both sides are embedded, promoted by shared evidence — see
+	// FindCandidatePairs. Comparable within one result set, not across
+	// corpora.
 	Score float64 `json:"score"`
 	// Similarity is the raw cosine, kept because it is the number people
-	// actually have intuitions about.
-	Similarity float64 `json:"similarity"`
-	ExcerptA   string  `json:"excerpt_a"`
-	ExcerptB   string  `json:"excerpt_b"`
-	// ModalityConflict marks a pair whose normative directions oppose — an
-	// obligation or permission against a prohibition. Set only when both
-	// statements declare a modality, since an absent one asserts nothing and
-	// can contradict nothing.
-	//
-	// It is a decidable signal, not a verdict, and it is narrow: contraries
-	// defeat it entirely ("must be red" and "must be blue" are both `must`).
-	// Its value comes from being combined with similarity — the score filter
-	// runs first, so an opposed pair only ever surfaces when the two
-	// statements are already close enough to plausibly concern the same
-	// subject.
+	// actually have intuitions about. Absent when either side has no vector:
+	// a pair surfaced by a shared identifier is a real candidate, and
+	// reporting 0.0 for it would read as "measured, and unrelated".
+	Similarity *float64 `json:"similarity,omitempty"`
+	ExcerptA   string   `json:"excerpt_a"`
+	ExcerptB   string   `json:"excerpt_b"`
+	// SharedFacets are the identifiers both statements name. This is the
+	// strongest pairing signal in a real corpus and the reason this pair is
+	// ranked where it is.
+	// requiem: retrieval/audit-pairs-share-identifiers
+	SharedFacets []string `json:"shared_facets,omitempty"`
+	// SameSource marks two statements derived from the same source file —
+	// two decisions about one piece of code.
+	SameSource bool `json:"same_source,omitempty"`
+	// ModalityConflict marks a pair whose normative directions oppose. It is
+	// a tiebreak, not a ranking: on a real corpus, ranking by modality
+	// opposition pushed 48 unrelated pairs into the top 50, because a must
+	// set against a must_not on unrelated topics is ordinary.
+	// requiem: model/modality-is-not-conflict-detection
 	ModalityConflict bool `json:"modality_conflict,omitempty"`
 }
 
@@ -44,122 +49,326 @@ type PairCandidate struct {
 // general", and a handful of neighbours does that stably.
 const localDensityK = 5
 
-// FindCandidatePairs sweeps searchable statements (optionally scoped to a
-// namespace) for pairs worth a human's attention, excluding any pair that
-// already has a relationship recorded between them in either direction —
-// once an agent has judged a pair, it stops resurfacing.
+// maxRecordsPerFacet bounds which identifiers can pair statements.
 //
-// Candidates are each statement's `neighbors` nearest others, not every pair
-// above a similarity threshold. That choice is empirical. An absolute
-// threshold fails on a real corpus because every statement in one project
-// shares a vocabulary: measured here, cosine >= 0.5 surfaced 69% of all
-// pairs, while 0.85 — the usual near-duplicate cutoff in information
-// retrieval — found none of five planted duplicates. The usable window is
-// narrow, model-specific, and moves with how topically uniform the corpus
-// is. Asking each statement for its nearest neighbours instead needs no
-// constant, and produces a candidate count that grows with the number of
-// statements rather than their square.
+// An identifier named by most of the corpus is behaving like a common word,
+// not a key: `full_id` appears throughout requiem's own corpus, and pairing
+// every statement that mentions it would bury the pairs that share something
+// specific. This is the same hub problem CSLS corrects for in embedding
+// space, handled here by declining to build the pair at all.
+const maxRecordsPerFacet = 8
+
+// facetPairBoost and sourcePairBoost lift pairs that share hard evidence
+// above pairs that merely sit near each other in embedding space.
 //
-// Ranking is by CSLS rather than raw cosine: 2*sim(a,b) - r(a) - r(b), where
-// r(x) is x's mean similarity to its own nearest neighbours. High-dimensional
-// spaces generically produce hubs — points that are near everything — and
-// subtracting each side's local density measures how unusually close a pair
-// is *for those two statements*, instead of how close it is on an absolute
-// scale that means nothing on its own.
+// They are large relative to CSLS (which lands in roughly [-0.3, 0.7] on a
+// real corpus) because the ordering they produce is not a matter of degree:
+// the three genuine conflicts a real 255-statement corpus never surfaced
+// shared identifiers while sharing almost no prose, and no amount of
+// similarity-based ranking would have found them. Similarity still orders
+// pairs within each band.
+const (
+	facetPairBoost  = 10.0
+	sourcePairBoost = 5.0
+)
+
+// FindCandidatePairs sweeps statements (optionally scoped to a namespace) for
+// pairs worth a human's attention, excluding any pair already adjudicated —
+// by a recorded relationship in either direction, or by a dismissal in the
+// verdict store.
 //
-// minScore stays available as an optional hard floor but defaults to off:
-// it is a blunt instrument here and calibrating it per model is the problem
-// this design removes.
+// Candidates come from three sources, in decreasing order of how much the
+// pairing itself asserts:
 //
-// Corpus sizes here are small enough that an in-memory O(n^2) similarity
-// pass is fine; no ANN index is needed.
-func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minScore float64) ([]PairCandidate, error) {
-	query := `SELECT full_id, body, modality FROM statements WHERE ` + searchableStatuses
+//   - Statements naming the same identifier. An identifier is an exact key,
+//     so this is evidence about subject matter rather than a guess from
+//     wording. It is also what embeddings structurally cannot find: measured
+//     on a real 255-statement corpus, nearest-neighbour search over 1,936
+//     candidate pairs missed three genuine conflicts, and all three shared an
+//     identifier while sharing almost no prose.
+//   - Statements derived from the same source file — two decisions about one
+//     piece of code.
+//   - Each statement's `neighbors` nearest others by embedding. That choice
+//     is empirical: an absolute similarity threshold fails on a real corpus
+//     because every statement in one project shares a vocabulary. Measured
+//     here, cosine >= 0.5 surfaced 69% of all pairs while 0.85 — the usual
+//     near-duplicate cutoff in information retrieval — found none of five
+//     planted duplicates.
+//
+// Ranking is by CSLS, 2*sim(a,b) - r(a) - r(b), where r(x) is x's mean
+// similarity to its own nearest neighbours, promoted by the boosts above.
+// High-dimensional spaces generically produce hubs — points near everything —
+// and subtracting each side's local density measures how unusually close a
+// pair is for those two statements rather than on an absolute scale that
+// means nothing alone.
+//
+// Modality opposition is a tiebreak only. Ranking by it put 48 unrelated
+// pairs in the top 50 of a real audit, because a must against a must_not on
+// different subjects is common and says nothing.
+//
+// Returns the ranked page and the total number of unadjudicated candidates,
+// so a caller can see the size of the queue it is working through. A backlog
+// that silently refills is a queue nobody finishes: adjudicating a pair frees
+// its slot, and the count is what makes that progress visible.
+// requiem: retrieval/audit-pairs-share-identifiers
+func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minScore float64) ([]PairCandidate, int, error) {
+	stmts, err := ix.auditStatements(namespace)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(stmts) < 2 {
+		return nil, 0, nil
+	}
+
+	embeddings, err := ix.AllEmbeddings()
+	if err != nil {
+		return nil, 0, err
+	}
+	facets, err := ix.AllFacets()
+	if err != nil {
+		return nil, 0, err
+	}
+	adjudicated, err := ix.AdjudicatedPairs()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	embedded := make([]bool, len(stmts))
+	var embeddedCount int
+	for i, s := range stmts {
+		if _, ok := embeddings[StatementKey(s.fullID)]; ok {
+			embedded[i] = true
+			embeddedCount++
+		}
+	}
+	// Facet pairing needs no vectors, so an unembedded corpus is no longer
+	// nothing to sweep — but a corpus with neither vectors nor identifiers
+	// genuinely cannot be swept, and saying so is better than returning an
+	// empty list that reads as "nothing to worry about".
+	if embeddedCount == 0 && len(facets) == 0 {
+		return nil, 0, fmt.Errorf("nothing to compare: no statement is embedded and no identifiers were found in any body (see `requiem list --needs-embedding`)")
+	}
+
+	sims, density := ix.similarityAndDensity(stmts, embedded, embeddings)
+
+	type pairInfo struct {
+		i, j         int
+		sharedFacets []string
+		sameSource   bool
+	}
+	pairs := map[string]*pairInfo{}
+	pairAt := func(i, j int) *pairInfo {
+		if i > j {
+			i, j = j, i
+		}
+		key := pairKey(stmts[i].fullID, stmts[j].fullID)
+		if adjudicated[key] {
+			return nil
+		}
+		p, ok := pairs[key]
+		if !ok {
+			p = &pairInfo{i: i, j: j}
+			pairs[key] = p
+		}
+		return p
+	}
+
+	// Identifier pairs.
+	byFacet := map[string][]int{}
+	for i, s := range stmts {
+		for _, f := range facets[StatementKey(s.fullID)] {
+			byFacet[f] = append(byFacet[f], i)
+		}
+	}
+	for facet, members := range byFacet {
+		if len(members) < 2 || len(members) > maxRecordsPerFacet {
+			continue
+		}
+		for a := 0; a < len(members); a++ {
+			for b := a + 1; b < len(members); b++ {
+				if p := pairAt(members[a], members[b]); p != nil {
+					p.sharedFacets = append(p.sharedFacets, facet)
+				}
+			}
+		}
+	}
+
+	// Same-source pairs.
+	bySource := map[string][]int{}
+	for i, s := range stmts {
+		if s.sourceFile != "" {
+			bySource[s.sourceFile] = append(bySource[s.sourceFile], i)
+		}
+	}
+	for _, members := range bySource {
+		for a := 0; a < len(members); a++ {
+			for b := a + 1; b < len(members); b++ {
+				if p := pairAt(members[a], members[b]); p != nil {
+					p.sameSource = true
+				}
+			}
+		}
+	}
+
+	// Nearest-neighbour pairs, among the embedded statements only.
+	if neighbors <= 0 {
+		neighbors = 1
+	}
+	for i := range stmts {
+		if !embedded[i] {
+			continue
+		}
+		type cand struct {
+			j   int
+			sim float64
+		}
+		var ranked []cand
+		for j := range stmts {
+			if i == j || !embedded[j] {
+				continue
+			}
+			if adjudicated[pairKey(stmts[i].fullID, stmts[j].fullID)] {
+				continue
+			}
+			if minScore > 0 && sims[i][j] < minScore {
+				continue
+			}
+			ranked = append(ranked, cand{j, sims[i][j]})
+		}
+		sort.Slice(ranked, func(a, b int) bool { return ranked[a].sim > ranked[b].sim })
+		if len(ranked) > neighbors {
+			ranked = ranked[:neighbors]
+		}
+		for _, c := range ranked {
+			pairAt(i, c.j)
+		}
+	}
+
+	out := make([]PairCandidate, 0, len(pairs))
+	for _, p := range pairs {
+		a, b := stmts[p.i], stmts[p.j]
+		score := 0.0
+		var similarity *float64
+		if embedded[p.i] && embedded[p.j] {
+			sim := sims[p.i][p.j]
+			similarity = &sim
+			score = 2*sim - density[p.i] - density[p.j]
+		}
+		sort.Strings(p.sharedFacets)
+		if n := len(p.sharedFacets); n > 0 {
+			score += facetPairBoost * float64(n)
+		}
+		if p.sameSource {
+			score += sourcePairBoost
+		}
+		out = append(out, PairCandidate{
+			A:                a.fullID,
+			B:                b.fullID,
+			Score:            score,
+			Similarity:       similarity,
+			ExcerptA:         searchExcerpt(a.body),
+			ExcerptB:         searchExcerpt(b.body),
+			SharedFacets:     p.sharedFacets,
+			SameSource:       p.sameSource,
+			ModalityConflict: a.modality.ConflictsWith(b.modality),
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		// Modality only breaks a tie — see the type's own comment for the
+		// measurement that demoted it.
+		if out[i].ModalityConflict != out[j].ModalityConflict {
+			return out[i].ModalityConflict
+		}
+		if out[i].A != out[j].A {
+			return out[i].A < out[j].A
+		}
+		return out[i].B < out[j].B
+	})
+
+	remaining := len(out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, remaining, nil
+}
+
+// auditStatement is one row the sweep compares.
+type auditStatement struct {
+	fullID     string
+	body       string
+	sourceFile string
+	modality   model.Modality
+}
+
+func (ix *Index) auditStatements(namespace string) ([]auditStatement, error) {
+	query := `SELECT full_id, body, modality, source_file FROM statements WHERE ` + searchableStatuses
 	args := []interface{}{}
 	if namespace != "" {
 		query += ` AND (namespace = ? OR namespace LIKE ?)`
 		args = append(args, namespace, namespace+"/%")
 	}
+	query += ` ORDER BY full_id`
 
 	rows, err := ix.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	type stmt struct {
-		fullID, body string
-		modality     model.Modality
-	}
-	var stmts []stmt
+	defer rows.Close()
+
+	var out []auditStatement
 	for rows.Next() {
-		var s stmt
-		var modality sql.NullString
-		if err := rows.Scan(&s.fullID, &s.body, &modality); err != nil {
-			rows.Close()
+		var s auditStatement
+		var modality, sourceFile sql.NullString
+		if err := rows.Scan(&s.fullID, &s.body, &modality, &sourceFile); err != nil {
 			return nil, err
 		}
-		if modality.Valid {
-			s.modality = model.Modality(modality.String)
+		s.modality = model.Modality(modality.String)
+		s.sourceFile = sourceFile.String
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// similarityAndDensity builds the pairwise cosine matrix and each embedded
+// statement's local density. Corpus sizes here are small enough that an
+// in-memory O(n^2) pass is fine; no ANN index is warranted.
+func (ix *Index) similarityAndDensity(stmts []auditStatement, embedded []bool, embeddings map[EmbKey]Embedding) ([][]float64, []float64) {
+	sims := make([][]float64, len(stmts))
+	for i := range sims {
+		sims[i] = make([]float64, len(stmts))
+	}
+	for i := 0; i < len(stmts); i++ {
+		if !embedded[i] {
+			continue
 		}
-		stmts = append(stmts, s)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	corpus, err := ix.EmbeddingCorpusInfo()
-	if err != nil {
-		return nil, err
-	}
-	if corpus.Count == 0 {
-		return nil, fmt.Errorf("no statements are embedded yet: audit compares statements by embedding, so it has nothing to sweep (see `requiem list --needs-embedding`)")
-	}
-
-	embeddings, err := ix.AllEmbeddings()
-	if err != nil {
-		return nil, err
-	}
-	adjudicated, err := ix.allRelationshipPairs()
-	if err != nil {
-		return nil, err
-	}
-
-	// Only statements that actually carry a vector can be compared.
-	var embedded []stmt
-	for _, s := range stmts {
-		if _, ok := embeddings[StatementKey(s.fullID)]; ok {
-			embedded = append(embedded, s)
-		}
-	}
-	if len(embedded) < 2 {
-		return nil, nil
-	}
-	if neighbors <= 0 {
-		neighbors = 1
-	}
-
-	sims := make([][]float64, len(embedded))
-	for i := range embedded {
-		sims[i] = make([]float64, len(embedded))
-	}
-	for i := 0; i < len(embedded); i++ {
-		for j := i + 1; j < len(embedded); j++ {
-			v := CosineSimilarity(embeddings[StatementKey(embedded[i].fullID)].Vector, embeddings[StatementKey(embedded[j].fullID)].Vector)
+		for j := i + 1; j < len(stmts); j++ {
+			if !embedded[j] {
+				continue
+			}
+			v := CosineSimilarity(
+				embeddings[StatementKey(stmts[i].fullID)].Vector,
+				embeddings[StatementKey(stmts[j].fullID)].Vector)
 			sims[i][j], sims[j][i] = v, v
 		}
 	}
 
-	// r(x): mean similarity to x's own nearest neighbours — the local density
-	// CSLS subtracts out.
-	density := make([]float64, len(embedded))
-	for i := range embedded {
-		row := make([]float64, 0, len(embedded)-1)
-		for j := range embedded {
-			if i != j {
+	density := make([]float64, len(stmts))
+	for i := range stmts {
+		if !embedded[i] {
+			continue
+		}
+		row := make([]float64, 0, len(stmts))
+		for j := range stmts {
+			if i != j && embedded[j] {
 				row = append(row, sims[i][j])
 			}
+		}
+		if len(row) == 0 {
+			continue
 		}
 		sort.Sort(sort.Reverse(sort.Float64Slice(row)))
 		k := localDensityK
@@ -172,89 +381,40 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 		}
 		density[i] = sum / float64(k)
 	}
-
-	seen := map[string]bool{}
-	var out []PairCandidate
-	for i := range embedded {
-		// Rank this statement's partners, skipping ones already judged, so
-		// adjudicating a pair lets the next candidate surface rather than
-		// leaving the statement with nothing.
-		type cand struct {
-			j   int
-			sim float64
-		}
-		var ranked []cand
-		for j := range embedded {
-			if i == j || adjudicated[pairKey(embedded[i].fullID, embedded[j].fullID)] {
-				continue
-			}
-			if minScore > 0 && sims[i][j] < minScore {
-				continue
-			}
-			ranked = append(ranked, cand{j, sims[i][j]})
-		}
-		sort.Slice(ranked, func(a, b int) bool { return ranked[a].sim > ranked[b].sim })
-		if len(ranked) > neighbors {
-			ranked = ranked[:neighbors]
-		}
-
-		for _, c := range ranked {
-			key := pairKey(embedded[i].fullID, embedded[c.j].fullID)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, PairCandidate{
-				A:                embedded[i].fullID,
-				B:                embedded[c.j].fullID,
-				Score:            2*c.sim - density[i] - density[c.j],
-				Similarity:       c.sim,
-				ExcerptA:         searchExcerpt(embedded[i].body),
-				ExcerptB:         searchExcerpt(embedded[c.j].body),
-				ModalityConflict: embedded[i].modality.ConflictsWith(embedded[c.j].modality),
-			})
-		}
-	}
-
-	// Opposed pairs first, then by CSLS. A modality conflict is a
-	// qualitatively different finding from a near-duplicate: it says the two
-	// statements pull in opposite directions, which is the thing audit exists
-	// to catch, where similarity alone is only evidence of shared subject.
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ModalityConflict != out[j].ModalityConflict {
-			return out[i].ModalityConflict
-		}
-		if out[i].Score != out[j].Score {
-			return out[i].Score > out[j].Score
-		}
-		return out[i].A < out[j].A
-	})
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	return sims, density
 }
 
-// allRelationshipPairs loads every relationship as an unordered pair key,
-// regardless of which side is from_id/to_id or which relationship type —
-// any recorded relationship between two statements counts as "already
-// adjudicated" for audit purposes.
-func (ix *Index) allRelationshipPairs() (map[string]bool, error) {
-	rows, err := ix.db.Query(`SELECT from_id, to_id FROM relationships`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
+// AdjudicatedPairs loads every pair an agent has already judged: any recorded
+// relationship, in either direction and of any type, plus every dismissal in
+// the verdict store. Both mean the same thing to a sweep — somebody has
+// looked at this pair — even though only one of them says anything about the
+// decisions themselves.
+func (ix *Index) AdjudicatedPairs() (map[string]bool, error) {
 	out := map[string]bool{}
-	for rows.Next() {
-		var a, b string
-		if err := rows.Scan(&a, &b); err != nil {
+	for _, q := range []string{
+		`SELECT from_id, to_id FROM relationships`,
+		`SELECT a, b FROM verdicts`,
+	} {
+		rows, err := ix.db.Query(q)
+		if err != nil {
 			return nil, err
 		}
-		out[pairKey(a, b)] = true
+		for rows.Next() {
+			var a, b string
+			if err := rows.Scan(&a, &b); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[pairKey(a, b)] = true
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func pairKey(a, b string) string {

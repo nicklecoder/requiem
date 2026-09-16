@@ -348,10 +348,10 @@ func TestLink_SamePairAgainUpdatesNoteAndStillReindexes(t *testing.T) {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
-	if _, err := s.Link("ns/a", "ns/b", model.RelNotRelated, "first verdict"); err != nil {
+	if _, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "first verdict"); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
-	from, err := s.Link("ns/a", "ns/b", model.RelNotRelated, "revised verdict")
+	from, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "revised verdict")
 	if err != nil {
 		t.Fatalf("relink: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestLink_SamePairAgainUpdatesNoteAndStillReindexes(t *testing.T) {
 		t.Fatalf("expected the one entry's note updated, got %+v", from.Relationships)
 	}
 
-	from, err = s.Link("ns/a", "ns/b", model.RelNotRelated, "")
+	from, err = s.Link("ns/a", "ns/b", model.RelDuplicates, "")
 	if err != nil {
 		t.Fatalf("relink without note: %v", err)
 	}
@@ -823,6 +823,72 @@ func TestPendingApproval_NamesARejectionByItsID(t *testing.T) {
 	}
 }
 
+// One real corpus accumulated 75 not_related edges: permanent noise in a
+// graph people read to understand how decisions fit together.
+// requiem: model/verdicts-are-not-edges
+func TestDismissPair_RecordsAVerdictRatherThanAnEdge(t *testing.T) {
+	s := newTestService(t)
+	for _, tc := range []struct{ id, body string }{
+		{"alpha", "Showtimes are matched on provider_venue_id in the ingest path."},
+		{"beta", "Cinema records collapse by comparing provider_venue_id at import."},
+	} {
+		if _, err := s.Add(AddParams{ID: tc.id, Namespace: "ns", Kind: "rule", Body: tc.body, DuplicateOk: true}); err != nil {
+			t.Fatalf("Add %s: %v", tc.id, err)
+		}
+	}
+
+	v, err := s.DismissPair("ns/beta", "ns/alpha", "same column, unrelated decisions")
+	if err != nil {
+		t.Fatalf("DismissPair: %v", err)
+	}
+	// The pair is stored in sorted order, so it has one identity however it
+	// was named.
+	if v.A != "ns/alpha" || v.B != "ns/beta" {
+		t.Fatalf("expected the pair normalized, got %+v", v)
+	}
+
+	// Nothing was written into either statement.
+	st, err := s.Get("ns/alpha")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(st.Relationships) != 0 || len(st.ReferencedBy) != 0 {
+		t.Fatalf("a dismissal must not touch the graph, got %+v / %+v", st.Relationships, st.ReferencedBy)
+	}
+
+	if _, err := s.Store.ReadVerdict("ns/alpha", "ns/beta"); err != nil {
+		t.Fatalf("expected the verdict on disk: %v", err)
+	}
+
+	// And it can be taken back, returning the pair to the queue.
+	if err := s.RestorePair("ns/alpha", "ns/beta"); err != nil {
+		t.Fatalf("RestorePair: %v", err)
+	}
+	if _, err := s.Store.ReadVerdict("ns/alpha", "ns/beta"); err == nil {
+		t.Fatal("expected the verdict removed after restore")
+	}
+}
+
+func TestLink_RefusesNotRelatedAndNamesTheAlternative(t *testing.T) {
+	s := newTestService(t)
+	for _, tc := range []struct{ id, body string }{
+		{"alpha", "Feed ingestion runs hourly against the provider timetable endpoint."},
+		{"beta", "Invoices are rendered as archival documents for the finance team."},
+	} {
+		if _, err := s.Add(AddParams{ID: tc.id, Namespace: "ns", Kind: "rule", Body: tc.body}); err != nil {
+			t.Fatalf("Add %s: %v", tc.id, err)
+		}
+	}
+
+	_, err := s.Link("ns/alpha", "ns/beta", model.RelNotRelated, "not related")
+	if err == nil {
+		t.Fatal("expected link to refuse not_related")
+	}
+	if !strings.Contains(err.Error(), "dismiss") {
+		t.Fatalf("the refusal should name the command that does this, got: %v", err)
+	}
+}
+
 // seedSeeInstead adds the statement the rejection tests point at, since a
 // see_instead naming nothing is now refused.
 func seedSeeInstead(t *testing.T, s *Service) {
@@ -1161,7 +1227,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Embed b: %v", err)
 	}
 
-	pairs, _, err := s.Audit("", 5, 0, 0)
+	pairs, _, _, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -1173,7 +1239,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Link: %v", err)
 	}
 
-	pairs, _, err = s.Audit("", 5, 0, 0)
+	pairs, _, _, err = s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("second Audit: %v", err)
 	}
@@ -1478,7 +1544,7 @@ func TestProposedStatus_ParticipatesInCheckAndAudit(t *testing.T) {
 	}
 
 	// The payoff: audit can tell a proposal it opposes a settled decision.
-	pairs, _, err := s.Audit("", 5, 0, 0)
+	pairs, _, _, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}

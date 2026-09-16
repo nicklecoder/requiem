@@ -136,6 +136,25 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_code_refs_full_id ON code_refs(full_id)`,
 
+	// verdicts holds audit dismissals — pairs an agent has judged unrelated.
+	//
+	// Kept out of the relationships table, and out of the statement files,
+	// because a dismissal is not a semantic relationship: one real corpus
+	// accumulated 75 not_related edges, permanent noise in a graph people
+	// read to understand how decisions fit together. Derived from files under
+	// .requiem/verdicts/ exactly as every other table here is derived from
+	// files, so nothing about it is less recoverable.
+	// requiem: model/verdicts-are-not-edges
+	`CREATE TABLE IF NOT EXISTS verdicts (
+		a          TEXT NOT NULL,
+		b          TEXT NOT NULL,
+		verdict    TEXT NOT NULL,
+		note       TEXT,
+		decided_at TEXT NOT NULL,
+		file_path  TEXT NOT NULL REFERENCES manifest(file_path),
+		PRIMARY KEY (a, b)
+	)`,
+
 	// facets holds the concrete identifiers a record names — snake_case
 	// names, dotted paths, symbols, camelCase — extracted from its body.
 	//

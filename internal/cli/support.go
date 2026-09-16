@@ -111,6 +111,22 @@ func warnNearMisses(misses []requiem.NearMiss) {
 	}
 }
 
+// warnAuditBacklog reports how much of the queue this page covers.
+//
+// A backlog that refills as it is worked is not a defect — adjudicating a pair
+// frees its slot for the next candidate — but without a total it looks like
+// one: a real corpus went from 415 to 425 outstanding pairs after 97 verdicts,
+// and a queue that appears to grow as you work it gets abandoned.
+// requiem: retrieval/audit-pairs-share-identifiers
+func warnAuditBacklog(shown, remaining int) {
+	if remaining <= shown {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"requiem: showing %d of %d unadjudicated pair(s); each verdict recorded frees its slot for the next candidate\n",
+		shown, remaining)
+}
+
 // warnNothingMatched says so when no candidate rose above a weak match.
 //
 // check always fills its limit, so a page of results is not evidence that any

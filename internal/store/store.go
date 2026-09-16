@@ -473,6 +473,125 @@ func (s *Store) WalkRejectionFiles(fn func(RejectionFile) error) error {
 	})
 }
 
+// verdictsDirName holds audit dismissals, outside statements/ because a
+// dismissal is not a statement and must not appear in the graph people read.
+// requiem: model/verdicts-are-not-edges
+const verdictsDirName = "verdicts"
+
+// VerdictsDir is Root/verdicts.
+func (s *Store) VerdictsDir() string {
+	return filepath.Join(s.Root, verdictsDirName)
+}
+
+// verdictSlug names a pair's file. Slashes become hyphens and the two ids are
+// joined by a double underscore, so the filename is readable and a pair maps
+// to exactly one path.
+func verdictSlug(a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	replace := func(s string) string { return strings.ReplaceAll(s, "/", "-") }
+	return replace(a) + "__" + replace(b)
+}
+
+// VerdictRelPath returns a verdict's file path relative to Root.
+func (s *Store) VerdictRelPath(a, b string) string {
+	return filepath.ToSlash(filepath.Join(verdictsDirName, verdictSlug(a, b)+statementExt))
+}
+
+// WriteVerdict records one dismissal, replacing any existing verdict for the
+// same pair — re-judging a pair revises the record rather than appending a
+// second one, the same rule relationships follow.
+func (s *Store) WriteVerdict(v model.AuditVerdict) error {
+	if err := v.Validate(); err != nil {
+		return fmt.Errorf("invalid verdict: %w", err)
+	}
+	data, err := serializeVerdict(v)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(s.Root, filepath.FromSlash(s.VerdictRelPath(v.A, v.B))), data)
+}
+
+// ReadVerdict reads one pair's verdict.
+func (s *Store) ReadVerdict(a, b string) (model.AuditVerdict, error) {
+	path := filepath.Join(s.Root, filepath.FromSlash(s.VerdictRelPath(a, b)))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return model.AuditVerdict{}, fmt.Errorf("%s/%s: %w", a, b, ErrNotFound)
+		}
+		return model.AuditVerdict{}, err
+	}
+	v, err := parseVerdict(data)
+	if err != nil {
+		return model.AuditVerdict{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return v, nil
+}
+
+// RemoveVerdict deletes a pair's verdict, so a dismissal can be taken back
+// and the pair returned to the audit queue.
+func (s *Store) RemoveVerdict(a, b string) error {
+	path := filepath.Join(s.Root, filepath.FromSlash(s.VerdictRelPath(a, b)))
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s/%s: %w", a, b, ErrNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
+// VerdictFile pairs a parsed verdict with its file identity, for the reindex
+// manifest.
+type VerdictFile struct {
+	Verdict model.AuditVerdict
+	RelPath string // e.g. "verdicts/model-kind-inert__retrieval-rrf-fusion.md"
+	ModTime time.Time
+	Size    int64
+}
+
+// WalkVerdictFiles visits every recorded verdict.
+func (s *Store) WalkVerdictFiles(fn func(VerdictFile) error) error {
+	root := s.VerdictsDir()
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// A project that has never dismissed a pair has no directory,
+			// which is a valid state rather than a failure.
+			if os.IsNotExist(err) && path == root {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || filepath.Ext(d.Name()) != statementExt {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		v, err := parseVerdict(data)
+		if err != nil {
+			return fmt.Errorf("walk %s: %w", path, err)
+		}
+		rel, err := filepath.Rel(s.Root, path)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return fn(VerdictFile{
+			Verdict: v,
+			RelPath: filepath.ToSlash(rel),
+			ModTime: info.ModTime(),
+			Size:    info.Size(),
+		})
+	})
+}
+
 func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
