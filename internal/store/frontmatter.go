@@ -86,6 +86,35 @@ func serializeRejection(r model.Rejection) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+func serializeVerdict(v model.AuditVerdict) ([]byte, error) {
+	fm, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshal verdict frontmatter: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString(frontmatterSep + "\n")
+	b.Write(fm)
+	b.WriteString(frontmatterSep + "\n\n")
+	// The note is the body, because the reason a pair was dismissed is prose
+	// and belongs where prose is readable in a diff.
+	b.WriteString(strings.TrimSpace(v.Note))
+	b.WriteString("\n")
+	return []byte(b.String()), nil
+}
+
+func parseVerdict(data []byte) (model.AuditVerdict, error) {
+	fm, body, err := splitFrontmatter(data)
+	if err != nil {
+		return model.AuditVerdict{}, err
+	}
+	var v model.AuditVerdict
+	if err := yaml.Unmarshal(fm, &v); err != nil {
+		return model.AuditVerdict{}, fmt.Errorf("parse verdict frontmatter: %w", err)
+	}
+	v.Note = body
+	return v, nil
+}
+
 func parseRejections(namespace string, data []byte) ([]model.Rejection, error) {
 	chunks := strings.Split(string(data), entrySep)
 	rejections := make([]model.Rejection, 0, len(chunks))

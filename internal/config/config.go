@@ -58,11 +58,54 @@ type Hooks struct {
 	Embed bool `yaml:"embed,omitempty"`
 }
 
+// Gate configures whether `check --diff` fails a build.
+//
+// Per-project, and off by default, because the answer genuinely differs: a
+// team that has adopted labelling wants CI to catch code contradicting a
+// recorded decision, and a team mid-adoption would be blocked by noise it
+// cannot act on yet. Requiem has no basis for choosing between them.
+// requiem: traceability/diff-gate-is-per-project
+type Gate struct {
+	// Diff is "off" (default), "warn" or "error". Even at "error" the gate
+	// fails only on checkable facts — code labelled with a retired or
+	// rejected decision, or a statement whose source range has drifted —
+	// never on "this change touches decisions you did not read", which is a
+	// judgment about intent this tool refuses to make.
+	Diff string `yaml:"diff,omitempty"`
+}
+
+// Gate modes.
+const (
+	GateOff   = "off"
+	GateWarn  = "warn"
+	GateError = "error"
+)
+
 // Config is the whole file. Every section is optional: a project that never
 // configures embedding is fully functional, just lexical-only.
 type Config struct {
 	Embedding *Embedding `yaml:"embedding,omitempty"`
 	Hooks     *Hooks     `yaml:"hooks,omitempty"`
+	Gate      *Gate      `yaml:"gate,omitempty"`
+}
+
+// GateDiff reports the configured diff gate, defaulting to off. An
+// unrecognized value reads as off rather than failing the command: validated
+// on write, tolerated on read, as everywhere else — and a typo in a config
+// key must not be the thing that starts failing builds.
+// requiem: model/validate-write-tolerate-read
+func (c *Config) GateDiff() string {
+	if c.Gate == nil {
+		return GateOff
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gate.Diff)) {
+	case GateWarn:
+		return GateWarn
+	case GateError:
+		return GateError
+	default:
+		return GateOff
+	}
 }
 
 // HooksEmbed reports whether installed hooks should embed. Requires an
@@ -179,6 +222,15 @@ const Template = `# requiem configuration — committed on purpose.
 #
 # hooks:
 #   embed: true
+#
+# "requiem check --diff" reports which recorded decisions cover a patch. Set
+# the gate to make it fail instead of only reporting — and note what it fails
+# on: code labelled with a superseded or rejected decision, and statements
+# whose source range has drifted. Never on "this change touches decisions you
+# did not read", which requiem cannot know. Off, warn, or error.
+#
+# gate:
+#   diff: error
 #
 # Every vector in a project must come from one model: cosine similarity
 # across two models is a plausible-looking number that means nothing.

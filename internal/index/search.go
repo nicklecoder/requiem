@@ -10,6 +10,15 @@ import (
 	"github.com/nicklecoder/requiem/internal/model"
 )
 
+// SourceKindStatement and SourceKindRejection are the two kinds of record
+// requiem retrieves and embeds. Exported because a candidate's kind decides
+// what the service layer may do with it — only a statement can be stale
+// against a source range — and because embeddings are keyed by it.
+const (
+	SourceKindStatement = "statement"
+	SourceKindRejection = "rejection"
+)
+
 // Candidate is a compact, ranked search result — statements and rejections
 // share this shape (distinctly tagged via SourceKind) so Check can surface
 // both without the caller needing to know which table something came from.
@@ -33,6 +42,53 @@ type Candidate struct {
 	// agreed. A semantic hit can surface a related statement worded
 	// completely differently, which lexical search structurally cannot.
 	MatchKind string `json:"match_kind,omitempty"`
+
+	// Verdict bands how strongly this candidate resembles the draft: a
+	// duplicate at rank 1 and noise at rank 1 were previously
+	// indistinguishable, because RRF scores position and discards
+	// magnitude. See verdict.go.
+	// requiem: retrieval/calibrated-verdict
+	Verdict Verdict `json:"verdict,omitempty"`
+
+	// Similarity is the raw cosine behind a semantic match, present only
+	// when the semantic path ran. Reported because it is the number people
+	// have intuitions about, and because the verdict band should be
+	// inspectable rather than taken on trust.
+	Similarity *float64 `json:"similarity,omitempty"`
+
+	// SharedFacets are the identifiers this candidate and the draft both
+	// name — the evidence that promotes a pair prose similarity would
+	// leave in the noise.
+	// requiem: retrieval/identifier-facets
+	SharedFacets []string `json:"shared_facets,omitempty"`
+
+	// Challenged marks an active statement that a *proposed* statement
+	// contradicts or would supersede. A corpus of decisions makes existing
+	// decisions easy to honour, which is the point and also the risk: an
+	// agent should know when the decision it is about to respect is itself
+	// under challenge.
+	// requiem: retrieval/challenged-decisions-are-flagged
+	Challenged bool `json:"challenged,omitempty"`
+
+	// Stale reports that the code a code-derived statement was written from
+	// has changed since — the statement may no longer describe the code it
+	// claims to. Nil for a dialogue-derived statement and for a rejection,
+	// where the question does not arise.
+	//
+	// Carried on every result rather than left to a follow-up `get`: this is
+	// the anti-rot signal, and an agent weighing a candidate needs to know
+	// the ground moved under it at the moment it is reading the excerpt.
+	// requiem: retrieval/staleness-travels-with-results
+	Stale *bool `json:"stale,omitempty"`
+
+	// Provenance carriers, for the service layer to rehash against the
+	// working tree. Not serialized: `get` is where provenance is reported,
+	// and repeating it on every candidate would cost context budget for
+	// something the reader did not ask for.
+	SourceFile string `json:"-"`
+	LineStart  int    `json:"-"`
+	LineEnd    int    `json:"-"`
+	SourceHash string `json:"-"`
 }
 
 // minSemanticScore is a lenient floor for check's ad hoc semantic lookup —
@@ -44,8 +100,8 @@ type Candidate struct {
 const minSemanticScore = 0.5
 
 const (
-	sourceKindStatement = "statement"
-	sourceKindRejection = "rejection"
+	sourceKindStatement = SourceKindStatement
+	sourceKindRejection = SourceKindRejection
 )
 
 // DefaultCheckLimit caps how many candidates Check returns by default.
@@ -72,7 +128,7 @@ const DefaultCheckLimit = 10
 // looks plausible and means nothing, so it's validated against the corpus's
 // pinned model the same way UpsertEmbedding validates on write.
 // requiem: retrieval/check-result-limit
-func (ix *Index) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int) ([]Candidate, error) {
+func (ix *Index) Check(namespace, text string, tags []string, vector []float32, embModel string, limit int, touches []string) ([]Candidate, error) {
 	if len(vector) > 0 {
 		if err := ix.validateQueryVector(vector, embModel); err != nil {
 			return nil, err
@@ -118,9 +174,163 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32, 
 		lists = append(lists, markKind(semantic, matchSemantic))
 	}
 
+	// --touches asks for the records naming an identifier, which is an exact
+	// key rather than a ranking signal: a facet match is added as its own
+	// list so it can surface a record whose prose shares nothing with the
+	// draft at all.
+	// requiem: retrieval/identifier-facets
+	if len(touches) > 0 {
+		byFacet, err := ix.checkTouches(touches, namespace)
+		if err != nil {
+			return nil, fmt.Errorf("check touches: %w", err)
+		}
+		lists = append(lists, markKind(byFacet, matchLexical))
+	}
+
 	out := fuse(lists)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
+	}
+	if err := ix.annotateEvidence(out, text, touches); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// annotateEvidence fills in each surviving candidate's shared facets, term
+// coverage, challenge flag and verdict.
+//
+// Runs after truncation, over at most `limit` records, so the bodies it loads
+// are bounded — the whole corpus is never materialized to score a search.
+func (ix *Index) annotateEvidence(candidates []Candidate, text string, touches []string) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	keys := make([]EmbKey, 0, len(candidates))
+	for _, c := range candidates {
+		keys = append(keys, EmbKey{c.SourceKind, c.FullID})
+	}
+	facets, err := ix.facetsForIDs(keys)
+	if err != nil {
+		return err
+	}
+	bodies, err := ix.bodiesForIDs(keys)
+	if err != nil {
+		return err
+	}
+	challenged, err := ix.ChallengedIDs()
+	if err != nil {
+		return err
+	}
+
+	// --touches names identifiers the caller already knows the change
+	// affects, which is stronger evidence than anything inferred from the
+	// draft's prose, so it joins the query's own facets.
+	queryFacets := ExtractFacets(text)
+	for _, t := range touches {
+		if f := normalizeFacet(t); f != "" {
+			queryFacets = append(queryFacets, f)
+		}
+	}
+	draftTerms := coverageTerms(text)
+
+	for i := range candidates {
+		c := &candidates[i]
+		key := EmbKey{c.SourceKind, c.FullID}
+		c.SharedFacets = sharedFacets(queryFacets, facets[key])
+		if c.SourceKind == SourceKindStatement && challenged[c.FullID] {
+			c.Challenged = true
+		}
+		var sim float64
+		hasSim := c.Similarity != nil
+		if hasSim {
+			sim = *c.Similarity
+		}
+		c.Verdict = classifyVerdict(sim, hasSim, len(c.SharedFacets), termCoverage(draftTerms, bodies[key]), len(draftTerms))
+	}
+	return nil
+}
+
+// checkTouches finds records naming any of the given identifiers, ranked by
+// how many of them each names.
+func (ix *Index) checkTouches(touches []string, namespace string) ([]Candidate, error) {
+	wanted := make([]string, 0, len(touches))
+	for _, t := range touches {
+		if f := normalizeFacet(t); f != "" {
+			wanted = append(wanted, f)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(wanted)), ",")
+	args := make([]interface{}, 0, len(wanted)+2)
+	for _, f := range wanted {
+		args = append(args, f)
+	}
+	query := `SELECT source_kind, full_id, COUNT(*) AS hits FROM facets
+		WHERE facet IN (` + placeholders + `)
+		GROUP BY source_kind, full_id ORDER BY hits DESC, full_id`
+	rows, err := ix.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var keys []EmbKey
+	for rows.Next() {
+		var kind, id string
+		var hits int
+		if err := rows.Scan(&kind, &id, &hits); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		keys = append(keys, EmbKey{kind, id})
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Resolved through the same enumeration the other paths use, so a
+	// facet hit carries identical metadata and obeys the same status and
+	// namespace scoping.
+	records, err := ix.embeddableRecords(namespace)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[EmbKey]Candidate, len(records))
+	for _, c := range records {
+		byKey[EmbKey{c.SourceKind, c.FullID}] = c
+	}
+	var out []Candidate
+	for _, k := range keys {
+		if c, ok := byKey[k]; ok {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// bodiesForIDs loads full bodies for a bounded set of records.
+func (ix *Index) bodiesForIDs(keys []EmbKey) (map[EmbKey]string, error) {
+	out := make(map[EmbKey]string, len(keys))
+	for _, k := range keys {
+		table := "statements"
+		if k.SourceKind == sourceKindRejection {
+			table = "rejections"
+		}
+		var body string
+		err := ix.db.QueryRow(`SELECT body FROM `+table+` WHERE full_id = ?`, k.FullID).Scan(&body)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[k] = body
 	}
 	return out, nil
 }
@@ -207,6 +417,15 @@ func fuse(lists [][]Candidate) []Candidate {
 				merged[k] = e
 				order = append(order, k)
 			}
+			// Evidence travels with whichever list carried it. The lexical
+			// path knows no similarity, so a candidate found by both paths
+			// has to keep the number the semantic path measured rather than
+			// the zero value of whichever list merged first — otherwise the
+			// strongest evidence there is would be dropped for exactly the
+			// candidates both paths agreed on.
+			if e.candidate.Similarity == nil && c.Similarity != nil {
+				e.candidate.Similarity = c.Similarity
+			}
 			e.kinds[c.MatchKind] = true
 			e.score += 1.0 / (rrfK + float64(position+1))
 		}
@@ -265,9 +484,17 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 	return candidates
 }
 
-// checkSemantic finds active statements whose stored embedding is close to
-// vector, skipping anything lacking an embedding. Rejections aren't embedded
-// (Embed only applies to statements), so this only ever searches statements.
+// checkSemantic finds searchable statements *and* rejections whose stored
+// embedding is close to vector, skipping anything lacking an embedding.
+//
+// Rejections are included because excluding them broke the workflow this
+// tool is built around. Without a vector a rejection could only score the
+// lexical half of the fusion, so every statement outscored every rejection
+// in a --semantic search: a test with an already-rejected idea returned no
+// rejections in the top ten, with the exact match at position 37 of 55. The
+// documentation says to read the rejections first, which the default path
+// then made impossible.
+// requiem: retrieval/rejections-embedded
 //
 // Candidates a lexical search also found are deliberately *not* excluded:
 // fusion merges them and adds both contributions, so appearing in both lists
@@ -276,28 +503,81 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 // Returned in its own best-first order, because RRF reads position — an
 // unsorted list would hand arbitrary positions to the fusion step.
 func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate, error) {
-	query := `SELECT full_id, namespace, kind, modality, status, body FROM statements WHERE ` + searchableStatuses
-	args := []interface{}{}
-	if namespace != "" {
-		query += ` AND (namespace = ? OR namespace LIKE ?)`
-		args = append(args, namespace, namespace+"/%")
-	}
-	rows, err := ix.db.Query(query, args...)
+	records, err := ix.embeddableRecords(namespace)
 	if err != nil {
 		return nil, err
 	}
-	type stmt struct {
-		fullID, namespace, kind, status, body string
-		modality                              sql.NullString
+	embeddings, err := ix.AllEmbeddings()
+	if err != nil {
+		return nil, err
 	}
-	var stmts []stmt
+
+	var out []Candidate
+	for _, c := range records {
+		emb, ok := embeddings[EmbKey{c.SourceKind, c.FullID}]
+		if !ok {
+			continue
+		}
+		score := CosineSimilarity(vector, emb.Vector)
+		if score < minSemanticScore {
+			continue
+		}
+		c.Rank = -score
+		c.MatchKind = matchSemantic
+		sim := score
+		c.Similarity = &sim
+		out = append(out, c)
+	}
+	// full_id breaks ties so a statement and a rejection at identical
+	// similarity keep a stable order between runs.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rank != out[j].Rank {
+			return out[i].Rank < out[j].Rank
+		}
+		return out[i].FullID < out[j].FullID
+	})
+	return out, nil
+}
+
+// embeddableRecords returns every record semantic search can rank — the
+// searchable statements and every rejection — as candidates with excerpt and
+// metadata filled in but no rank yet. Shared with the coverage and backfill
+// paths through EmbeddableRecords, so all of them agree on what should carry
+// a vector: a disagreement there would let coverage claim completeness over
+// a set search does not actually cover.
+func (ix *Index) embeddableRecords(namespace string) ([]Candidate, error) {
+	var out []Candidate
+
+	stmtQuery := `SELECT full_id, namespace, kind, modality, status, body,
+			source_file, source_line_start, source_line_end, source_hash
+		FROM statements WHERE ` + searchableStatuses
+	args := []interface{}{}
+	if namespace != "" {
+		stmtQuery += ` AND (namespace = ? OR namespace LIKE ?)`
+		args = append(args, namespace, namespace+"/%")
+	}
+	rows, err := ix.db.Query(stmtQuery, args...)
+	if err != nil {
+		return nil, err
+	}
 	for rows.Next() {
-		var s stmt
-		if err := rows.Scan(&s.fullID, &s.namespace, &s.kind, &s.modality, &s.status, &s.body); err != nil {
+		var c Candidate
+		var kind, status, body string
+		var modality, sourceFile, sourceHash sql.NullString
+		var lineStart, lineEnd sql.NullInt64
+		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body,
+			&sourceFile, &lineStart, &lineEnd, &sourceHash); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		stmts = append(stmts, s)
+		c.SourceKind = sourceKindStatement
+		c.Kind = model.Kind(kind)
+		c.Modality = model.Modality(modality.String)
+		c.Status = model.Status(status)
+		c.Excerpt = searchExcerpt(body)
+		c.SourceFile, c.SourceHash = sourceFile.String, sourceHash.String
+		c.LineStart, c.LineEnd = int(lineStart.Int64), int(lineEnd.Int64)
+		out = append(out, c)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -306,34 +586,109 @@ func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate,
 		return nil, err
 	}
 
-	embeddings, err := ix.AllEmbeddings()
+	rejQuery := `SELECT full_id, namespace, body FROM rejections`
+	rejArgs := []interface{}{}
+	if namespace != "" {
+		rejQuery += ` WHERE (namespace = ? OR namespace LIKE ?)`
+		rejArgs = append(rejArgs, namespace, namespace+"/%")
+	}
+	rejRows, err := ix.db.Query(rejQuery, rejArgs...)
 	if err != nil {
 		return nil, err
 	}
+	for rejRows.Next() {
+		var c Candidate
+		var body string
+		if err := rejRows.Scan(&c.FullID, &c.Namespace, &body); err != nil {
+			rejRows.Close()
+			return nil, err
+		}
+		c.SourceKind = sourceKindRejection
+		c.Excerpt = searchExcerpt(body)
+		out = append(out, c)
+	}
+	if err := rejRows.Close(); err != nil {
+		return nil, err
+	}
+	return out, rejRows.Err()
+}
 
-	var out []Candidate
-	for _, s := range stmts {
-		emb, ok := embeddings[s.fullID]
-		if !ok {
-			continue
-		}
-		score := CosineSimilarity(vector, emb.Vector)
-		if score < minSemanticScore {
-			continue
-		}
-		out = append(out, Candidate{
-			FullID:     s.fullID,
-			Namespace:  s.namespace,
-			SourceKind: sourceKindStatement,
-			Kind:       model.Kind(s.kind),
-			Modality:   model.Modality(s.modality.String),
-			Status:     model.Status(s.status),
-			Excerpt:    searchExcerpt(s.body),
-			Rank:       -score,
-			MatchKind:  matchSemantic,
+// EmbeddableRecord is one record semantic search ranks, for callers outside
+// this package that need to know what should carry a vector.
+type EmbeddableRecord struct {
+	SourceKind string
+	FullID     string
+	Body       string
+}
+
+// EmbeddableRecords lists every record that should carry a vector — the
+// searchable statements plus every rejection — with the body to embed.
+func (ix *Index) EmbeddableRecords(namespace string) ([]EmbeddableRecord, error) {
+	records, err := ix.embeddableRecords(namespace)
+	if err != nil {
+		return nil, err
+	}
+	bodies, err := ix.recordBodies(namespace)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EmbeddableRecord, 0, len(records))
+	for _, c := range records {
+		key := EmbKey{c.SourceKind, c.FullID}
+		out = append(out, EmbeddableRecord{
+			SourceKind: c.SourceKind,
+			FullID:     c.FullID,
+			Body:       bodies[key],
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Rank < out[j].Rank })
+	return out, nil
+}
+
+// recordBodies loads full bodies for the embeddable records. Kept apart from
+// embeddableRecords because every other caller wants an excerpt and would
+// otherwise pay for the whole corpus's prose to produce a short list.
+func (ix *Index) recordBodies(namespace string) (map[EmbKey]string, error) {
+	out := map[EmbKey]string{}
+
+	stmtQuery := `SELECT full_id, body FROM statements WHERE ` + searchableStatuses
+	args := []interface{}{}
+	if namespace != "" {
+		stmtQuery += ` AND (namespace = ? OR namespace LIKE ?)`
+		args = append(args, namespace, namespace+"/%")
+	}
+	rejQuery := `SELECT full_id, body FROM rejections`
+	rejArgs := []interface{}{}
+	if namespace != "" {
+		rejQuery += ` WHERE (namespace = ? OR namespace LIKE ?)`
+		rejArgs = append(rejArgs, namespace, namespace+"/%")
+	}
+
+	for _, src := range []struct {
+		kind, query string
+		args        []interface{}
+	}{
+		{sourceKindStatement, stmtQuery, args},
+		{sourceKindRejection, rejQuery, rejArgs},
+	} {
+		rows, err := ix.db.Query(src.query, src.args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id, body string
+			if err := rows.Scan(&id, &body); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[EmbKey{src.kind, id}] = body
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 
@@ -350,7 +705,8 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 	// makes them a lighter-weight companion precisely so the record of what
 	// was turned down can accumulate cheaply. A retired statement is still
 	// reachable through `list --status deprecated`.
-	query := `SELECT s.full_id, s.namespace, s.kind, s.modality, s.status, s.body, fts.rank
+	query := `SELECT s.full_id, s.namespace, s.kind, s.modality, s.status, s.body,
+			s.source_file, s.source_line_start, s.source_line_end, s.source_hash, fts.rank
 		FROM statements_fts fts
 		JOIN statements s ON s.full_id = fts.full_id
 		WHERE statements_fts MATCH ? AND ` + searchableStatusesCol
@@ -380,8 +736,10 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 	for rows.Next() {
 		var c Candidate
 		var kind, status, body string
-		var modality sql.NullString
-		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body, &c.Rank); err != nil {
+		var modality, sourceFile, sourceHash sql.NullString
+		var lineStart, lineEnd sql.NullInt64
+		if err := rows.Scan(&c.FullID, &c.Namespace, &kind, &modality, &status, &body,
+			&sourceFile, &lineStart, &lineEnd, &sourceHash, &c.Rank); err != nil {
 			return nil, err
 		}
 		c.SourceKind = sourceKindStatement
@@ -389,6 +747,8 @@ func (ix *Index) checkStatements(matchQuery, namespace string, tags []string, sc
 		c.Modality = model.Modality(modality.String)
 		c.Status = model.Status(status)
 		c.Excerpt = searchExcerpt(body)
+		c.SourceFile, c.SourceHash = sourceFile.String, sourceHash.String
+		c.LineStart, c.LineEnd = int(lineStart.Int64), int(lineEnd.Int64)
 		out = append(out, c)
 	}
 	return out, rows.Err()

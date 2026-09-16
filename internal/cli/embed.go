@@ -9,7 +9,7 @@ import (
 
 func newEmbedCmd() *cobra.Command {
 	var vectorJSON, model string
-	var force bool
+	var force, rejection bool
 
 	cmd := &cobra.Command{
 		Use:   "embed <namespace/id>",
@@ -28,7 +28,7 @@ func newEmbedCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := svc.Embed(args[0], model, vec, force)
+			res, err := svc.Embed(args[0], model, vec, force, rejection)
 			if err != nil {
 				return err
 			}
@@ -39,6 +39,7 @@ func newEmbedCmd() *cobra.Command {
 	cmd.Flags().StringVar(&vectorJSON, "vector", "", "JSON array of floats, e.g. [0.01,-0.23,...] (required)")
 	cmd.Flags().StringVar(&model, "model", "", "name of the embedding model that produced the vector (required)")
 	cmd.Flags().BoolVar(&force, "force", false, "re-pin the whole corpus to this model/dims, wiping every existing embedding")
+	cmd.Flags().BoolVar(&rejection, "rejection", false, "store the vector for the rejection with this id rather than the statement")
 	_ = cmd.MarkFlagRequired("vector")
 	_ = cmd.MarkFlagRequired("model")
 

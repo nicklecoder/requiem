@@ -348,10 +348,10 @@ func TestLink_SamePairAgainUpdatesNoteAndStillReindexes(t *testing.T) {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
-	if _, err := s.Link("ns/a", "ns/b", model.RelNotRelated, "first verdict"); err != nil {
+	if _, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "first verdict"); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
-	from, err := s.Link("ns/a", "ns/b", model.RelNotRelated, "revised verdict")
+	from, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "revised verdict")
 	if err != nil {
 		t.Fatalf("relink: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestLink_SamePairAgainUpdatesNoteAndStillReindexes(t *testing.T) {
 		t.Fatalf("expected the one entry's note updated, got %+v", from.Relationships)
 	}
 
-	from, err = s.Link("ns/a", "ns/b", model.RelNotRelated, "")
+	from, err = s.Link("ns/a", "ns/b", model.RelDuplicates, "")
 	if err != nil {
 		t.Fatalf("relink without note: %v", err)
 	}
@@ -490,8 +490,11 @@ func TestGetList_ReflectWritesWithoutExplicitReindex(t *testing.T) {
 	}
 }
 
-func TestReject_AppendsToStore(t *testing.T) {
+// requiem: model/one-file-per-record
+func TestReject_WritesItsOwnFile(t *testing.T) {
 	s := newTestService(t)
+	seedSeeInstead(t, s)
+
 	r, err := s.Reject(RejectParams{
 		ID: "sliding-session-expiration", Namespace: "auth/session",
 		Body:       "Proposed sliding expiration. Rejected: unbounded blast radius on leak.",
@@ -504,12 +507,397 @@ func TestReject_AppendsToStore(t *testing.T) {
 		t.Fatal("expected RejectedAt to be set")
 	}
 
-	got, err := s.Store.ReadRejections("auth/session")
+	got, err := s.Store.ReadRejection("auth/session/sliding-session-expiration")
 	if err != nil {
-		t.Fatalf("ReadRejections: %v", err)
+		t.Fatalf("ReadRejection: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "sliding-session-expiration" {
-		t.Fatalf("unexpected rejections: %+v", got)
+	if got.ID != "sliding-session-expiration" || got.SeeInstead != "auth/session/no-plaintext-tokens" {
+		t.Fatalf("unexpected rejection: %+v", got)
+	}
+
+	path := filepath.Join(s.Store.Root, "statements", "auth", "session", "sliding-session-expiration.rejected.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected the rejection in its own file at %s: %v", path, err)
+	}
+}
+
+// see_instead is the half of a rejection that answers "what was done
+// instead", so a pointer to nothing is refused at the point of writing
+// rather than left to rot unreported.
+// requiem: model/see-instead-is-checked
+func TestReject_RefusesASeeInsteadThatNamesNothing(t *testing.T) {
+	s := newTestService(t)
+	_, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body:       "Rejected: unbounded blast radius on leak.",
+		SeeInstead: "auth/session/does-not-exist",
+	})
+	if err == nil {
+		t.Fatal("expected Reject to refuse a see_instead naming no statement")
+	}
+	if !strings.Contains(err.Error(), "no such statement") {
+		t.Fatalf("error should say the target does not exist, got: %v", err)
+	}
+}
+
+// Discarding a rejection used to be impossible: discard resolved only
+// "<id>.md", so the record stayed and had to be removed with `git rm`.
+func TestDiscard_RemovesARejection(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body: "Rejected: unbounded blast radius on leak.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	res, err := s.Discard("auth/session/sliding-session-expiration")
+	if err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	if len(res.Files) == 0 {
+		t.Fatal("expected Discard to report the rejection file it reverted")
+	}
+	if _, err := s.Store.ReadRejection("auth/session/sliding-session-expiration"); err == nil {
+		t.Fatal("expected the rejection to be gone after discard")
+	}
+}
+
+// A rejection's reasoning can be wrong, and the shared-file layout left no
+// way to correct it.
+func TestUpdateRejection_CorrectsBodyAndRepoints(t *testing.T) {
+	s := newTestService(t)
+	seedSeeInstead(t, s)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body: "Rejected for the wrong reason.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	r, err := s.UpdateRejection("auth/session/sliding-session-expiration", UpdateRejectionParams{
+		Body:       "Rejected: unbounded blast radius on leak, which rotation does not bound.",
+		SeeInstead: "auth/session/no-plaintext-tokens",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRejection: %v", err)
+	}
+	if !strings.Contains(r.Body, "unbounded blast radius") || r.SeeInstead != "auth/session/no-plaintext-tokens" {
+		t.Fatalf("unexpected rejection after update: %+v", r)
+	}
+
+	if _, err := s.UpdateRejection("auth/session/sliding-session-expiration", UpdateRejectionParams{
+		SeeInstead: "auth/session/nope",
+	}); err == nil {
+		t.Fatal("expected re-pointing at a missing statement to be refused")
+	}
+}
+
+// mv rewrote the statement graph but left see_instead pointing at the old
+// id, with nothing reporting the break.
+// requiem: model/see-instead-is-checked
+func TestMove_RewritesRejectionSeeInstead(t *testing.T) {
+	s := newTestService(t)
+	seedSeeInstead(t, s)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-session-expiration", Namespace: "auth/session",
+		Body:       "Rejected: unbounded blast radius on leak.",
+		SeeInstead: "auth/session/no-plaintext-tokens",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	res, err := s.Move("auth/session/no-plaintext-tokens", "auth/tokens/never-plaintext", false, true)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	var sawRejection bool
+	for _, id := range res.UpdatedReferences {
+		if id == "auth/session/sliding-session-expiration" {
+			sawRejection = true
+		}
+	}
+	if !sawRejection {
+		t.Fatalf("expected the rejection among updated references, got %v", res.UpdatedReferences)
+	}
+
+	got, err := s.Store.ReadRejection("auth/session/sliding-session-expiration")
+	if err != nil {
+		t.Fatalf("ReadRejection: %v", err)
+	}
+	if got.SeeInstead != "auth/tokens/never-plaintext" {
+		t.Fatalf("see_instead should follow the move, got %q", got.SeeInstead)
+	}
+
+	dangling, err := s.DanglingPointers()
+	if err != nil {
+		t.Fatalf("DanglingPointers: %v", err)
+	}
+	if len(dangling) != 0 {
+		t.Fatalf("expected no dangling pointers after the move, got %+v", dangling)
+	}
+}
+
+// A rejection with no vector could only ever score the lexical half of the
+// fusion, so every statement outranked every rejection in a --semantic
+// search — in the one command documented to surface rejections first.
+// requiem: retrieval/rejections-embedded
+func TestCheck_SemanticFindsARejectionByMeaning(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "hashed-at-rest", Namespace: "auth", Kind: "rule",
+		Body: "Session tokens are hashed at rest.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-expiry", Namespace: "auth",
+		Body: "Sliding expiry was proposed and rejected: unbounded blast radius on leak.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := s.Embed("auth/hashed-at-rest", "m", []float32{0, 1}, false, false); err != nil {
+		t.Fatalf("Embed statement: %v", err)
+	}
+	if _, err := s.Embed("auth/sliding-expiry", "m", []float32{1, 0}, false, true); err != nil {
+		t.Fatalf("Embed rejection: %v", err)
+	}
+
+	candidates, _, err := s.Check(CheckParams{
+		Namespace: "auth",
+		Text:      "vocabulary sharing nothing whatsoever",
+		Vector:    []float32{1, 0},
+		Model:     "m",
+	})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected the rejection to be found by meaning alone")
+	}
+	top := candidates[0]
+	if top.SourceKind != index.SourceKindRejection || top.FullID != "auth/sliding-expiry" {
+		t.Fatalf("expected the rejection ranked first, got %+v", candidates)
+	}
+	if top.MatchKind != "semantic" {
+		t.Fatalf("expected a semantic match, got %q", top.MatchKind)
+	}
+}
+
+// Staleness was stored and compared on `get` but never travelled with a
+// ranked result, leaving the anti-rot mechanism half-built.
+// requiem: retrieval/staleness-travels-with-results
+func TestCheck_ReportsStaleOnACodeDerivedCandidate(t *testing.T) {
+	s := newTestService(t)
+	src := filepath.Join(s.Root, "billing.go")
+	if err := os.WriteFile(src, []byte("func amount() int {\n\treturn cents\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if _, err := s.Add(AddParams{
+		ID: "integer-cents", Namespace: "billing", Kind: "rule",
+		Body:       "Monetary amounts are stored as integer cents, never floats.",
+		Provenance: "code-derived", Source: "billing.go:1-3",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	candidates, _, err := s.Check(CheckParams{Namespace: "billing", Text: "monetary amounts integer cents"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	fresh := findCandidate(t, candidates, "billing/integer-cents")
+	if fresh.Stale == nil || *fresh.Stale {
+		t.Fatalf("expected stale=false before the source changed, got %+v", fresh.Stale)
+	}
+
+	if err := os.WriteFile(src, []byte("func amount() float64 {\n\treturn dollars\n}\n"), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	candidates, _, err = s.Check(CheckParams{Namespace: "billing", Text: "monetary amounts integer cents"})
+	if err != nil {
+		t.Fatalf("Check after edit: %v", err)
+	}
+	drifted := findCandidate(t, candidates, "billing/integer-cents")
+	if drifted.Stale == nil || !*drifted.Stale {
+		t.Fatalf("expected stale=true once the source range changed, got %+v", drifted.Stale)
+	}
+}
+
+func findCandidate(t *testing.T, candidates []index.Candidate, fullID string) index.Candidate {
+	t.Helper()
+	for _, c := range candidates {
+		if c.FullID == fullID {
+			return c
+		}
+	}
+	t.Fatalf("expected %s among candidates, got %+v", fullID, candidates)
+	return index.Candidate{}
+}
+
+// The check the workflow asks an agent to run by hand, run by the tool at the
+// one moment the corpus can still be kept clean.
+// requiem: model/add-checks-before-writing
+func TestAdd_RefusesADuplicateAndCanBeOverridden(t *testing.T) {
+	s := newTestService(t)
+	body := "Session state lives in Postgres rather than Redis, because it must survive a restart."
+	if _, err := s.Add(AddParams{ID: "session-store", Namespace: "infra", Kind: "design", Body: body}); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+
+	_, err := s.Add(AddParams{
+		ID: "session-storage-choice", Namespace: "infra", Kind: "design",
+		Body: "Session state lives in Postgres rather than Redis, because it has to survive a restart.",
+	})
+	if err == nil {
+		t.Fatal("expected Add to refuse a near-duplicate")
+	}
+	var dup *DuplicateError
+	if !errors.As(err, &dup) {
+		t.Fatalf("expected a DuplicateError, got %T: %v", err, err)
+	}
+	if len(dup.Candidates) == 0 || dup.Candidates[0].FullID != "infra/session-store" {
+		t.Fatalf("expected the existing statement named in the refusal, got %+v", dup.Candidates)
+	}
+	// The refusal has to say how to proceed, or it is just an obstacle.
+	if !strings.Contains(err.Error(), "--duplicate-ok") {
+		t.Fatalf("refusal should name the override, got: %v", err)
+	}
+
+	// Overridden, the same write goes through: requiem states a finding, the
+	// agent still decides.
+	if _, err := s.Add(AddParams{
+		ID: "session-storage-choice", Namespace: "infra", Kind: "design",
+		Body:        "Session state lives in Postgres rather than Redis, because it has to survive a restart.",
+		DuplicateOk: true,
+	}); err != nil {
+		t.Fatalf("Add with DuplicateOk: %v", err)
+	}
+}
+
+func TestAdd_UnrelatedBodyIsNotRefused(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "session-store", Namespace: "infra", Kind: "design",
+		Body: "Session state lives in Postgres rather than Redis, because it must survive a restart.",
+	}); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{
+		ID: "invoice-cents", Namespace: "billing", Kind: "rule",
+		Body: "Monetary amounts are stored as integer cents, never as floating point.",
+	}); err != nil {
+		t.Fatalf("unrelated Add should not be refused: %v", err)
+	}
+}
+
+// The pre-commit notice names the records a commit would approve. A
+// rejection is filed as "<id>.rejected.md", so trimming only ".md" made it
+// offer to approve an id nothing can be looked up by.
+// requiem: model/one-file-per-record
+func TestPendingApproval_NamesARejectionByItsID(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{
+		ID: "sliding-expiry", Namespace: "auth",
+		Body: "Rejected: unbounded blast radius on leak.",
+	}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	pending, err := s.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval: %v", err)
+	}
+	var ids []string
+	found := false
+	for _, p := range pending {
+		ids = append(ids, p.FullID)
+		if p.FullID == "auth/sliding-expiry" {
+			found = true
+		}
+		if strings.HasSuffix(p.FullID, ".rejected") {
+			t.Fatalf("pending change names a file, not a record: %q", p.FullID)
+		}
+	}
+	if !found {
+		t.Fatalf("expected auth/sliding-expiry among pending changes, got %v", ids)
+	}
+}
+
+// One real corpus accumulated 75 not_related edges: permanent noise in a
+// graph people read to understand how decisions fit together.
+// requiem: model/verdicts-are-not-edges
+func TestDismissPair_RecordsAVerdictRatherThanAnEdge(t *testing.T) {
+	s := newTestService(t)
+	for _, tc := range []struct{ id, body string }{
+		{"alpha", "Showtimes are matched on provider_venue_id in the ingest path."},
+		{"beta", "Cinema records collapse by comparing provider_venue_id at import."},
+	} {
+		if _, err := s.Add(AddParams{ID: tc.id, Namespace: "ns", Kind: "rule", Body: tc.body, DuplicateOk: true}); err != nil {
+			t.Fatalf("Add %s: %v", tc.id, err)
+		}
+	}
+
+	v, err := s.DismissPair("ns/beta", "ns/alpha", "same column, unrelated decisions")
+	if err != nil {
+		t.Fatalf("DismissPair: %v", err)
+	}
+	// The pair is stored in sorted order, so it has one identity however it
+	// was named.
+	if v.A != "ns/alpha" || v.B != "ns/beta" {
+		t.Fatalf("expected the pair normalized, got %+v", v)
+	}
+
+	// Nothing was written into either statement.
+	st, err := s.Get("ns/alpha")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(st.Relationships) != 0 || len(st.ReferencedBy) != 0 {
+		t.Fatalf("a dismissal must not touch the graph, got %+v / %+v", st.Relationships, st.ReferencedBy)
+	}
+
+	if _, err := s.Store.ReadVerdict("ns/alpha", "ns/beta"); err != nil {
+		t.Fatalf("expected the verdict on disk: %v", err)
+	}
+
+	// And it can be taken back, returning the pair to the queue.
+	if err := s.RestorePair("ns/alpha", "ns/beta"); err != nil {
+		t.Fatalf("RestorePair: %v", err)
+	}
+	if _, err := s.Store.ReadVerdict("ns/alpha", "ns/beta"); err == nil {
+		t.Fatal("expected the verdict removed after restore")
+	}
+}
+
+func TestLink_RefusesNotRelatedAndNamesTheAlternative(t *testing.T) {
+	s := newTestService(t)
+	for _, tc := range []struct{ id, body string }{
+		{"alpha", "Feed ingestion runs hourly against the provider timetable endpoint."},
+		{"beta", "Invoices are rendered as archival documents for the finance team."},
+	} {
+		if _, err := s.Add(AddParams{ID: tc.id, Namespace: "ns", Kind: "rule", Body: tc.body}); err != nil {
+			t.Fatalf("Add %s: %v", tc.id, err)
+		}
+	}
+
+	_, err := s.Link("ns/alpha", "ns/beta", model.RelNotRelated, "not related")
+	if err == nil {
+		t.Fatal("expected link to refuse not_related")
+	}
+	if !strings.Contains(err.Error(), "dismiss") {
+		t.Fatalf("the refusal should name the command that does this, got: %v", err)
+	}
+}
+
+// seedSeeInstead adds the statement the rejection tests point at, since a
+// see_instead naming nothing is now refused.
+func seedSeeInstead(t *testing.T, s *Service) {
+	t.Helper()
+	if _, err := s.Add(AddParams{
+		ID: "no-plaintext-tokens", Namespace: "auth/session", Kind: "rule",
+		Body: "Session tokens are never stored in plaintext.",
+	}); err != nil {
+		t.Fatalf("Add see_instead target: %v", err)
 	}
 }
 
@@ -725,8 +1113,14 @@ func TestReindex_ReportsCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	if stats.Added != 2 {
-		t.Fatalf("expected 2 added on first reindex, got stats=%+v", stats)
+	// Add indexes as it goes now, because its duplicate check reads the
+	// index first, so by this point some or all of the corpus is already
+	// indexed. What matters is that every record is accounted for — the
+	// split between added and unchanged is an artifact of when the index was
+	// last touched, not a fact about the corpus.
+	// requiem: model/add-checks-before-writing
+	if stats.Added+stats.Unchanged != 2 {
+		t.Fatalf("expected both statements accounted for on first reindex, got stats=%+v", stats)
 	}
 
 	stats, err = s.Reindex()
@@ -752,7 +1146,7 @@ func TestEmbed_GetReflectsFreshMissingStale(t *testing.T) {
 		t.Fatalf("expected missing before any embed call, got %q", got.EmbeddingStatus)
 	}
 
-	if _, err := s.Embed("ns/x", "test-model", []float32{0.1, 0.2, 0.3}, false); err != nil {
+	if _, err := s.Embed("ns/x", "test-model", []float32{0.1, 0.2, 0.3}, false, false); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	got, err = s.Get("ns/x")
@@ -783,13 +1177,13 @@ func TestEmbed_ModelMismatchRequiresForce(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "b"}); err != nil {
 		t.Fatalf("Add b: %v", err)
 	}
-	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3}, false); err != nil {
+	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3}, false, false); err != nil {
 		t.Fatalf("Embed a: %v", err)
 	}
-	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, false); err == nil {
+	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, false, false); err == nil {
 		t.Fatal("expected error embedding with a different model/dims than the corpus is pinned to")
 	}
-	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, true); err != nil {
+	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, true, false); err != nil {
 		t.Fatalf("Embed b with force: %v", err)
 	}
 }
@@ -802,7 +1196,7 @@ func TestList_NeedsEmbeddingFilter(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "missing", Namespace: "ns", Kind: "rule", Body: "has none"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := s.Embed("ns/embedded", "m", []float32{1, 2}, false); err != nil {
+	if _, err := s.Embed("ns/embedded", "m", []float32{1, 2}, false, false); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 
@@ -826,14 +1220,14 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 	// Same vector for both — stands in for two differently-worded
 	// statements an embedding model would judge semantically close, which
 	// lexical FTS (near-zero shared vocabulary) would miss entirely.
-	if _, err := s.Embed("ns/a", "m", []float32{1, 1, 0}, false); err != nil {
+	if _, err := s.Embed("ns/a", "m", []float32{1, 1, 0}, false, false); err != nil {
 		t.Fatalf("Embed a: %v", err)
 	}
-	if _, err := s.Embed("ns/b", "m", []float32{1, 1, 0}, false); err != nil {
+	if _, err := s.Embed("ns/b", "m", []float32{1, 1, 0}, false, false); err != nil {
 		t.Fatalf("Embed b: %v", err)
 	}
 
-	pairs, _, err := s.Audit("", 5, 0, 0)
+	pairs, _, _, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -845,7 +1239,7 @@ func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 		t.Fatalf("Link: %v", err)
 	}
 
-	pairs, _, err = s.Audit("", 5, 0, 0)
+	pairs, _, _, err = s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("second Audit: %v", err)
 	}
@@ -987,7 +1381,7 @@ func TestMove_CarriesEmbeddingToNewID(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "target", Namespace: "auth/session", Kind: "rule", Body: "the body"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := s.Embed("auth/session/target", "m", []float32{1, 0}, false); err != nil {
+	if _, err := s.Embed("auth/session/target", "m", []float32{1, 0}, false, false); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	if _, err := s.Commit("test setup: target"); err != nil {
@@ -1013,7 +1407,14 @@ func TestCheck_DefaultLimitBoundsResultCount(t *testing.T) {
 	s := newTestService(t)
 	for i := 0; i < 15; i++ {
 		id := fmt.Sprintf("rule-%d", i)
-		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: "shared wording across every statement " + id}); err != nil {
+		// These bodies are near-identical on purpose — the point is to
+		// saturate the lexical match — so this is exactly what the override
+		// is for.
+		if _, err := s.Add(AddParams{
+			ID: id, Namespace: "ns", Kind: "rule",
+			Body:        "shared wording across every statement " + id,
+			DuplicateOk: true,
+		}); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
@@ -1143,7 +1544,7 @@ func TestProposedStatus_ParticipatesInCheckAndAudit(t *testing.T) {
 	}
 
 	// The payoff: audit can tell a proposal it opposes a settled decision.
-	pairs, _, err := s.Audit("", 5, 0, 0)
+	pairs, _, _, err := s.Audit("", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}

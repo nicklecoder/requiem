@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/requiem"
 	"github.com/nicklecoder/requiem/internal/trace"
 )
@@ -107,6 +109,74 @@ func warnNearMisses(misses []requiem.NearMiss) {
 		fmt.Fprintf(os.Stderr, "requiem:   %s:%d  requiem: %s\n", m.File, m.Line, m.FullID)
 		fmt.Fprintf(os.Stderr, "requiem:     did you mean %s?\n", m.DidYouMean)
 	}
+}
+
+// warnAuditBacklog reports how much of the queue this page covers.
+//
+// A backlog that refills as it is worked is not a defect — adjudicating a pair
+// frees its slot for the next candidate — but without a total it looks like
+// one: a real corpus went from 415 to 425 outstanding pairs after 97 verdicts,
+// and a queue that appears to grow as you work it gets abandoned.
+// requiem: retrieval/audit-pairs-share-identifiers
+func warnAuditBacklog(shown, remaining int) {
+	if remaining <= shown {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		// requiem:ignore message text, not a label
+		"requiem: showing %d of %d unadjudicated pair(s); each verdict recorded frees its slot for the next candidate\n",
+		shown, remaining)
+}
+
+// warnNothingMatched says so when no candidate rose above a weak match.
+//
+// check always fills its limit, so a page of results is not evidence that any
+// of them is relevant — and an agent had no way to conclude "this idea is
+// new". The verdict field carries this per candidate; this line states the
+// conclusion once, on stderr, where a reader skimming combined output will
+// see it without parsing the payload.
+// requiem: retrieval/calibrated-verdict
+func warnNothingMatched(candidates []index.Candidate) {
+	if len(candidates) == 0 {
+		fmt.Fprintln(os.Stderr, "requiem: no candidates matched — nothing in this namespace resembles the draft") // requiem:ignore message text, not a label
+		return
+	}
+	if index.StrongestVerdict(candidates) == index.VerdictWeak {
+		fmt.Fprintf(os.Stderr,
+			"requiem: %d candidate(s) returned, all weak matches (vocabulary overlap only) — nothing here appears to state this already\n",
+			len(candidates))
+	}
+}
+
+// warnDanglingPointers reports rejections whose see_instead names no
+// statement. A rejection exists to answer "what was done instead", so a
+// pointer resolving to nothing is the one part of it that can rot — and it
+// rotted silently: `mv` rewrote statement relationships but not these, and
+// nothing reported the break.
+// requiem: model/see-instead-is-checked
+func warnDanglingPointers(dangling []index.DanglingPointer) {
+	if len(dangling) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "requiem: %d rejection(s) point at a statement that does not exist:\n", len(dangling))
+	for _, d := range dangling {
+		fmt.Fprintf(os.Stderr, "requiem:   %s: see_instead %s\n", d.Rejection, d.SeeInstead)
+	}
+	fmt.Fprintln(os.Stderr, "requiem: re-point each with `requiem update <id> --rejection --see-instead <statement>`") // requiem:ignore message text, not a label
+}
+
+// warnIndexDiff names the records a reindex added, updated or removed.
+//
+// The counts alone could not be acted on: "removed: 1" with no id left the
+// reader unable to tell what had left the index, and only requiem knows
+// which file path held which record.
+// requiem: cli/index-diffs-name-ids
+func warnIndexDiff(stats index.ReindexStats) {
+	if len(stats.RemovedIDs) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "requiem: %d record(s) removed from the index: %s\n",
+		len(stats.RemovedIDs), strings.Join(stats.RemovedIDs, ", "))
 }
 
 // warnRewrittenRefs reports source files mv edited. Source edits are the one

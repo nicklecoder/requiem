@@ -385,6 +385,52 @@ func (s Statement) Validate() error {
 	return nil
 }
 
+// AuditVerdict records that an agent looked at a candidate pair and judged
+// it unrelated — "seen and dismissed", nothing more.
+//
+// It is stored apart from the statement graph on purpose. Dismissals are not
+// semantic relationships: one real corpus accumulated 75 not_related edges,
+// permanent noise in a structure people read to understand how decisions fit
+// together, each one asserting only that somebody had already looked. A
+// genuine finding — conflicts_with, duplicates, supersedes — stays an edge,
+// because it says something about the decisions themselves.
+// requiem: model/verdicts-are-not-edges
+type AuditVerdict struct {
+	// A and B are the pair, stored in sorted order so a pair has one
+	// identity regardless of which side an agent named first.
+	A         string    `yaml:"a" json:"a"`
+	B         string    `yaml:"b" json:"b"`
+	Verdict   string    `yaml:"verdict" json:"verdict"`
+	DecidedAt time.Time `yaml:"decided_at" json:"decided_at"`
+	Note      string    `yaml:"-" json:"note,omitempty"`
+}
+
+// VerdictNotRelated is the only verdict the store holds; a real relationship
+// belongs in the graph. The field stays open in the file format so a second
+// kind of dismissal would not require changing it.
+const VerdictNotRelated = "not_related"
+
+// NewAuditVerdict normalizes the pair order.
+func NewAuditVerdict(a, b, verdict, note string, decidedAt time.Time) AuditVerdict {
+	if a > b {
+		a, b = b, a
+	}
+	return AuditVerdict{A: a, B: b, Verdict: verdict, DecidedAt: decidedAt, Note: note}
+}
+
+func (v AuditVerdict) Validate() error {
+	if v.A == "" || v.B == "" {
+		return fmt.Errorf("a verdict needs both statement ids")
+	}
+	if v.A == v.B {
+		return fmt.Errorf("a verdict needs two different statements, got %q twice", v.A)
+	}
+	if v.Verdict != VerdictNotRelated {
+		return fmt.Errorf("invalid verdict %q: the verdict store holds %q; a real relationship belongs in the graph via `link`", v.Verdict, VerdictNotRelated)
+	}
+	return nil
+}
+
 // Rejection is a lighter-weight companion to Statement: an idea explicitly
 // considered and rejected, recorded so it isn't re-proposed later. Lives in
 // a per-namespace sister file (_rejected.md), not a full Statement.

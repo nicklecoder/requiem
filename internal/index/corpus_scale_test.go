@@ -80,7 +80,7 @@ func TestRealisticCorpus_FilterReducesMatchSetAndLimitBoundsOutput(t *testing.T)
 		t.Fatalf("expected the saturating term dropped, got: %s", q)
 	}
 
-	results, err := ix.Check("", draft, nil, nil, "", DefaultCheckLimit)
+	results, err := ix.Check("", draft, nil, nil, "", DefaultCheckLimit, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}

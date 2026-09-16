@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,16 @@ type ReindexStats struct {
 	Updated   int `json:"updated"`
 	Removed   int `json:"removed"`
 	Unchanged int `json:"unchanged"`
+	// The ids behind each count, because a bare "removed: 1" cannot be
+	// acted on: the one thing a reader needs to know is *what* left the
+	// index, and only requiem knows which file_path held which record.
+	// Unchanged ids are deliberately absent — that list is the whole corpus
+	// on a normal run, and naming every one of them buries the three that
+	// moved.
+	// requiem: cli/index-diffs-name-ids
+	AddedIDs   []string `json:"added_ids,omitempty"`
+	UpdatedIDs []string `json:"updated_ids,omitempty"`
+	RemovedIDs []string `json:"removed_ids,omitempty"`
 }
 
 type manifestEntry struct {
@@ -95,6 +106,9 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		if _, err := tx.Exec(`DELETE FROM statements_fts WHERE full_id = ?`, fullID); err != nil {
 			return fmt.Errorf("delete stale fts %s: %w", fullID, err)
 		}
+		if err := deleteFacets(tx, sourceKindStatement, fullID); err != nil {
+			return fmt.Errorf("delete stale facets %s: %w", fullID, err)
+		}
 		if err := upsertManifest(tx, sf.RelPath, sf.ModTime, sf.Size); err != nil {
 			return err
 		}
@@ -103,8 +117,10 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		}
 		if existed {
 			stats.Updated++
+			stats.UpdatedIDs = append(stats.UpdatedIDs, fullID)
 		} else {
 			stats.Added++
+			stats.AddedIDs = append(stats.AddedIDs, fullID)
 		}
 		return nil
 	})
@@ -132,14 +148,29 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 			return err
 		}
 		for _, r := range rf.Rejections {
+			// Also delete by id, not just by the file path above: a
+			// rejection can move between files while keeping its id — which
+			// is exactly what migrating one out of a legacy _rejected.md
+			// does — and its old row is not cleaned up until the
+			// stale-manifest sweep further down, which runs after these
+			// inserts. Deleting by path alone therefore collided with the
+			// record's own surviving row. Statements never had this problem
+			// because they have always deleted by id.
+			if err := deleteRejectionByID(tx, r.FullID()); err != nil {
+				return err
+			}
 			if err := insertRejection(tx, r, rf.RelPath); err != nil {
 				return err
 			}
 		}
-		if existed {
-			stats.Updated += len(rf.Rejections)
-		} else {
-			stats.Added += len(rf.Rejections)
+		for _, r := range rf.Rejections {
+			if existed {
+				stats.Updated++
+				stats.UpdatedIDs = append(stats.UpdatedIDs, r.FullID())
+			} else {
+				stats.Added++
+				stats.AddedIDs = append(stats.AddedIDs, r.FullID())
+			}
 		}
 		return nil
 	})
@@ -147,12 +178,45 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		return ReindexStats{}, fmt.Errorf("index rejections: %w", err)
 	}
 
+	// Verdicts: audit dismissals, derived from files under .requiem/verdicts/
+	// exactly as statements are derived from theirs.
+	// requiem: model/verdicts-are-not-edges
+	err = s.WalkVerdictFiles(func(vf store.VerdictFile) error {
+		seen[vf.RelPath] = true
+		old, existed := oldManifest[vf.RelPath]
+		if existed && old.mtime == vf.ModTime.UnixNano() && old.size == vf.Size {
+			stats.Unchanged++
+			return nil
+		}
+		if _, err := tx.Exec(`DELETE FROM verdicts WHERE file_path = ?`, vf.RelPath); err != nil {
+			return fmt.Errorf("delete stale verdict %s: %w", vf.RelPath, err)
+		}
+		if err := upsertManifest(tx, vf.RelPath, vf.ModTime, vf.Size); err != nil {
+			return err
+		}
+		if err := insertVerdict(tx, vf.Verdict, vf.RelPath); err != nil {
+			return err
+		}
+		label := verdictLabel(vf.Verdict.A, vf.Verdict.B)
+		if existed {
+			stats.Updated++
+			stats.UpdatedIDs = append(stats.UpdatedIDs, label)
+		} else {
+			stats.Added++
+			stats.AddedIDs = append(stats.AddedIDs, label)
+		}
+		return nil
+	})
+	if err != nil {
+		return ReindexStats{}, fmt.Errorf("index verdicts: %w", err)
+	}
+
 	// Anything left in oldManifest wasn't seen on this walk — its file is gone.
 	for relPath := range oldManifest {
 		if seen[relPath] {
 			continue
 		}
-		n, err := countRowsForFile(tx, relPath)
+		ids, err := idsForFile(tx, relPath)
 		if err != nil {
 			return ReindexStats{}, err
 		}
@@ -165,11 +229,16 @@ func (ix *Index) reindexOnce(s *store.Store) (ReindexStats, error) {
 		if err := deleteRejectionFTSForFile(tx, relPath); err != nil {
 			return ReindexStats{}, err
 		}
+		if err := deleteFacetsForFile(tx, relPath); err != nil {
+			return ReindexStats{}, err
+		}
 		if err := deleteRowsForFile(tx, relPath); err != nil {
 			return ReindexStats{}, fmt.Errorf("delete removed file %s: %w", relPath, err)
 		}
-		stats.Removed += n
+		stats.Removed += len(ids)
+		stats.RemovedIDs = append(stats.RemovedIDs, ids...)
 	}
+	sort.Strings(stats.RemovedIDs)
 
 	if err := tx.Commit(); err != nil {
 		return ReindexStats{}, err
@@ -196,19 +265,34 @@ func loadManifest(tx *sql.Tx) (map[string]manifestEntry, error) {
 	return out, rows.Err()
 }
 
-// countRowsForFile counts rows across both statements and rejections for a
-// file path — the caller doesn't need to know which kind of file it was.
-func countRowsForFile(tx *sql.Tx, relPath string) (int, error) {
-	var n int
-	row := tx.QueryRow(
-		`SELECT (SELECT COUNT(*) FROM statements WHERE file_path = ?) +
-		        (SELECT COUNT(*) FROM rejections WHERE file_path = ?)`,
-		relPath, relPath,
+// idsForFile lists the ids stored for a file path, across both statements
+// and rejections — the caller doesn't need to know which kind of file it
+// was. Names rather than a bare count, because "removed: 1" with no id is
+// not something a reader can act on.
+// requiem: cli/index-diffs-name-ids
+func idsForFile(tx *sql.Tx, relPath string) ([]string, error) {
+	rows, err := tx.Query(
+		`SELECT full_id FROM statements WHERE file_path = ?
+		 UNION ALL
+		 SELECT full_id FROM rejections WHERE file_path = ?
+		 UNION ALL
+		 SELECT 'verdict(' || a || ', ' || b || ')' FROM verdicts WHERE file_path = ?`,
+		relPath, relPath, relPath,
 	)
-	if err := row.Scan(&n); err != nil {
-		return 0, err
+	if err != nil {
+		return nil, err
 	}
-	return n, nil
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func deleteRowsForFile(tx *sql.Tx, relPath string) error {
@@ -221,8 +305,29 @@ func deleteRowsForFile(tx *sql.Tx, relPath string) error {
 	if _, err := tx.Exec(`DELETE FROM rejections WHERE file_path = ?`, relPath); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM verdicts WHERE file_path = ?`, relPath); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM manifest WHERE file_path = ?`, relPath); err != nil {
 		return err
+	}
+	return nil
+}
+
+// deleteRejectionByID removes one rejection and its FTS row, wherever it is
+// currently filed. A moved record is re-inserted immediately afterwards, so
+// its embedding is deliberately left alone: the body did not change, so the
+// vector computed for it is still valid, and the later removal sweep will
+// not find it either — by then the row names its new file.
+func deleteRejectionByID(tx *sql.Tx, fullID string) error {
+	if _, err := tx.Exec(`DELETE FROM rejections_fts WHERE full_id = ?`, fullID); err != nil {
+		return err
+	}
+	if err := deleteFacets(tx, sourceKindRejection, fullID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM rejections WHERE full_id = ?`, fullID); err != nil {
+		return fmt.Errorf("delete stale rejection %s: %w", fullID, err)
 	}
 	return nil
 }
@@ -327,6 +432,12 @@ func insertStatement(tx *sql.Tx, st model.Statement, relPath string) error {
 	if err != nil {
 		return fmt.Errorf("insert fts %s: %w", fullID, err)
 	}
+	// Facets are derived from the body in the same transaction as the row,
+	// so they cannot drift from it.
+	// requiem: retrieval/identifier-facets
+	if err := replaceFacets(tx, sourceKindStatement, fullID, st.Body); err != nil {
+		return fmt.Errorf("index facets %s: %w", fullID, err)
+	}
 	return nil
 }
 
@@ -347,6 +458,27 @@ func insertRejection(tx *sql.Tx, r model.Rejection, relPath string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("insert rejection fts %s: %w", fullID, err)
+	}
+	// requiem: retrieval/identifier-facets
+	if err := replaceFacets(tx, sourceKindRejection, fullID, r.Body); err != nil {
+		return fmt.Errorf("index rejection facets %s: %w", fullID, err)
+	}
+	return nil
+}
+
+// verdictLabel names a dismissed pair for the reindex diff. A verdict has no
+// id of its own — it is about two records, not one — so the pair is the name.
+func verdictLabel(a, b string) string {
+	return fmt.Sprintf("verdict(%s, %s)", a, b)
+}
+
+func insertVerdict(tx *sql.Tx, v model.AuditVerdict, relPath string) error {
+	_, err := tx.Exec(
+		`INSERT INTO verdicts (a, b, verdict, note, decided_at, file_path) VALUES (?, ?, ?, ?, ?, ?)`,
+		v.A, v.B, v.Verdict, nullIfEmpty(v.Note), v.DecidedAt.Format(timeFormat), relPath,
+	)
+	if err != nil {
+		return fmt.Errorf("insert verdict %s: %w", verdictLabel(v.A, v.B), err)
 	}
 	return nil
 }

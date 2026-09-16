@@ -26,11 +26,12 @@ func newAuditCmd(semantic bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, coverage, err := svc.Audit(namespace, neighbors, limit, minScore)
+			candidates, remaining, coverage, err := svc.Audit(namespace, neighbors, limit, minScore)
 			if err != nil {
 				return err
 			}
 			warnCoverage(coverage)
+			warnAuditBacklog(len(candidates), remaining)
 			contradicting, err := svc.AuditRefs()
 			if err != nil {
 				return err
@@ -41,6 +42,11 @@ func newAuditCmd(semantic bool) *cobra.Command {
 				return err
 			}
 			warnNearMisses(misses)
+			dangling, err := svc.DanglingPointers()
+			if err != nil {
+				return err
+			}
+			warnDanglingPointers(dangling)
 			if candidates == nil {
 				candidates = []index.PairCandidate{}
 			}

@@ -34,6 +34,7 @@ func newReindexCmd(semantic bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnIndexDiff(stats)
 
 			// Reported here because reindex is what scans the tree, and its
 			// nonzero exit lets CI catch a typo on every push rather than
