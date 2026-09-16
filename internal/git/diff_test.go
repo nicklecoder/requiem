@@ -1,6 +1,9 @@
 package git
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const sampleDiff = `diff --git a/internal/ingest/showtimes.go b/internal/ingest/showtimes.go
 index 1111111..2222222 100644
@@ -108,4 +111,41 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+// The pre-image header starts with the same character a removed line does,
+// so reading it as content would put "a/tokens.go" into every patch's removed
+// text. The added side has always had the mirror image of this problem.
+// requiem: traceability/dropped-labels-are-reported
+func TestParseDiff_RemovedLinesExcludeTheFileHeader(t *testing.T) {
+	diff := `diff --git a/tokens.go b/tokens.go
+index 1111111..2222222 100644
+--- a/tokens.go
++++ b/tokens.go
+@@ -1,5 +1,4 @@
+ package auth
+ 
+-// requiem: auth/hashed-tokens
+ func store() {
+-	save()
++	save(hashed())
+ }
+`
+	changes := ParseDiff(diff)
+	if len(changes) != 1 {
+		t.Fatalf("expected one change, got %+v", changes)
+	}
+	removed := changes[0].Removed
+	if !strings.Contains(removed, "// requiem: auth/hashed-tokens") {
+		t.Fatalf("the removed label must be captured, got %q", removed)
+	}
+	if !strings.Contains(removed, "save()") {
+		t.Fatalf("ordinary removed content must be captured, got %q", removed)
+	}
+	if strings.Contains(removed, "a/tokens.go") {
+		t.Fatalf("the --- header must not read as removed content, got %q", removed)
+	}
+	if strings.Contains(changes[0].Added, "b/tokens.go") {
+		t.Fatalf("the +++ header must not read as added content, got %q", changes[0].Added)
+	}
 }

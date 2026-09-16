@@ -22,11 +22,22 @@ type Change struct {
 	// recognizable in what a patch introduces — an identifier, a flag name —
 	// where the surrounding file says nothing about it.
 	Added string
+	// Removed holds the removed lines' text, joined. The post-image cannot
+	// answer what a patch took away, and a deleted label is exactly that:
+	// the one change that makes a decision invisible is invisible to a scan
+	// that only reads what is left.
+	// requiem: traceability/dropped-labels-are-reported
+	Removed string
 }
 
 var (
 	diffFileRe = regexp.MustCompile(`(?m)^\+\+\+ b/(.+)$`)
 	diffHunkRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
+	// diffOldFileRe matches the pre-image header so it is not read as a
+	// removed content line. Mirrors diffFileRe's exposure exactly: a removed
+	// line whose own text is a diff header would be misread, and so would an
+	// added one, which is the price of parsing a diff without a parser.
+	diffOldFileRe = regexp.MustCompile(`^--- (?:a/|/dev/null)`)
 )
 
 // ParseDiff extracts the touched files, their touched line spans, and the
@@ -39,15 +50,17 @@ var (
 func ParseDiff(diff string) []Change {
 	var out []Change
 	var current *Change
-	var added strings.Builder
+	var added, removed strings.Builder
 
 	flush := func() {
 		if current == nil {
 			return
 		}
 		current.Added = added.String()
+		current.Removed = removed.String()
 		out = append(out, *current)
 		added.Reset()
+		removed.Reset()
 		current = nil
 	}
 
@@ -84,6 +97,11 @@ func ParseDiff(diff string) []Change {
 		if strings.HasPrefix(line, "+") {
 			added.WriteString(strings.TrimPrefix(line, "+"))
 			added.WriteString("\n")
+			continue
+		}
+		if strings.HasPrefix(line, "-") && !diffOldFileRe.MatchString(line) {
+			removed.WriteString(strings.TrimPrefix(line, "-"))
+			removed.WriteString("\n")
 		}
 	}
 	flush()

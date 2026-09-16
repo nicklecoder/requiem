@@ -47,6 +47,19 @@ type DiffCoverage struct {
 	Challenged bool `json:"challenged,omitempty"`
 }
 
+// DroppedLabel is a decision whose last code label the patch removes. The
+// files are the ones the label was removed from, which is where a reader
+// goes to put it back.
+// requiem: traceability/dropped-labels-are-reported
+type DroppedLabel struct {
+	FullID string   `json:"full_id"`
+	Files  []string `json:"files,omitempty"`
+	// Modality and Excerpt let a reader judge without a second call, as on
+	// DiffCoverage.
+	Modality model.Modality `json:"modality,omitempty"`
+	Excerpt  string         `json:"excerpt,omitempty"`
+}
+
 // DiffCheck is what `check --diff` answers: given a patch, which recorded
 // decisions bear on it.
 //
@@ -68,6 +81,11 @@ type DiffCheck struct {
 	// retired or rejected decision. These are checkable facts, so they are
 	// what a gate may fail on.
 	Contradictions []ClassifiedRef `json:"contradictions,omitempty"`
+	// Dropped are decisions this patch leaves with no code label at all,
+	// having removed their last one. Also a checkable fact, and the one the
+	// post-image could never answer.
+	// requiem: traceability/dropped-labels-are-reported
+	Dropped []DroppedLabel `json:"dropped,omitempty"`
 	// Gate is the configured mode: off, warn or error.
 	Gate string `json:"gate"`
 }
@@ -85,7 +103,7 @@ func (d *DiffCheck) Failing() bool {
 	if d.Gate != config.GateError {
 		return false
 	}
-	if len(d.Contradictions) > 0 {
+	if len(d.Contradictions) > 0 || len(d.Dropped) > 0 {
 		return true
 	}
 	for _, c := range d.Covering {
@@ -106,6 +124,10 @@ func (d *DiffCheck) Findings() []string {
 		if c.Stale {
 			out = append(out, fmt.Sprintf("%s was derived from code that has changed since", c.FullID))
 		}
+	}
+	for _, d := range d.Dropped {
+		where := strings.Join(d.Files, ", ")
+		out = append(out, fmt.Sprintf("%s lost its last label (removed from %s) and no code references it now", d.FullID, where))
 	}
 	return out
 }
@@ -217,6 +239,55 @@ func (s *Service) CheckDiff(rev string) (*DiffCheck, error) {
 		}
 		add(DiffCoverage{FullID: ref.FullID, Reason: ReasonLabel, File: ref.File, Line: ref.Line})
 	}
+
+	// Labels the patch removes. The only signal here that the post-image
+	// cannot carry: after the change the label is simply not there, and a
+	// scan of what is left cannot tell that from a decision nobody ever
+	// labelled.
+	//
+	// A moved label needs no special case. liveRefs is the tree as it stands
+	// after the change, so a label that travelled between files is still
+	// counted and never reaches the report — which is what makes this safe
+	// on the commonest refactor there is.
+	// requiem: traceability/dropped-labels-are-reported
+	liveRefs := trace.CountByID(refs)
+	droppedIn := map[string]map[string]bool{}
+	for _, c := range changes {
+		// A mention in a .md was never coverage, so losing one loses
+		// nothing. See trace.Kind.
+		if trace.KindOf(c.File) != trace.KindCode {
+			continue
+		}
+		for _, id := range trace.IDsInText(c.Removed) {
+			if liveRefs[id] > 0 {
+				continue
+			}
+			// Each exclusion is a removal that is correct rather than a
+			// loss: an id naming no statement (a rejection or a lookalike
+			// resolves here too), one on a decision already retired, and one
+			// on an abstract statement, which audit asks you to delete.
+			st, ok := byID[id]
+			if !ok || !st.Status.Searchable() || st.Abstract {
+				continue
+			}
+			if droppedIn[id] == nil {
+				droppedIn[id] = map[string]bool{}
+			}
+			droppedIn[id][c.File] = true
+		}
+	}
+	for id, files := range droppedIn {
+		d := DroppedLabel{FullID: id}
+		for f := range files {
+			d.Files = append(d.Files, f)
+		}
+		sort.Strings(d.Files)
+		if st, ok := byID[id]; ok {
+			d.Modality, d.Excerpt = st.Modality, excerpt(st.Body)
+		}
+		out.Dropped = append(out.Dropped, d)
+	}
+	sort.Slice(out.Dropped, func(i, j int) bool { return out.Dropped[i].FullID < out.Dropped[j].FullID })
 
 	// Code-derived statements whose own source range the change touches.
 	for _, st := range statements {
