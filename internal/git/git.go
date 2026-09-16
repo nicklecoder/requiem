@@ -102,6 +102,47 @@ func (c *Client) DiffStaged(paths ...string) (string, error) {
 	return c.run(append([]string{"diff", "--staged", "--"}, paths...)...)
 }
 
+// Diff returns the raw diff for a revision or range — "" means the working
+// tree against HEAD, "--staged" the index, and anything else is passed to git
+// as given ("HEAD~3", "main...HEAD").
+//
+// A patch is the artifact a mature repository actually has when a change is
+// being reviewed, which is why it is worth asking what decisions cover it.
+// requiem: traceability/diff-scoped-check
+func (c *Client) Diff(rev string) (string, error) {
+	return c.run(diffArgs(rev, "")...)
+}
+
+// diffArgs builds the argument list shared by Diff and its name-only form.
+func diffArgs(rev, extra string) []string {
+	args := []string{"diff"}
+	if extra != "" {
+		args = append(args, extra)
+	}
+	switch rev {
+	case "":
+		args = append(args, "HEAD")
+	case "--staged", "--cached":
+		args = append(args, "--staged")
+	default:
+		args = append(args, rev)
+	}
+	return args
+}
+
+// ChangedFiles lists the paths a revision or range touches.
+func (c *Client) ChangedFiles(rev string) ([]string, error) {
+	out, err := c.run(diffArgs(rev, "--name-only")...)
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
 // Commit commits the current state of exactly the given paths — this is
 // the approval step; nothing under those paths is permanent until this
 // runs. Scoping via pathspec means unrelated staged changes elsewhere in

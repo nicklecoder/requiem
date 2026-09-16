@@ -39,6 +39,35 @@ func TestExtractFacets_TakesIdentifiersNotProse(t *testing.T) {
 	}
 }
 
+// requiem's own field names and enum values match the identifier shapes while
+// naming part of requiem rather than anything in the system described. Left
+// in, they flooded a real audit: the top three pairs of this project's own
+// corpus were unrelated statements that happened to mention `must_not`.
+//
+// Frequency cannot catch this — measured here, `must_not` sat in 3 in-scope
+// statements while genuine domain identifiers sat in 2 — so the filter is by
+// provenance, not rarity.
+// requiem: retrieval/facet-vocabulary-excluded
+func TestExtractFacets_ExcludesRequiemsOwnVocabulary(t *testing.T) {
+	body := "Prohibitions carry must_not, a rejection points at see_instead, and every " +
+		"payload includes full_id — while showtimes still match on provider_venue_id."
+
+	got := ExtractFacets(body)
+	index := map[string]bool{}
+	for _, f := range got {
+		index[f] = true
+	}
+
+	for _, vocab := range []string{"must_not", "see_instead", "full_id"} {
+		if index[vocab] {
+			t.Errorf("requiem's own vocabulary %q must not be a facet: %v", vocab, got)
+		}
+	}
+	if !index["provider_venue_id"] {
+		t.Errorf("a domain identifier must survive the filter: %v", got)
+	}
+}
+
 func TestExtractFacets_DropsAbbreviationsAndNoise(t *testing.T) {
 	for _, body := range []string{"Written e.g. like this", "Shortened i.e. so", "a_b"} {
 		for _, f := range ExtractFacets(body) {

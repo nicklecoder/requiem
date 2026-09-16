@@ -92,7 +92,11 @@ func (ix *Index) ensureSchema() error {
 // feature silently does nothing until someone happens to edit each file. That
 // is exactly what happened when facets were added — the whole corpus indexed
 // clean and `check --touches` matched nothing.
-const derivationVersion = "3"
+// Changing how derived data is *extracted* counts too, not just adding a
+// table: tightening the facet extractor left every previously-indexed body
+// carrying its old facets, so the filter appeared to do nothing until this
+// moved.
+const derivationVersion = "4"
 
 // requiem: model/derived-data-is-versioned
 // ensureDerivation rebuilds everything reindex derives from files when the

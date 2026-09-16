@@ -66,7 +66,11 @@ func ExtractFacets(body string) []string {
 	for _, re := range facetPatterns {
 		for _, m := range re.FindAllString(body, -1) {
 			f := normalizeFacet(m)
-			if f == "" || seen[f] {
+			// Filtered on the indexing path only, never in normalizeFacet:
+			// `check --touches see_instead` asks for something deliberately
+			// and must still resolve.
+			// requiem: retrieval/facet-vocabulary-excluded
+			if f == "" || seen[f] || requiemVocabulary[f] {
 				continue
 			}
 			seen[f] = true
@@ -234,4 +238,41 @@ func sharedFacets(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// requiemVocabulary are requiem's own field names and enum values. They match
+// the identifier shapes above while naming part of *requiem's* interface
+// rather than anything in the system a corpus describes: a statement
+// mentioning `must_not` or `see_instead` is talking about how decisions get
+// recorded, so pairing two such statements asserts nothing. Left unfiltered
+// they flooded a real audit — the top three pairs in this project's own
+// corpus were unrelated statements that happened to mention `must_not`.
+//
+// This is not the static stoplist this project rejected for lexical search.
+// That rejection turned on document frequency being the better instrument: a
+// fixed English list cannot catch `token` saturating an auth-heavy corpus,
+// where frequency can. Here frequency measurably does not work — `must_not`
+// sits in 3 in-scope statements of this corpus while genuine domain
+// identifiers sit in 2, so any inverse-frequency weighting ranks the noise
+// above the signal. What separates them is provenance, not rarity, and the
+// one vocabulary requiem can know with certainty is its own.
+//
+// The limit is worth stating plainly: requiem cannot know a user's framework
+// vocabulary this way, which is what maxRecordsPerFacet is for. An identifier
+// named explicitly with `check --touches` is never filtered, since a caller
+// naming one has said that it matters.
+// requiem: retrieval/facet-vocabulary-excluded
+var requiemVocabulary = map[string]bool{
+	// modality and relationship values
+	"must_not": true, "should_not": true,
+	"conflicts_with": true, "depends_on": true, "not_related": true, "moved_to": true,
+	// record fields
+	"full_id": true, "source_kind": true, "see_instead": true, "rejected_at": true,
+	"created_at": true, "line_range": true, "source_hash": true, "source_file": true,
+	"embedding_status": true, "code_refs": true, "covered_via": true, "match_kind": true,
+	"shared_facets": true, "decided_at": true,
+	// flags and config keys
+	"duplicate_ok": true, "needs_embedding": true, "min_score": true, "no_abstract": true,
+	"leave_link": true, "rewrite_refs": true, "api_key_env": true, "batch_size": true,
+	"derivation_version": true,
 }
