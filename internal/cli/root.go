@@ -63,10 +63,30 @@ WORKFLOW
     an exact answer, and "trace --search" still answers from the statement's
     own words where no label exists.
 
+  Starting work in an area
+    brief --namespace <area>
+      The minimal set in force there: must/must_not rules, the principles they
+      refine, and what has already been rejected. Small enough to paste into a
+      prompt, and it counts what the cap left out rather than hiding it.
+
+  With a change in flight
+    check --diff
+      Which recorded decisions bear on this patch — labels inside an edited
+      hunk, statements whose own source range you touched, and records naming
+      an identifier the change adds. Failing a build on it is opt-in per
+      project via "gate.diff" in .requiem/config.yaml.
+
+  Recording many decisions at once
+    batch
+      JSON Lines on stdin, one {"op": ...} per line, with a result per record.
+
   Periodically
     reindex --embed   refresh vectors and rescan labels
-    audit             candidate conflicts and duplicates; record each verdict
-                      with link, so a judged pair stops resurfacing
+    audit             candidate pairs worth judging: ones sharing an identifier
+                      or a source file first, then nearest neighbours. Record a
+                      real finding with "link --type conflicts_with|duplicates";
+                      dismiss an unrelated pair with "dismiss <a> <b>", which
+                      keeps bookkeeping out of the graph
     list --unreferenced   decisions no code implements
     trace <id> --search   what implements a decision, labelled or not
 

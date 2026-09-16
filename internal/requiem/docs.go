@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 14
+const docBlockVersion = 15
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -120,6 +120,16 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"the change touches — which finds a prior decision about",
 	"`external_venues.status` even when it was written in words your draft does",
 	"not use.",
+	"",
+	"**Checking a change rather than a draft.** `requiem check --diff` takes the",
+	"patch instead: it reports the decisions whose labels sit in an edited hunk,",
+	"the ones whose own source range you touched, and any record naming an",
+	"identifier your change adds — rejections listed separately, since walking",
+	"back into a rejected idea is the thing most worth catching. `--staged` and",
+	"`--diff-rev <range>` scope it elsewhere. Failing a build on it is opt-in per",
+	"project (`gate.diff` in `.requiem/config.yaml`), and even then it fails only",
+	"on facts: a label pointing at a retired or rejected decision, or a covering",
+	"statement whose source range has drifted.",
 	"",
 	"**Starting work in an area.** `requiem brief --namespace <area>` returns the",
 	"minimal set in force there: must/must_not rules, the principles they refine,",

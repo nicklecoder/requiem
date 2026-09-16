@@ -1,4 +1,4 @@
-<!-- >>> requiem v13 >>> -->
+<!-- >>> requiem v15 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -67,10 +67,41 @@ Returns ranked, excerpt-only candidates (top 10; `--limit` to change), each
 tagged `statement` or `rejection`. Call `requiem get <namespace/id>` for the
 full body of one that actually matters.
 
+Each candidate carries a `verdict` — `duplicate`, `related` or `weak` — with
+the evidence behind it: the cosine where a vector was compared, and the
+identifiers it shares with your draft. A result set that is entirely `weak`
+is the answer "nothing here states this already"; check always fills its
+limit, so the count of results never meant anything on its own.
+
+`--touches <identifier>` retrieves by identifier — a column, field or symbol
+the change touches — which finds a prior decision about
+`external_venues.status` even when it was written in words your draft does
+not use.
+
+**Checking a change rather than a draft.** `requiem check --diff` takes the
+patch instead: it reports the decisions whose labels sit in an edited hunk,
+the ones whose own source range you touched, and any record naming an
+identifier your change adds — rejections listed separately, since walking
+back into a rejected idea is the thing most worth catching. `--staged` and
+`--diff-rev <range>` scope it elsewhere. Failing a build on it is opt-in per
+project (`gate.diff` in `.requiem/config.yaml`), and even then it fails only
+on facts: a label pointing at a retired or rejected decision, or a covering
+statement whose source range has drifted.
+
+**Starting work in an area.** `requiem brief --namespace <area>` returns the
+minimal set in force there: must/must_not rules, the principles they refine,
+and what has already been rejected. Small enough to paste into a prompt, and
+it counts what the cap left out instead of hiding it.
+
 **Recording outcomes.** Writes auto-stage in git but never auto-commit, so a
 dead end leaves no trace if you back out:
 
-- `requiem add` / `update` / `link` — decisions that stand
+- `requiem add` / `update` / `link` — decisions that stand. `add` runs the
+  duplicate check itself and refuses when the corpus already says this,
+  naming what it found; `--duplicate-ok` records it anyway.
+- `requiem batch` — many writes as JSON Lines on stdin, one `{"op":...}` per
+  line, with a per-record result for each. A malformed line writes nothing;
+  a refused write is reported against its line while the rest apply.
 - `requiem reject` — ideas explicitly considered and rejected, so they aren't re-proposed
 - `requiem mv <from> <to>` — relocate a statement, rewriting inbound references
 - `requiem review` — describe what is staged but not yet committed
@@ -122,12 +153,21 @@ refuses a vector from a different model, since cosine similarity across two
 models is meaningless.
 
 `requiem audit` sweeps the whole corpus for pairs that may conflict or
-duplicate each other, taking each statement's nearest neighbours rather than
-everything above a similarity cutoff — on a real corpus every statement
-shares a vocabulary, so an absolute threshold surfaces most of it or none.
-Record every verdict with
-`requiem link <a> <b> --type conflicts_with|duplicates|not_related` so the
-pair stops resurfacing.
+duplicate each other. Pairs that share an identifier — or come from the same
+source file — rank first, because that is evidence about subject matter
+rather than a guess from wording; the rest are each statement's nearest
+neighbours by embedding. Opposed modality is only a tiebreak: ranking by it
+put 48 unrelated pairs in the top 50 of a real audit. The stderr line says
+how many unadjudicated pairs remain, and every verdict you record frees a
+slot for the next candidate.
+
+Record what you find:
+
+- `requiem link <a> <b> --type conflicts_with|duplicates` — a real finding,
+  which belongs in the graph.
+- `requiem dismiss <a> <b> --note "..."` — seen and unrelated. Stored as a
+  verdict, not an edge, so dismissals never accumulate in the graph you read
+  to understand how decisions fit together. `--restore` takes one back.
 
 **Linking decisions to code.** Label the code that implements a statement so a
 changed decision can report what it affects:

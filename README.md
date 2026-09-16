@@ -52,6 +52,16 @@ requiem reject --id sliding-expiry --namespace auth/session \
 requiem commit
 ```
 
+Two more commands worth knowing early:
+
+```sh
+# The decisions in force in an area — small enough to paste into a prompt.
+requiem brief --namespace auth
+
+# What bears on the change you already have, rather than on a draft.
+requiem check --diff
+```
+
 Full reference: `requiem --help`, or `requiem man --dir man` for man pages.
 
 ## How it works
@@ -66,7 +76,15 @@ exploring a dead end and running `discard` leaves no trace in history.
 
 **Rejections are first-class.** An idea explicitly considered and turned down
 is recorded, so `check` can answer "we already looked at that, and here is
-why" — the single thing most likely to save an agent's time.
+why" — the single thing most likely to save an agent's time. First-class
+literally: one file per rejection like any statement, carrying an embedding so
+meaning-based search ranks it alongside decisions, with its `see_instead`
+pointer validated on write and rewritten when the statement it names moves.
+
+**`add` checks before it writes.** Recording a decision is the last moment the
+corpus can be kept clean, so `add` runs the duplicate check itself and refuses
+when something already says this, naming what it found. `--duplicate-ok`
+records it anyway: requiem states a finding, you still decide.
 
 ### Fields worth knowing
 
@@ -117,6 +135,25 @@ retrieval — found none of five planted paraphrases. Candidates are ranked by
 CSLS, which corrects for the hubs high-dimensional embedding spaces
 generically produce.
 
+**And a note on what similarity cannot do.** On a 255-statement corpus built
+from a real project's history, nearest-neighbour search over 1,936 candidate
+pairs missed three genuine conflicts — and all three shared an identifier
+while sharing almost no wording. So `audit` builds pairs from shared
+identifiers and shared source files first, and `check --touches
+external_venues.status` retrieves by identifier directly. Opposed modality is
+only a tiebreak: ranking by it put 48 unrelated pairs in the top 50, because a
+`must` set against a `must_not` on different subjects is ordinary.
+
+Every `check` result also carries a `verdict` — `duplicate`, `related` or
+`weak` — with the evidence behind it. `check` always fills its limit, so the
+number of results never meant anything; a result set that is entirely `weak`
+is the answer "nothing here states this already".
+
+Record what an audit turns up: `link --type conflicts_with|duplicates` for a
+real finding, and `dismiss <a> <b>` for a pair you have judged unrelated.
+Dismissals are stored as verdicts rather than edges, so bookkeeping never
+accumulates in the graph you read to understand how decisions relate.
+
 ## Linking decisions to code
 
 A marker comment names the statement a piece of code implements:
@@ -165,12 +202,19 @@ Working, and in use on this repository, which tracks its own decisions in
 `.requiem/`. Treat that as the worked example — try `requiem list` or
 `requiem get principles/no-silent-success`.
 
-It has not yet been proven on a large corpus somebody else wrote. The
-mechanisms are measured: paraphrases written in entirely different words rank
-their original first, and duplicate detection recovers them from a few percent
-of candidate pairs. But that was a corpus authored in one sitting, with
-duplicates planted deliberately. Whether it earns its keep on a real
-multi-file specification is the open question.
+It has now had one trial outside this repository: an agent reconstructed a
+corpus of 255 statements from another project's git history and code, then
+planned work against it. Retrieval held up — it found 95% of the overlaps the
+author had predicted, and seven they had not — and the corpus measurably
+improved the plan. The failures were elsewhere, and all of them are fixed
+above: rejections were second-class in the very mechanism meant to surface
+them, `check` could not say whether anything actually matched, dismissals were
+accumulating in the graph as permanent noise, and nothing answered "what
+decisions bear on this patch" at the moment a change existed.
+
+What remains unproven is the long run: whether a corpus stays accurate across
+months of drift, and whether the identifier index earns its keep in a project
+whose vocabulary requiem cannot know in advance.
 
 ## Build
 
