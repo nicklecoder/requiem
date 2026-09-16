@@ -183,6 +183,49 @@ func (ix *Index) FacetsFor(key EmbKey) ([]string, error) {
 	return out, rows.Err()
 }
 
+// FacetRecord is one record carrying a facet, with enough context to report
+// it without a second lookup.
+type FacetRecord struct {
+	SourceKind string
+	FullID     string
+	Excerpt    string
+}
+
+// RecordsWithFacet returns the records naming one identifier — statements and
+// rejections alike, since a patch reintroducing a rejected idea is the case
+// most worth catching.
+// requiem: traceability/diff-scoped-check
+func (ix *Index) RecordsWithFacet(facet string) ([]FacetRecord, error) {
+	f := normalizeFacet(facet)
+	if f == "" {
+		return nil, nil
+	}
+	rows, err := ix.db.Query(
+		`SELECT f.source_kind, f.full_id,
+		        COALESCE(s.body, r.body, '')
+		 FROM facets f
+		 LEFT JOIN statements s ON f.source_kind = 'statement' AND s.full_id = f.full_id
+		 LEFT JOIN rejections r ON f.source_kind = 'rejection' AND r.full_id = f.full_id
+		 WHERE f.facet = ?
+		 ORDER BY f.source_kind, f.full_id`, f)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []FacetRecord
+	for rows.Next() {
+		var rec FacetRecord
+		var body string
+		if err := rows.Scan(&rec.SourceKind, &rec.FullID, &body); err != nil {
+			return nil, err
+		}
+		rec.Excerpt = searchExcerpt(body)
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 // AllFacets loads the whole facet index, keyed by record. Corpus sizes here
 // are hundreds of records with tens of facets each, so holding it in memory
 // for a sweep is cheaper than a query per pair.

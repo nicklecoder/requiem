@@ -3,9 +3,11 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/nicklecoder/requiem/internal/config"
 	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/requiem"
 )
@@ -34,10 +36,10 @@ func checkLong(semantic bool) string {
 }
 
 func newCheckCmd(semantic bool) *cobra.Command {
-	var namespace, text, vectorJSON, model string
+	var namespace, text, vectorJSON, model, diffRev string
 	var tags, touches []string
 	var limit int
-	var useSemantic bool
+	var useSemantic, diff, staged bool
 
 	cmd := &cobra.Command{
 		Use:   "check",
@@ -45,6 +47,36 @@ func newCheckCmd(semantic bool) *cobra.Command {
 		Long:  checkLong(semantic),
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --diff asks a different question — "what decisions bear on this
+			// patch" — so it takes no draft text. A mature repository has a
+			// diff where a new project has an intent document, and that is
+			// the artifact worth checking against.
+			// requiem: traceability/diff-scoped-check
+			if diff || staged || diffRev != "" {
+				if text != "" {
+					return fmt.Errorf("--diff and --text ask different questions: one scopes to a patch, the other to a draft")
+				}
+				rev := diffRev
+				if staged {
+					rev = "--staged"
+				}
+				svc, err := openService()
+				if err != nil {
+					return err
+				}
+				res, err := svc.CheckDiff(rev)
+				if err != nil {
+					return err
+				}
+				if err := printJSON(res); err != nil {
+					return err
+				}
+				return reportDiffGate(res)
+			}
+			if namespace == "" || text == "" {
+				return fmt.Errorf("--namespace and --text are required (or use --diff to scope to a patch instead)")
+			}
+
 			var vec []float32
 			if vectorJSON != "" {
 				if err := json.Unmarshal([]byte(vectorJSON), &vec); err != nil {
@@ -91,13 +123,43 @@ func newCheckCmd(semantic bool) *cobra.Command {
 	cmd.Flags().StringVar(&model, "model", "", "name of the embedding model that produced --vector (required with it)")
 	cmd.Flags().BoolVar(&useSemantic, "semantic", false, "also match by meaning, embedding --text via the configured endpoint")
 	cmd.Flags().IntVar(&limit, "limit", index.DefaultCheckLimit, "maximum candidates to return (0 = unlimited)")
+	cmd.Flags().BoolVar(&diff, "diff", false, "scope to the working tree's changes instead of a draft: which recorded decisions cover this patch")
+	cmd.Flags().BoolVar(&staged, "staged", false, "like --diff, over the staged changes")
+	cmd.Flags().StringVar(&diffRev, "diff-rev", "", "like --diff, over a revision or range (e.g. HEAD~3, main...HEAD)")
 	// --semantic needs an endpoint to embed the query with; --vector does not
 	// and stays available regardless.
 	if !semantic {
 		_ = cmd.Flags().MarkHidden("semantic")
 	}
-	_ = cmd.MarkFlagRequired("namespace")
-	_ = cmd.MarkFlagRequired("text")
-
+	// Not marked required at the cobra level any more: --diff is a valid
+	// invocation with neither, and RunE reports the combination that is not.
 	return cmd
+}
+
+// reportDiffGate writes the human-readable half of a --diff run and returns a
+// nonzero-exit error when the configured gate says to fail.
+//
+// What it fails on is deliberately narrow: code labelled with a retired or
+// rejected decision, and covering statements whose source range has drifted.
+// Both are checkable facts. Failing because a change touches decisions the
+// author may not have read would be a judgment about intent, which this tool
+// refuses to make.
+// requiem: traceability/diff-gate-is-per-project
+func reportDiffGate(res *requiem.DiffCheck) error {
+	findings := res.Findings()
+	if len(res.Covering) > 0 || len(res.Rejections) > 0 {
+		fmt.Fprintf(os.Stderr, "requiem: %d decision(s) and %d rejection(s) bear on this change\n",
+			len(res.Covering), len(res.Rejections))
+	}
+	for _, f := range findings {
+		fmt.Fprintf(os.Stderr, "requiem:   %s\n", f)
+	}
+	if res.Gate == config.GateOff || len(findings) == 0 {
+		return nil
+	}
+	if res.Failing() {
+		return fmt.Errorf("%d finding(s) contradict a recorded decision (gate: error)", len(findings))
+	}
+	fmt.Fprintln(os.Stderr, "requiem: reporting only (gate: warn)")
+	return nil
 }
