@@ -1,4 +1,4 @@
-<!-- >>> requiem v18 >>> -->
+<!-- >>> requiem v19 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -60,12 +60,18 @@ the reasoning cannot match a draft that arrives at it differently.
 previously-rejected ideas:
 
 ```sh
-requiem check --namespace <area> --text "<the idea>"
+requiem check --text "<the idea>"
 ```
 
 Returns ranked, excerpt-only candidates (top 10; `--limit` to change), each
 tagged `statement` or `rejection`. Call `requiem get <namespace/id>` for the
 full body of one that actually matters.
+
+`--namespace <area>` narrows to one namespace and its children. Omit it and
+check searches every namespace, which is the better default: a cross-area
+decision is the one you are least likely to think of looking for, and a
+wrong guess at the scope returns an empty result that reads as "nothing
+here states this".
 
 Each candidate carries a `verdict` — `duplicate`, `related` or `weak` — with
 the evidence behind it: the cosine where a vector was compared, and the
@@ -166,7 +172,7 @@ Add `--semantic` to search by meaning as well as vocabulary — requiem embeds
 the query text for you:
 
 ```sh
-requiem check --namespace <area> --text "<the idea>" --semantic
+requiem check --text "<the idea>" --semantic
 ```
 
 It is opt-in because a plain `check` stays offline and fast. Without an

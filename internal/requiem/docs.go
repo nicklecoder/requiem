@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 18
+const docBlockVersion = 19
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -103,12 +103,18 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"previously-rejected ideas:",
 	"",
 	"```sh",
-	"requiem check --namespace <area> --text \"<the idea>\"",
+	"requiem check --text \"<the idea>\"",
 	"```",
 	"",
 	"Returns ranked, excerpt-only candidates (top 10; `--limit` to change), each",
 	"tagged `statement` or `rejection`. Call `requiem get <namespace/id>` for the",
 	"full body of one that actually matters.",
+	"",
+	"`--namespace <area>` narrows to one namespace and its children. Omit it and",
+	"check searches every namespace, which is the better default: a cross-area",
+	"decision is the one you are least likely to think of looking for, and a",
+	"wrong guess at the scope returns an empty result that reads as \"nothing",
+	"here states this\".",
 	"",
 	"Each candidate carries a `verdict` — `duplicate`, `related` or `weak` — with",
 	"the evidence behind it: the cosine where a vector was compared, and the",
@@ -209,7 +215,7 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"the query text for you:",
 	"",
 	"```sh",
-	"requiem check --namespace <area> --text \"<the idea>\" --semantic",
+	"requiem check --text \"<the idea>\" --semantic",
 	"```",
 	"",
 	"It is opt-in because a plain `check` stays offline and fast. Without an",

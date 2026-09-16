@@ -1653,3 +1653,46 @@ func TestInit_InstallsNonBlockingPrecommitHook(t *testing.T) {
 		t.Fatalf("the hook must no-op quietly when requiem is absent:\n%s", got)
 	}
 }
+
+// The conflicts an agent is least able to anticipate are the ones filed in a
+// namespace it would not have thought to name, and `check` required a
+// namespace — so the only way to ask the question at all was one call per
+// area, with a guess in front of each.
+// requiem: retrieval/check-scope-defaults-to-corpus
+func TestCheck_NoNamespaceSearchesEveryNamespace(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "levers-politics", Namespace: "ai", Kind: "rule",
+		Body: "Political levers adjust faction standing through the director.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{
+		ID: "central-command", Namespace: "factions", Kind: "rule",
+		Body: "Faction standing is issued by central command, never by a lever.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	scoped, _, err := s.Check(CheckParams{Namespace: "ai", Text: "faction standing"})
+	if err != nil {
+		t.Fatalf("scoped Check: %v", err)
+	}
+	for _, c := range scoped {
+		if c.Namespace != "ai" {
+			t.Fatalf("--namespace ai leaked %s into the results", c.FullID)
+		}
+	}
+
+	all, _, err := s.Check(CheckParams{Text: "faction standing"})
+	if err != nil {
+		t.Fatalf("unscoped Check: %v", err)
+	}
+	found := map[string]bool{}
+	for _, c := range all {
+		found[c.FullID] = true
+	}
+	if !found["ai/levers-politics"] || !found["factions/central-command"] {
+		t.Fatalf("an unscoped check must reach every namespace, got %v", found)
+	}
+}

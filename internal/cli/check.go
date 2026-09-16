@@ -73,8 +73,13 @@ func newCheckCmd(semantic bool) *cobra.Command {
 				}
 				return reportDiffGate(res)
 			}
-			if namespace == "" || text == "" {
-				return fmt.Errorf("--namespace and --text are required (or use --diff to scope to a patch instead)")
+			// --namespace is optional: omitted, it searches every
+			// namespace. The decisions an agent is least able to
+			// anticipate are the ones filed where it would not have
+			// thought to look, and a required scope makes it guess first.
+			// requiem: retrieval/check-scope-defaults-to-corpus
+			if text == "" {
+				return fmt.Errorf("--text is required (or use --diff to scope to a patch instead)")
 			}
 
 			var vec []float32
@@ -115,7 +120,7 @@ func newCheckCmd(semantic bool) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to check within (required)")
+	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to check within, with its children; omit to search every namespace")
 	cmd.Flags().StringVar(&text, "text", "", "draft text to check for related/conflicting statements (required)")
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags to narrow the search")
 	cmd.Flags().StringSliceVar(&touches, "touches", nil, "comma-separated identifiers the change touches, e.g. external_venues.status")
@@ -131,8 +136,8 @@ func newCheckCmd(semantic bool) *cobra.Command {
 	if !semantic {
 		_ = cmd.Flags().MarkHidden("semantic")
 	}
-	// Not marked required at the cobra level any more: --diff is a valid
-	// invocation with neither, and RunE reports the combination that is not.
+	// Not marked required at the cobra level: --diff is a valid invocation
+	// with no --text at all, and RunE reports the combination that is not.
 	return cmd
 }
 

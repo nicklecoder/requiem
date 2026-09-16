@@ -30,10 +30,11 @@ is lost if it is deleted.
 WORKFLOW
 
   Before proposing anything non-trivial
-    check --namespace <area> --text "<the idea>"
+    check --text "<the idea>"
       Read the rejections it returns first: they are ideas this project
       already considered and turned down, and re-proposing one is the most
       common way an agent wastes a human's time.
+      Searches every namespace; add --namespace <area> to narrow it.
 
   When a decision is made
     add     the decision, with --modality if it carries normative force
