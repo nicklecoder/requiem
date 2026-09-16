@@ -77,6 +77,7 @@ const (
 	batchOpReject = "reject"
 	batchOpUpdate = "update"
 	batchOpLink   = "link"
+	batchOpUnlink = "unlink"
 )
 
 // maxBatchLineBytes bounds one record, so a file that is not JSONL at all
@@ -176,10 +177,17 @@ func validateBatchRecord(rec BatchRecord) error {
 		if rec.From == "" || rec.To == "" || rec.Type == "" {
 			return fmt.Errorf("link needs from, to and type")
 		}
+	// Type is optional here: an unlink with no type removes every edge
+	// joining the pair, which is the common case.
+	// requiem: model/relationships-are-removable
+	case batchOpUnlink:
+		if rec.From == "" || rec.To == "" {
+			return fmt.Errorf("unlink needs from and to")
+		}
 	case "":
-		return fmt.Errorf("missing op (add, reject, update or link)")
+		return fmt.Errorf("missing op (add, reject, update, link or unlink)")
 	default:
-		return fmt.Errorf("unknown op %q (expected add, reject, update or link)", rec.Op)
+		return fmt.Errorf("unknown op %q (expected add, reject, update, link or unlink)", rec.Op)
 	}
 	return nil
 }
@@ -221,6 +229,12 @@ func (s *Service) applyBatchRecord(rec BatchRecord) (fullID, warning string, err
 			return rec.From, "", err
 		}
 		return rec.From, res.Warning(), nil
+
+	case batchOpUnlink:
+		if _, err := s.Unlink(rec.From, rec.To, model.RelationshipType(rec.Type)); err != nil {
+			return rec.From, "", err
+		}
+		return rec.From, "", nil
 	}
 	// Unreachable: parseBatch rejects an unknown op before anything applies.
 	return "", "", fmt.Errorf("unknown op %q", rec.Op)

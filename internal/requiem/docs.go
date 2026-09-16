@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 22
+const docBlockVersion = 23
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -160,6 +160,13 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- `requiem batch` — many writes as JSON Lines on stdin, one `{\"op\":...}` per",
 	"  line, with a per-record result for each. A malformed line writes nothing;",
 	"  a refused write is reported against its line while the rest apply.",
+	"- `requiem unlink <from> <to> [--type]` — take an edge back. Without",
+	"  `--type` every relationship joining the pair goes; with it, just that",
+	"  one. This is what an audit finding that turned out to be wrong needs:",
+	"  `audit` skips any pair already carrying a relationship, so a stale",
+	"  `conflicts_with` keeps that pair out of the queue for good. Retyping is",
+	"  `unlink` then `link` — a pair can carry two types, so a replacing link",
+	"  would have to guess which one you meant to destroy.",
 	"- `requiem reject` — ideas explicitly considered and rejected, so they aren't re-proposed",
 	"- `requiem mv <from> <to>` — relocate a statement, rewriting inbound references",
 	"- `requiem review` — describe what is staged but not yet committed",
