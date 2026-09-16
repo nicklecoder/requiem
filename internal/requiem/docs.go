@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 20
+const docBlockVersion = 21
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -288,6 +288,10 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"  do X\" is implemented by absence, so there is no site to label. A",
 	"  prohibition enforced by a specific guard is the exception: label the",
 	"  guard. `audit` flags an abstract statement if code references it anyway.",
+	"  It is an assertion nothing can verify, so `list --abstract` shows every",
+	"  one of them: review them the way you would review a file's nolint",
+	"  pragmas, because a statement marked abstract to quiet `--unreferenced`",
+	"  hides a real gap permanently.",
 	"- `list --unreferenced` reports only live decisions. A superseded or",
 	"  deprecated one has no implementation because it was withdrawn, which is",
 	"  true and useless.",

@@ -1798,3 +1798,71 @@ func TestBatch_CarriesTheSupersedesWarningPerRecord(t *testing.T) {
 		t.Fatalf("the refines line has nothing to warn about, got %+v", results[1])
 	}
 }
+
+// --abstract is an unverifiable author assertion that quiets
+// --unreferenced. The one check that existed catches only the declaration
+// falsified by evidence; nothing caught a statement marked abstract to
+// silence the report when it should have been implemented, because reading
+// the declarations at all took a `get` per statement.
+// requiem: traceability/abstract-declarations-are-reviewable
+func TestList_AbstractNarrowsToTheDeclaredSuppressions(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "agent-native", Namespace: "ns", Kind: "principle",
+		Body: "The primary consumer is an agent.", Abstract: true,
+	}); err != nil {
+		t.Fatalf("Add abstract: %v", err)
+	}
+	if _, err := s.Add(AddParams{
+		ID: "integer-cents", Namespace: "ns", Kind: "rule",
+		Body: "Monetary amounts are integer cents.",
+	}); err != nil {
+		t.Fatalf("Add concrete: %v", err)
+	}
+
+	all, err := s.List(ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected both statements unfiltered, got %d", len(all))
+	}
+
+	abstract, err := s.List(ListFilter{Abstract: true})
+	if err != nil {
+		t.Fatalf("List --abstract: %v", err)
+	}
+	if len(abstract) != 1 || abstract[0].FullID != "ns/agent-native" {
+		t.Fatalf("expected only the abstract statement, got %+v", abstract)
+	}
+}
+
+// The filter has to compose with the others, or reviewing the suppressions
+// in one area means reading every one in the corpus.
+// requiem: traceability/abstract-declarations-are-reviewable
+func TestList_AbstractComposesWithTheOtherFilters(t *testing.T) {
+	s := newTestService(t)
+	for _, spec := range []struct {
+		id, ns   string
+		abstract bool
+	}{
+		{"one", "alpha", true},
+		{"two", "alpha", false},
+		{"three", "beta", true},
+	} {
+		if _, err := s.Add(AddParams{
+			ID: spec.id, Namespace: spec.ns, Kind: "rule",
+			Body: spec.id, Abstract: spec.abstract,
+		}); err != nil {
+			t.Fatalf("Add %s: %v", spec.id, err)
+		}
+	}
+
+	got, err := s.List(ListFilter{Namespace: "alpha", Abstract: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].FullID != "alpha/one" {
+		t.Fatalf("expected alpha's one abstract statement, got %+v", got)
+	}
+}

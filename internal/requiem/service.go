@@ -817,6 +817,13 @@ type ListFilter struct {
 	// inference — refiners may implement only part of what they refine — so
 	// the unfiltered answer stays reachable rather than being replaced.
 	Direct bool
+	// Abstract, when true, narrows results to statements declared
+	// unimplementable by their author. That declaration suppresses
+	// Unreferenced and nothing can verify it, so the one thing it must not
+	// be is unreviewable — the same reason every linter shipping a nolint
+	// pragma grows a way to list them.
+	// requiem: traceability/abstract-declarations-are-reviewable
+	Abstract bool
 }
 
 // List returns compact summaries of every statement matching filter. Like
@@ -868,6 +875,14 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			summary.CodeRefs = &n
 		}
 		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
+			continue
+		}
+		// A filter rather than a field on the summary: a bool that is false
+		// for nine rows in ten costs context in every result an agent reads,
+		// to answer a question asked during review and almost never
+		// otherwise.
+		// requiem: traceability/abstract-declarations-are-reviewable
+		if filter.Abstract && !st.Abstract {
 			continue
 		}
 		if filter.Unreferenced {

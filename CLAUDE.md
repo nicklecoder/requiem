@@ -1,4 +1,4 @@
-<!-- >>> requiem v20 >>> -->
+<!-- >>> requiem v21 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -245,6 +245,10 @@ the statement holds, where a comment only asserts intent.
   do X" is implemented by absence, so there is no site to label. A
   prohibition enforced by a specific guard is the exception: label the
   guard. `audit` flags an abstract statement if code references it anyway.
+  It is an assertion nothing can verify, so `list --abstract` shows every
+  one of them: review them the way you would review a file's nolint
+  pragmas, because a statement marked abstract to quiet `--unreferenced`
+  hides a real gap permanently.
 - `list --unreferenced` reports only live decisions. A superseded or
   deprecated one has no implementation because it was withdrawn, which is
   true and useless.
