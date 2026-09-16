@@ -323,10 +323,11 @@ func TestLink_RequiresBothEndsToExist(t *testing.T) {
 	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "b"}); err != nil {
 		t.Fatalf("Add b: %v", err)
 	}
-	from, err := s.Link("ns/a", "ns/b", model.RelDependsOn, "a needs b")
+	res, err := s.Link("ns/a", "ns/b", model.RelDependsOn, "a needs b")
 	if err != nil {
 		t.Fatalf("Link: %v", err)
 	}
+	from := res.Statement
 	if len(from.Relationships) != 1 || from.Relationships[0].To != "ns/b" || from.Relationships[0].Type != model.RelDependsOn {
 		t.Fatalf("unexpected relationships: %+v", from.Relationships)
 	}
@@ -351,26 +352,29 @@ func TestLink_SamePairAgainUpdatesNoteAndStillReindexes(t *testing.T) {
 	if _, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "first verdict"); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
-	from, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "revised verdict")
+	res, err := s.Link("ns/a", "ns/b", model.RelDuplicates, "revised verdict")
 	if err != nil {
 		t.Fatalf("relink: %v", err)
 	}
+	from := res.Statement
 	if len(from.Relationships) != 1 || from.Relationships[0].Note != "revised verdict" {
 		t.Fatalf("expected the one entry's note updated, got %+v", from.Relationships)
 	}
 
-	from, err = s.Link("ns/a", "ns/b", model.RelDuplicates, "")
+	res, err = s.Link("ns/a", "ns/b", model.RelDuplicates, "")
 	if err != nil {
 		t.Fatalf("relink without note: %v", err)
 	}
+	from = res.Statement
 	if len(from.Relationships) != 1 || from.Relationships[0].Note != "revised verdict" {
 		t.Fatalf("an empty note must keep the recorded one, got %+v", from.Relationships)
 	}
 
-	from, err = s.Link("ns/a", "ns/b", model.RelConflictsWith, "")
+	res, err = s.Link("ns/a", "ns/b", model.RelConflictsWith, "")
 	if err != nil {
 		t.Fatalf("link with a second type: %v", err)
 	}
+	from = res.Statement
 	if len(from.Relationships) != 2 {
 		t.Fatalf("a different type on the same pair is a separate relationship, got %+v", from.Relationships)
 	}
@@ -1694,5 +1698,103 @@ func TestCheck_NoNamespaceSearchesEveryNamespace(t *testing.T) {
 	}
 	if !found["ai/levers-politics"] || !found["factions/central-command"] {
 		t.Fatalf("an unscoped check must reach every namespace, got %v", found)
+	}
+}
+
+// Recording that A supersedes B left B active, and Status.Searchable() is
+// true for active — so check and audit went on offering a withdrawn decision
+// as one in force. The status stays the author's call (a migration window is
+// a real state), which makes saying so out loud the entire fix.
+// requiem: model/supersedes-does-not-retire
+func TestLink_SupersedesWarnsTheTargetIsStillActive(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"new-way", "old-way"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+
+	res, err := s.Link("ns/new-way", "ns/old-way", model.RelSupersedes, "")
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if res.SupersededTargetActive != "ns/old-way" {
+		t.Fatalf("expected the still-active target named, got %q", res.SupersededTargetActive)
+	}
+	if w := res.Warning(); !strings.Contains(w, "ns/old-way") || !strings.Contains(w, "--status superseded") {
+		t.Fatalf("the warning must name the target and the command that retires it, got %q", w)
+	}
+
+	// The status itself is left alone: requiem records what it is told.
+	target, err := s.Store.ReadStatement("ns/old-way")
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if target.Status != model.StatusActive {
+		t.Fatalf("link must not change the target's status, got %q", target.Status)
+	}
+
+	// Once retired, there is nothing left to warn about.
+	if _, err := s.Update("ns/old-way", UpdateParams{Status: string(model.StatusSuperseded)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	again, err := s.Link("ns/new-way", "ns/old-way", model.RelSupersedes, "")
+	if err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+	if w := again.Warning(); w != "" {
+		t.Fatalf("a retired target needs no warning, got %q", w)
+	}
+}
+
+// Every other relationship type says nothing about the target's status, so a
+// warning on one would be noise on the common path.
+// requiem: model/supersedes-does-not-retire
+func TestLink_OtherTypesWarnAboutNothing(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	for _, rt := range []model.RelationshipType{
+		model.RelRefines, model.RelDependsOn, model.RelConflictsWith, model.RelDuplicates,
+	} {
+		res, err := s.Link("ns/a", "ns/b", rt, "")
+		if err != nil {
+			t.Fatalf("Link %s: %v", rt, err)
+		}
+		if w := res.Warning(); w != "" {
+			t.Fatalf("%s must not warn, got %q", rt, w)
+		}
+	}
+}
+
+// A batch of fifty links that warned on stderr could not say which line the
+// warning belonged to; the result record already is that address.
+// requiem: model/supersedes-does-not-retire
+func TestBatch_CarriesTheSupersedesWarningPerRecord(t *testing.T) {
+	s := newTestService(t)
+	for _, id := range []string{"new-way", "old-way", "principle"} {
+		if _, err := s.Add(AddParams{ID: id, Namespace: "ns", Kind: "rule", Body: id}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	in := strings.NewReader(
+		`{"op":"link","from":"ns/new-way","to":"ns/old-way","type":"supersedes"}` + "\n" +
+			`{"op":"link","from":"ns/new-way","to":"ns/principle","type":"refines"}` + "\n")
+
+	results, err := s.BatchApply(in)
+	if err != nil {
+		t.Fatalf("BatchApply: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected two results, got %+v", results)
+	}
+	if !results[0].Applied || !strings.Contains(results[0].Warning, "ns/old-way") {
+		t.Fatalf("the supersedes line must carry the warning, got %+v", results[0])
+	}
+	if results[1].Warning != "" {
+		t.Fatalf("the refines line has nothing to warn about, got %+v", results[1])
 	}
 }

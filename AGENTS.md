@@ -1,4 +1,4 @@
-<!-- >>> requiem v19 >>> -->
+<!-- >>> requiem v20 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -140,6 +140,12 @@ Answer it by adding the decision, then:
 requiem link <decision> <question> --type supersedes
 requiem update <question> --status superseded
 ```
+
+Both steps are needed: `link` records the edge and deliberately leaves the
+target's status alone, because a decision can supersede another while that
+one stays in force through a migration window. It says so on stderr, since
+an `active` statement keeps turning up in `check` and `audit` as a decision
+still in force.
 
 That keeps the question's history instead of erasing it. Six research agents on
 one real project produced about 120 open questions and recorded five, because

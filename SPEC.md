@@ -193,7 +193,7 @@ What it does not buy, and must not claim to: conflict detection. Contradiction r
 | `brief` | `[--namespace] [--limit]` | the minimal set in force: `must`/`must_not` rules (prohibitions first), the principles they refine, and the rejections in scope, each section capped with whatever was cut counted in `omitted` |
 | `batch` | JSON Lines on stdin | one result per record. A malformed line writes nothing at all; a refused write is reported against its line while the rest apply. Exits nonzero if any record failed |
 | `dismiss` | `<a> <b> [--note] [--restore]` | records that a candidate pair was judged unrelated, as a verdict rather than an edge |
-| `link` | `<from-id> <to-id> --type [--note]` | confirmation |
+| `link` | `<from-id> <to-id> --type [--note]` | confirmation. `supersedes` records the edge and leaves the target's status alone — a decision can supersede another while that one stays in force through a migration window — and warns on stderr when the target is still searchable, naming the `update --status superseded` that retires it |
 | `reject` | `--id --namespace --body [--see-instead]` | created rejection |
 | `get` | `<id>` | full statement incl. resolved relationships, `stale` flag if code-derived |
 | `list` | `[--namespace] [--kind] [--status] [--tag] [--needs-embedding] [--unreferenced] [--direct]` | array of compact summaries |

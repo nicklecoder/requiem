@@ -50,6 +50,16 @@ func warnCoverage(c requiem.Coverage) {
 	}
 }
 
+// warnLink reports what a recorded relationship leaves for the caller to do.
+// Requiem does not act on the consequence itself (see
+// model/supersedes-does-not-retire), which makes saying so the whole
+// mechanism rather than a nicety.
+func warnLink(res *requiem.LinkResult) {
+	if w := res.Warning(); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
+}
+
 // warnBlastRadius reports the labelled code sites affected by a body change.
 // This is the payoff of traceability, and it goes to stderr rather than
 // requiring a separate `trace` call: an agent that has to know to ask will

@@ -62,6 +62,13 @@ type BatchResult struct {
 	FullID  string `json:"full_id,omitempty"`
 	Applied bool   `json:"applied"`
 	Error   string `json:"error,omitempty"`
+
+	// Warning is a record that applied but left the caller something to do —
+	// today, a supersedes link whose target is still in force. Carried per
+	// record rather than on stderr because a batch of fifty links needs to
+	// say *which* one, and the result line already is that address.
+	// requiem: model/supersedes-does-not-retire
+	Warning string `json:"warning,omitempty"`
 }
 
 // Batch ops.
@@ -100,8 +107,9 @@ func (s *Service) BatchApply(r io.Reader) ([]BatchResult, error) {
 	results := make([]BatchResult, 0, len(records))
 	for i, rec := range records {
 		res := BatchResult{Line: lines[i], Op: rec.Op}
-		fullID, err := s.applyBatchRecord(rec)
+		fullID, warning, err := s.applyBatchRecord(rec)
 		res.FullID = fullID
+		res.Warning = warning
 		if err != nil {
 			res.Error = err.Error()
 		} else {
@@ -176,7 +184,7 @@ func validateBatchRecord(rec BatchRecord) error {
 	return nil
 }
 
-func (s *Service) applyBatchRecord(rec BatchRecord) (string, error) {
+func (s *Service) applyBatchRecord(rec BatchRecord) (fullID, warning string, err error) {
 	switch rec.Op {
 	case batchOpAdd:
 		st, err := s.Add(AddParams{
@@ -186,35 +194,36 @@ func (s *Service) applyBatchRecord(rec BatchRecord) (string, error) {
 			Source: rec.Source, DuplicateOk: rec.DuplicateOk,
 		})
 		if err != nil {
-			return rec.Namespace + "/" + rec.ID, err
+			return rec.Namespace + "/" + rec.ID, "", err
 		}
-		return st.FullID(), nil
+		return st.FullID(), "", nil
 
 	case batchOpReject:
 		r, err := s.Reject(RejectParams{
 			ID: rec.ID, Namespace: rec.Namespace, Body: rec.Body, SeeInstead: rec.SeeInstead,
 		})
 		if err != nil {
-			return rec.Namespace + "/" + rec.ID, err
+			return rec.Namespace + "/" + rec.ID, "", err
 		}
-		return r.FullID(), nil
+		return r.FullID(), "", nil
 
 	case batchOpUpdate:
 		if _, err := s.Update(rec.FullID, UpdateParams{
 			Body: rec.Body, Status: rec.Status, Modality: rec.Modality,
 		}); err != nil {
-			return rec.FullID, err
+			return rec.FullID, "", err
 		}
-		return rec.FullID, nil
+		return rec.FullID, "", nil
 
 	case batchOpLink:
-		if _, err := s.Link(rec.From, rec.To, model.RelationshipType(rec.Type), rec.Note); err != nil {
-			return rec.From, err
+		res, err := s.Link(rec.From, rec.To, model.RelationshipType(rec.Type), rec.Note)
+		if err != nil {
+			return rec.From, "", err
 		}
-		return rec.From, nil
+		return rec.From, res.Warning(), nil
 	}
 	// Unreachable: parseBatch rejects an unknown op before anything applies.
-	return "", fmt.Errorf("unknown op %q", rec.Op)
+	return "", "", fmt.Errorf("unknown op %q", rec.Op)
 }
 
 // BatchFailures counts the records that did not apply, for the caller's exit

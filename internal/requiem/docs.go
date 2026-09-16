@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 19
+const docBlockVersion = 20
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -183,6 +183,12 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"requiem link <decision> <question> --type supersedes",
 	"requiem update <question> --status superseded",
 	"```",
+	"",
+	"Both steps are needed: `link` records the edge and deliberately leaves the",
+	"target's status alone, because a decision can supersede another while that",
+	"one stays in force through a migration window. It says so on stderr, since",
+	"an `active` statement keeps turning up in `check` and `audit` as a decision",
+	"still in force.",
 	"",
 	"That keeps the question's history instead of erasing it. Six research agents on",
 	"one real project produced about 120 open questions and recorded five, because",
