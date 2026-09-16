@@ -35,7 +35,8 @@ func (c Coverage) Warning() string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"requiem: warning: %d of %d in-scope records lack a fresh embedding (%d missing, %d stale); results are incomplete — run `requiem reindex --embed`",
+		"requiem: warning: %d of %d in-scope records lack a fresh embedding "+ // requiem:ignore message text, not a label
+			"(%d missing, %d stale); results are incomplete — run `requiem reindex --embed`",
 		c.Shortfall(), c.Total, c.Missing, c.Stale)
 }
 

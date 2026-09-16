@@ -238,7 +238,7 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"changed decision can report what it affects:",
 	"",
 	"```go",
-	"// requiem: auth/session/no-plaintext-tokens",
+	"// requiem: auth/session/no-plaintext-tokens", // requiem:ignore documentation example, and the marker must stay inside the string
 	"func storeToken(...) { ... }",
 	"```",
 	"",

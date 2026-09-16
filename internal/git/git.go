@@ -1,7 +1,7 @@
 // Package git wraps the real `git` binary via os/exec — deliberately not a
 // pure-Go reimplementation, since hooks (wired in at M6) need to behave
 // exactly like the user's actual git. git-on-PATH is already a hard
-// dependency for requiem: it's the sole history mechanism (see SPEC.md).
+// dependency for requiem — it is the sole history mechanism (see SPEC.md).
 package git
 
 import (

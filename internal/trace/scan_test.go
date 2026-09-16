@@ -166,7 +166,7 @@ func TestScan_ToleratesTheSpacingAndCaseAHandProduces(t *testing.T) {
 		"// " + marker + " ns/rule",   // canonical
 		"# " + marker + "ns/rule",     // no space
 		"-- " + marker + "   ns/rule", // several spaces
-		"; requiem  : ns/rule",        // space before the colon
+		"; requiem  : ns/rule",        // space before the colon; requiem:ignore this fixture has to hold a literal marker
 		"/* Requiem: ns/rule */",      // capitalised, mid-sentence
 		"<!-- REQUIEM:\tns/rule -->",  // shouted, tab-separated
 	} {

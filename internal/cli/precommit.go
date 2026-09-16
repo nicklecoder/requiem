@@ -37,7 +37,7 @@ func newPrecommitCmd() *cobra.Command {
 			if err != nil || len(pending) == 0 {
 				return nil
 			}
-			fmt.Fprintf(os.Stderr, "requiem: this commit also approves %d pending statement change(s):\n", len(pending))
+			fmt.Fprintf(os.Stderr, "requiem: this commit also approves %d pending statement change(s):\n", len(pending)) // requiem:ignore message text, not a label
 			for _, p := range pending {
 				fmt.Fprintf(os.Stderr, "requiem:   %s %s\n", p.Change, p.FullID)
 			}

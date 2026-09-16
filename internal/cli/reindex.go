@@ -87,9 +87,9 @@ func newReindexCmd(semantic bool) *cobra.Command {
 // then trust an audit built on part of it.
 func reportEmbedResult(res *requiem.EmbedAllResult) error {
 	if res.Repinned {
-		fmt.Fprintln(os.Stderr, "requiem: re-pinned the corpus to a new model; every previous vector was discarded")
+		fmt.Fprintln(os.Stderr, "requiem: re-pinned the corpus to a new model; every previous vector was discarded") // requiem:ignore message text, not a label
 	}
-	fmt.Fprintf(os.Stderr, "requiem: embedded %d, skipped %d already fresh", res.Embedded, res.Skipped)
+	fmt.Fprintf(os.Stderr, "requiem: embedded %d, skipped %d already fresh", res.Embedded, res.Skipped) // requiem:ignore message text, not a label
 	if res.Failed == 0 {
 		fmt.Fprintln(os.Stderr)
 		return nil
@@ -98,6 +98,6 @@ func reportEmbedResult(res *requiem.EmbedAllResult) error {
 	for _, line := range res.GroupedFailures() {
 		fmt.Fprintf(os.Stderr, "requiem:   %s\n", line)
 	}
-	fmt.Fprintln(os.Stderr, "requiem: re-run to retry only the failures — vectors already written are kept")
+	fmt.Fprintln(os.Stderr, "requiem: re-run to retry only the failures — vectors already written are kept") // requiem:ignore message text, not a label
 	return fmt.Errorf("%d statement(s) could not be embedded", res.Failed)
 }
