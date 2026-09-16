@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 17
+const docBlockVersion = 18
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -222,9 +222,13 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"source file — rank first, because that is evidence about subject matter",
 	"rather than a guess from wording; the rest are each statement's nearest",
 	"neighbours by embedding. Opposed modality is only a tiebreak: ranking by it",
-	"put 48 unrelated pairs in the top 50 of a real audit. The stderr line says",
-	"how many unadjudicated pairs remain, and every verdict you record frees a",
-	"slot for the next candidate.",
+	"put 48 unrelated pairs in the top 50 of a real audit.",
+	"",
+	"The stderr line reports two numbers: pairs outstanding, and how many",
+	"statements have been swept at the current depth. The second is the one that",
+	"rises as you work, because each statement's window is fixed — judging a pair",
+	"removes it for good rather than promoting the next-nearest neighbour into its",
+	"place. Once a namespace is clear, `--neighbors 5` sweeps deeper.",
 	"",
 	"Record what you find:",
 	"",

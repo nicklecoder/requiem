@@ -1038,26 +1038,26 @@ func (s *Service) Embed(fullID, embModel string, vec []float32, force, rejection
 // them: SPEC's output convention keeps stdout as bare data with no envelope
 // to unwrap, so the shortfall travels as a second return value and reaches
 // the user on stderr. A Go signature is not the JSON payload.
-func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64) ([]index.PairCandidate, int, Coverage, error) {
+func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64) ([]index.PairCandidate, index.AuditProgress, Coverage, error) {
 	ix, err := s.openIndex()
 	if err != nil {
-		return nil, 0, Coverage{}, err
+		return nil, index.AuditProgress{}, Coverage{}, err
 	}
 	defer ix.Close()
 
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, 0, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
+		return nil, index.AuditProgress{}, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
 	}
 
-	pairs, remaining, err := ix.FindCandidatePairs(namespace, neighbors, limit, minScore)
+	pairs, progress, err := ix.FindCandidatePairs(namespace, neighbors, limit, minScore)
 	if err != nil {
-		return nil, 0, Coverage{}, err
+		return nil, progress, Coverage{}, err
 	}
 	cov, err := embeddingCoverage(ix, namespace)
 	if err != nil {
-		return nil, 0, Coverage{}, err
+		return nil, progress, Coverage{}, err
 	}
-	return pairs, remaining, cov, nil
+	return pairs, progress, cov, nil
 }
 
 // DismissPair records that a candidate pair was looked at and judged

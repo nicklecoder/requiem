@@ -26,12 +26,12 @@ func newAuditCmd(semantic bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, remaining, coverage, err := svc.Audit(namespace, neighbors, limit, minScore)
+			candidates, progress, coverage, err := svc.Audit(namespace, neighbors, limit, minScore)
 			if err != nil {
 				return err
 			}
 			warnCoverage(coverage)
-			warnAuditBacklog(len(candidates), remaining)
+			warnAuditBacklog(len(candidates), progress)
 			contradicting, err := svc.AuditRefs()
 			if err != nil {
 				return err

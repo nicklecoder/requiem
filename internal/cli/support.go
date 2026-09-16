@@ -118,13 +118,20 @@ func warnNearMisses(misses []requiem.NearMiss) {
 // one: a real corpus went from 415 to 425 outstanding pairs after 97 verdicts,
 // and a queue that appears to grow as you work it gets abandoned.
 // requiem: retrieval/audit-pairs-share-identifiers
-func warnAuditBacklog(shown, remaining int) {
-	if remaining <= shown {
+func warnAuditBacklog(shown int, p index.AuditProgress) {
+	if p.Remaining == 0 && p.Statements == 0 {
 		return
 	}
+	// Both numbers, because one of them moves as work is done and the other
+	// is the size of the job. Remaining alone was the misleading half:
+	// fifteen verdicts once took it from 93 to 92.
+	// requiem: retrieval/audit-queue-drains
 	fmt.Fprintf(os.Stderr,
-		"requiem: showing %d of %d unadjudicated pair(s); each verdict recorded frees its slot for the next candidate\n", // requiem:ignore message text, not a label
-		shown, remaining)
+		"requiem: showing %d of %d unadjudicated pair(s); %d of %d statement(s) swept at depth %d\n", // requiem:ignore message text, not a label
+		shown, p.Remaining, p.Swept, p.Statements, p.Depth)
+	if p.Swept < p.Statements {
+		fmt.Fprintln(os.Stderr, "requiem: every verdict now drains the queue; raise --neighbors to sweep deeper once it is clear") // requiem:ignore message text, not a label
+	}
 }
 
 // warnNothingMatched says so when no candidate rose above a weak match.
