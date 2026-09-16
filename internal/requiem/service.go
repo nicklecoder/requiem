@@ -90,7 +90,7 @@ var hookedEvents = []string{"post-checkout", "post-merge", "post-rewrite"}
 // precommitCommand keeps requiem's own output visible, unlike the reindex
 // hooks: a warning nobody sees is not a warning. But it guards on the binary
 // existing first — without that, a project whose requiem is not on PATH gets
-// "requiem: not found" printed on every single commit, which is noise worse
+// a "not found" error from the shell printed on every single commit, noise worse
 // than the silence it replaced. The trailing `|| true` means a failing
 // requiem can still never block a commit.
 const precommitCommand = "command -v requiem >/dev/null 2>&1 && requiem precommit-notice || true"

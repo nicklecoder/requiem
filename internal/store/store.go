@@ -36,7 +36,7 @@ const (
 	// requiem: model/validate-write-tolerate-read
 	legacyRejectionsFile = "_rejected.md"
 	frontmatterSep       = "---"
-	entrySep             = "\n<!-- requiem:entry -->\n"
+	entrySep             = "\n<!-- requiem:entry -->\n" // requiem:ignore a format constant, so the marker has to stay inside the string
 )
 
 // ErrNotFound is returned when a requested statement or namespace doesn't exist.

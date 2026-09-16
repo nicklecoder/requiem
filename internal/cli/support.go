@@ -107,7 +107,7 @@ func warnNearMisses(misses []requiem.NearMiss) {
 	fmt.Fprintf(os.Stderr, "requiem: %d label(s) look like typos:\n", len(misses))
 	for _, m := range misses {
 		fmt.Fprintf(os.Stderr, "requiem:   %s:%d  requiem: %s\n", m.File, m.Line, m.FullID)
-		fmt.Fprintf(os.Stderr, "requiem:     did you mean %s?\n", m.DidYouMean)
+		fmt.Fprintf(os.Stderr, "requiem:     did you mean %s?\n", m.DidYouMean) // requiem:ignore message text, not a label
 	}
 }
 
@@ -123,8 +123,7 @@ func warnAuditBacklog(shown, remaining int) {
 		return
 	}
 	fmt.Fprintf(os.Stderr,
-		// requiem:ignore message text, not a label
-		"requiem: showing %d of %d unadjudicated pair(s); each verdict recorded frees its slot for the next candidate\n",
+		"requiem: showing %d of %d unadjudicated pair(s); each verdict recorded frees its slot for the next candidate\n", // requiem:ignore message text, not a label
 		shown, remaining)
 }
 
@@ -184,11 +183,11 @@ func warnIndexDiff(stats index.ReindexStats) {
 // left to be discovered in a diff.
 func warnRewrittenRefs(res *requiem.MoveResult) {
 	if len(res.RewrittenRefs) > 0 {
-		fmt.Fprintf(os.Stderr, "requiem: rewrote %d labelled site(s) to %s:\n", len(res.RewrittenRefs), res.To)
+		fmt.Fprintf(os.Stderr, "requiem: rewrote %d labelled site(s) to %s:\n", len(res.RewrittenRefs), res.To) // requiem:ignore message text, not a label
 		for _, r := range res.RewrittenRefs {
 			fmt.Fprintf(os.Stderr, "requiem:   %s:%d\n", r.File, r.Line)
 		}
-		fmt.Fprintln(os.Stderr, "requiem: source edits are UNSTAGED — review with `git diff`")
+		fmt.Fprintln(os.Stderr, "requiem: source edits are UNSTAGED — review with `git diff`") // requiem:ignore message text, not a label
 	}
 	if len(res.OrphanedCodeRefs) > 0 {
 		fmt.Fprintf(os.Stderr, "requiem: %d labelled site(s) still name %s:\n", len(res.OrphanedCodeRefs), res.From)
