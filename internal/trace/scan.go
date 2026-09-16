@@ -190,6 +190,31 @@ func parseLine(line string) []Ref {
 	return out
 }
 
+// IDsInText returns every statement id labelled in a block of text, with a
+// line carrying IgnoreMarker yielding none — the same rules parseLine
+// applies, against text that has no file or line number behind it.
+//
+// This exists so the removed half of a patch is read by the scanner that
+// reads everything else. A second regex over the same marker would drift
+// from this one, and the first thing to drift would be the ignore rule,
+// which is precisely what keeps a fixture or a doc example from scanning as
+// a real label.
+// requiem: traceability/dropped-labels-are-reported
+func IDsInText(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if ignoreRe.MatchString(line) {
+			continue
+		}
+		for _, m := range labelRe.FindAllString(line, -1) {
+			if id := labelID(m); id != "" {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
 // CountByID groups refs by the statement they name, counting code only —
 // see Kind for why a documentation mention is not a reference.
 func CountByID(refs []Ref) map[string]int {

@@ -189,3 +189,189 @@ func TestCheckDiff_NoChangesIsNotAnError(t *testing.T) {
 		t.Fatalf("expected an empty report, got %+v", res)
 	}
 }
+
+// The patch that makes a decision invisible was the one patch reporting no
+// covering decisions at all: the scan only ever read the post-image, where
+// the label is simply absent, which is indistinguishable from a decision
+// nobody labelled. The removed line was in the diff the whole time.
+// requiem: traceability/dropped-labels-are-reported
+func TestCheckDiff_ReportsADecisionThatLostItsLastLabel(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "hashed-tokens", Namespace: "auth", Kind: "rule", Modality: "must",
+		Body: "Session tokens are hashed at rest, never written to disk in plaintext.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	commitFile(t, s, "tokens.go", "package auth\n\n"+
+		"// "+trace.Marker+" auth/hashed-tokens\n"+
+		"func store() {\n\tsave(hashed())\n}\n")
+
+	// The regeneration a spec-driven agent performs: same behaviour, comment gone.
+	if err := os.WriteFile(filepath.Join(s.Root, "tokens.go"), []byte("package auth\n\n"+
+		"func store() {\n\tsave(hashed())\n}\n"), 0o644); err != nil {
+		t.Fatalf("strip label: %v", err)
+	}
+
+	res, err := s.CheckDiff("")
+	if err != nil {
+		t.Fatalf("CheckDiff: %v", err)
+	}
+	if len(res.Dropped) != 1 {
+		t.Fatalf("expected the dropped label reported, got %+v", res.Dropped)
+	}
+	got := res.Dropped[0]
+	if got.FullID != "auth/hashed-tokens" {
+		t.Fatalf("wrong decision reported: %+v", got)
+	}
+	if len(got.Files) != 1 || got.Files[0] != "tokens.go" {
+		t.Fatalf("expected the file the label left, got %+v", got.Files)
+	}
+	if got.Modality != "must" || got.Excerpt == "" {
+		t.Fatalf("a reader must be able to judge without a second call, got %+v", got)
+	}
+
+	// A checkable fact, so the gate may fail on it — the same bar as a label
+	// pointing at a retired decision.
+	res.Gate = "error"
+	if !res.Failing() {
+		t.Fatal("a decision left with no implementation must fail an error gate")
+	}
+	res.Gate = "warn"
+	if res.Failing() {
+		t.Fatal("warn must not fail")
+	}
+	if len(res.Findings()) != 1 {
+		t.Fatalf("expected one finding, got %+v", res.Findings())
+	}
+}
+
+// Moving a function between files removes the label from one and adds it to
+// the other — the commonest refactor there is. Rescanning the tree after the
+// change answers it without counting anything: a label that moved is still
+// there.
+// requiem: traceability/dropped-labels-are-reported
+func TestCheckDiff_AMovedLabelIsNotADroppedOne(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "hashed-tokens", Namespace: "auth", Kind: "rule", Modality: "must",
+		Body: "Session tokens are hashed at rest, never written to disk in plaintext.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	commitFile(t, s, "tokens.go", "package auth\n\n"+
+		"// "+trace.Marker+" auth/hashed-tokens\n"+
+		"func store() {\n\tsave(hashed())\n}\n")
+	commitFile(t, s, "store.go", "package auth\n\nfunc save(h string) {}\n")
+
+	if err := os.WriteFile(filepath.Join(s.Root, "tokens.go"), []byte("package auth\n"), 0o644); err != nil {
+		t.Fatalf("empty tokens.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Root, "store.go"), []byte("package auth\n\n"+
+		"// "+trace.Marker+" auth/hashed-tokens\n"+
+		"func store() {\n\tsave(hashed())\n}\n\nfunc save(h string) {}\n"), 0o644); err != nil {
+		t.Fatalf("move into store.go: %v", err)
+	}
+
+	res, err := s.CheckDiff("")
+	if err != nil {
+		t.Fatalf("CheckDiff: %v", err)
+	}
+	if len(res.Dropped) != 0 {
+		t.Fatalf("a moved label must not be reported as dropped, got %+v", res.Dropped)
+	}
+}
+
+// Each exclusion is a removal that is correct rather than a loss. Reporting
+// any of them would make the check fire on exactly the cleanup requiem asks
+// for, which is how a gate earns its way into someone's disabled list.
+// requiem: traceability/dropped-labels-are-reported
+func TestCheckDiff_DroppedLabelExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params AddParams
+		id     string
+		file   string
+	}{
+		{
+			name: "retired decision",
+			params: AddParams{
+				ID: "old-way", Namespace: "auth", Kind: "rule",
+				Body: "The old way of storing tokens.", Status: "superseded",
+			},
+			id: "auth/old-way", file: "tokens.go",
+		},
+		{
+			name: "abstract statement",
+			params: AddParams{
+				ID: "agent-native", Namespace: "auth", Kind: "principle",
+				Body: "The primary consumer is an agent.", Abstract: true,
+			},
+			id: "auth/agent-native", file: "tokens.go",
+		},
+		{
+			name: "id naming no statement",
+			// Nothing is added: the label names a statement that does not exist.
+			id: "auth/never-existed", file: "tokens.go",
+		},
+		{
+			name: "mention in a document",
+			params: AddParams{
+				ID: "hashed-tokens", Namespace: "auth", Kind: "rule",
+				Body: "Session tokens are hashed at rest.",
+			},
+			id: "auth/hashed-tokens", file: "NOTES.md",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestService(t)
+			if tc.params.ID != "" {
+				if _, err := s.Add(tc.params); err != nil {
+					t.Fatalf("Add: %v", err)
+				}
+			}
+			commitFile(t, s, tc.file, "some text\n\n"+
+				"// "+trace.Marker+" "+tc.id+"\nmore text\n")
+
+			if err := os.WriteFile(filepath.Join(s.Root, tc.file), []byte("some text\n\nmore text\n"), 0o644); err != nil {
+				t.Fatalf("strip label: %v", err)
+			}
+
+			res, err := s.CheckDiff("")
+			if err != nil {
+				t.Fatalf("CheckDiff: %v", err)
+			}
+			if len(res.Dropped) != 0 {
+				t.Fatalf("%s must not be reported as a dropped label, got %+v", tc.name, res.Dropped)
+			}
+		})
+	}
+}
+
+// The ignore marker is what keeps a fixture or a documentation example from
+// scanning as a real label, and it has to hold on the removed half of a patch
+// too — otherwise deleting a test fixture reports a decision going dark.
+// requiem: traceability/marker-in-fixtures
+func TestCheckDiff_RemovedLookalikeIsIgnored(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{
+		ID: "hashed-tokens", Namespace: "auth", Kind: "rule",
+		Body: "Session tokens are hashed at rest.",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	commitFile(t, s, "fixture.go", "package auth\n\n"+
+		"const sample = \"// "+trace.Marker+" auth/hashed-tokens\" // "+trace.IgnoreMarker+" a fixture\n")
+
+	if err := os.WriteFile(filepath.Join(s.Root, "fixture.go"), []byte("package auth\n"), 0o644); err != nil {
+		t.Fatalf("delete fixture: %v", err)
+	}
+
+	res, err := s.CheckDiff("")
+	if err != nil {
+		t.Fatalf("CheckDiff: %v", err)
+	}
+	if len(res.Dropped) != 0 {
+		t.Fatalf("an ignored lookalike must not read as a dropped label, got %+v", res.Dropped)
+	}
+}
