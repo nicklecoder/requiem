@@ -43,6 +43,32 @@ type PairCandidate struct {
 	ModalityConflict bool `json:"modality_conflict,omitempty"`
 }
 
+// AuditProgress reports how much of the corpus has actually been judged, so a
+// caller can tell progress from motion.
+//
+// Remaining alone was not enough, and measurably so: fifteen verdicts recorded
+// against this project's own corpus moved the outstanding count from 93 to 92,
+// because the old sweep offered each statement its k nearest *unadjudicated*
+// partners and every verdict freed a slot the next-nearest neighbour filled.
+// The field report saw the same shape at scale — 415 to 425 after 97 verdicts.
+// Swept counts statements whose whole window has been judged, which is a
+// number that rises as work is done.
+// requiem: retrieval/audit-queue-drains
+type AuditProgress struct {
+	// Remaining is the unadjudicated candidate pairs in this sweep, including
+	// those beyond the returned page.
+	Remaining int `json:"remaining"`
+	// Swept is how many in-scope statements have no unjudged pair left in
+	// their window. A statement with nothing comparable counts as swept: it
+	// has nothing outstanding.
+	Swept int `json:"swept"`
+	// Statements is the in-scope total, the denominator for Swept.
+	Statements int `json:"statements"`
+	// Depth is the neighbour count this sweep used — the dial that decides
+	// how deep a window goes.
+	Depth int `json:"depth"`
+}
+
 // localDensityK is how many neighbours define a statement's local
 // neighbourhood for CSLS. Small because requiem's corpora are small; the
 // value only has to estimate "how close is this statement to things in
@@ -106,31 +132,50 @@ const (
 // pairs in the top 50 of a real audit, because a must against a must_not on
 // different subjects is common and says nothing.
 //
-// Returns the ranked page and the total number of unadjudicated candidates,
-// so a caller can see the size of the queue it is working through. A backlog
-// that silently refills is a queue nobody finishes: adjudicating a pair frees
-// its slot, and the count is what makes that progress visible.
-// requiem: retrieval/audit-pairs-share-identifiers
-func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minScore float64) ([]PairCandidate, int, error) {
+// **Each statement's window is fixed before adjudication is considered, not
+// after.** This is what makes the queue finite. The sweep used to rank a
+// statement's *unadjudicated* partners and take the top k, so judging one pair
+// promoted partner k+1 into the window and the outstanding count never fell:
+// fifteen verdicts against this corpus moved it from 93 to 92. Selecting the
+// top k first and then dropping the judged ones means a statement stops
+// contributing once its window is clear, so verdicts strictly drain the queue
+// and `Swept` rises.
+//
+// The cost is deliberate and worth stating: a pair at depth k+1 is no longer
+// offered just because a nearer pair was judged. Depth is a dial instead —
+// sweep at `--neighbors 2`, then again at 5 to go deeper — which is a decision
+// the reader makes rather than a dribble the tool decides. That ordering is
+// also the one model-independent choice available: a similarity floor would
+// have to name an absolute cosine, and what counts as close is a property of
+// the embedding model, not of the corpus.
+// requiem: retrieval/audit-queue-drains
+func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minScore float64) ([]PairCandidate, AuditProgress, error) {
+	if neighbors <= 0 {
+		neighbors = 1
+	}
+	progress := AuditProgress{Depth: neighbors}
+
 	stmts, err := ix.auditStatements(namespace)
 	if err != nil {
-		return nil, 0, err
+		return nil, progress, err
 	}
+	progress.Statements = len(stmts)
 	if len(stmts) < 2 {
-		return nil, 0, nil
+		progress.Swept = len(stmts)
+		return nil, progress, nil
 	}
 
 	embeddings, err := ix.AllEmbeddings()
 	if err != nil {
-		return nil, 0, err
+		return nil, progress, err
 	}
 	facets, err := ix.AllFacets()
 	if err != nil {
-		return nil, 0, err
+		return nil, progress, err
 	}
 	adjudicated, err := ix.AdjudicatedPairs()
 	if err != nil {
-		return nil, 0, err
+		return nil, progress, err
 	}
 
 	embedded := make([]bool, len(stmts))
@@ -146,7 +191,7 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 	// genuinely cannot be swept, and saying so is better than returning an
 	// empty list that reads as "nothing to worry about".
 	if embeddedCount == 0 && len(facets) == 0 {
-		return nil, 0, fmt.Errorf("nothing to compare: no statement is embedded and no identifiers were found in any body (see `requiem list --needs-embedding`)")
+		return nil, progress, fmt.Errorf("nothing to compare: no statement is embedded and no identifiers were found in any body (see `requiem list --needs-embedding`)")
 	}
 
 	sims, density := ix.similarityAndDensity(stmts, embedded, embeddings)
@@ -157,10 +202,29 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 		sameSource   bool
 	}
 	pairs := map[string]*pairInfo{}
+
+	// window records which pairs each statement is responsible for, judged or
+	// not. It is what "swept" is measured against, so it has to include the
+	// pairs pairAt drops: a statement whose whole window has been judged is
+	// finished, and that is only knowable if the judged pairs were counted as
+	// part of the window in the first place.
+	// requiem: retrieval/audit-queue-drains
+	window := make([]map[string]bool, len(stmts))
+	note := func(i, j int) {
+		key := pairKey(stmts[i].fullID, stmts[j].fullID)
+		for _, side := range [2]int{i, j} {
+			if window[side] == nil {
+				window[side] = map[string]bool{}
+			}
+			window[side][key] = true
+		}
+	}
+
 	pairAt := func(i, j int) *pairInfo {
 		if i > j {
 			i, j = j, i
 		}
+		note(i, j)
 		key := pairKey(stmts[i].fullID, stmts[j].fullID)
 		if adjudicated[key] {
 			return nil
@@ -211,9 +275,12 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 	}
 
 	// Nearest-neighbour pairs, among the embedded statements only.
-	if neighbors <= 0 {
-		neighbors = 1
-	}
+	//
+	// Adjudication is deliberately *not* consulted here. Ranking only the
+	// unjudged partners made the window slide forward with every verdict, so
+	// the queue refilled as fast as it was worked. The top k are chosen on
+	// similarity alone; pairAt drops the ones already judged afterwards.
+	// requiem: retrieval/audit-queue-drains
 	for i := range stmts {
 		if !embedded[i] {
 			continue
@@ -225,9 +292,6 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 		var ranked []cand
 		for j := range stmts {
 			if i == j || !embedded[j] {
-				continue
-			}
-			if adjudicated[pairKey(stmts[i].fullID, stmts[j].fullID)] {
 				continue
 			}
 			if minScore > 0 && sims[i][j] < minScore {
@@ -293,7 +357,23 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
-	return out, remaining, nil
+	progress.Remaining = remaining
+	// A statement with nothing left unjudged in its window is swept, and one
+	// with an empty window is swept too: it has nothing outstanding, and
+	// reporting it as unfinished would make the denominator unreachable.
+	for i := range stmts {
+		done := true
+		for key := range window[i] {
+			if !adjudicated[key] {
+				done = false
+				break
+			}
+		}
+		if done {
+			progress.Swept++
+		}
+	}
+	return out, progress, nil
 }
 
 // auditStatement is one row the sweep compares.

@@ -163,7 +163,16 @@ func TestReindex_EditingStatementPreservesEmbedding(t *testing.T) {
 	}
 }
 
-func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *testing.T) {
+// A judged pair leaves the queue and its slot stays empty.
+//
+// This test asserted the opposite until measurement contradicted it: the freed
+// slot used to be refilled by the next-nearest neighbour, on the reasoning that
+// adjudicating should never leave a statement with nothing to offer. That made
+// the outstanding count stand still — fifteen verdicts against requiem's own
+// corpus moved it from 93 to 92, and the field report saw 415 to 425 after 97
+// verdicts — so the queue could never be finished. Depth is a dial now instead.
+// requiem: retrieval/audit-queue-drains
+func TestFindCandidatePairs_AnAdjudicatedPairLeavesTheQueueForGood(t *testing.T) {
 	s := newTestStore(t)
 	ix := newTestIndex(t)
 	for _, id := range []string{"a", "b", "c"} {
@@ -200,12 +209,12 @@ func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *te
 		t.Fatalf("expected a's nearest neighbour surfaced, got %+v", first)
 	}
 
-	// Judging a/b must not leave a with nothing: its next-nearest takes the
-	// slot, so adjudicating makes progress instead of exhausting the sweep.
+	// Judging a/b removes it and leaves the slot empty: a's window at depth 1
+	// was exactly that pair, so a is finished rather than promoting c.
 	if err := ix.upsertRelationshipForTest("ns/a", "ns/b", "not_related"); err != nil {
 		t.Fatalf("record verdict: %v", err)
 	}
-	second, _, err := ix.FindCandidatePairs("", 1, 0, 0)
+	second, progress, err := ix.FindCandidatePairs("", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("second FindCandidatePairs: %v", err)
 	}
@@ -213,15 +222,30 @@ func TestFindCandidatePairs_ExcludesAdjudicatedAndSurfacesTheNextCandidate(t *te
 		if pairKey(p.A, p.B) == pairKey("ns/a", "ns/b") {
 			t.Fatalf("an adjudicated pair must not resurface: %+v", second)
 		}
+		if pairKey(p.A, p.B) == pairKey("ns/a", "ns/c") {
+			t.Fatalf("the freed slot must stay empty, not promote the next-nearest: %+v", second)
+		}
+	}
+	if progress.Remaining >= len(first) {
+		t.Fatalf("a verdict must reduce the outstanding count, got %+v", progress)
+	}
+	if progress.Swept == 0 {
+		t.Fatalf("a statement whose window is fully judged counts as swept, got %+v", progress)
+	}
+
+	// Depth is how you go deeper once a sweep is clear.
+	deeper, deepProgress, err := ix.FindCandidatePairs("", 2, 0, 0)
+	if err != nil {
+		t.Fatalf("deeper FindCandidatePairs: %v", err)
 	}
 	var sawAC bool
-	for _, p := range second {
+	for _, p := range deeper {
 		if pairKey(p.A, p.B) == pairKey("ns/a", "ns/c") {
 			sawAC = true
 		}
 	}
 	if !sawAC {
-		t.Fatalf("expected a's next-nearest to take the freed slot, got %+v", second)
+		t.Fatalf("raising the depth must expose a/c, got %+v (%+v)", deeper, deepProgress)
 	}
 }
 
@@ -305,7 +329,7 @@ func TestFindCandidatePairs_PairsStatementsSharingAnIdentifier(t *testing.T) {
 	if len(top.SharedFacets) != 1 || top.SharedFacets[0] != "provider_venue_id" {
 		t.Fatalf("expected the shared identifier reported as the reason, got %+v", top.SharedFacets)
 	}
-	if remaining < len(pairs) {
+	if remaining.Remaining < len(pairs) {
 		t.Fatalf("remaining (%d) must count every unadjudicated pair, at least those shown (%d)", remaining, len(pairs))
 	}
 }
@@ -353,7 +377,7 @@ func TestFindCandidatePairs_ExcludesADismissedPair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindCandidatePairs after dismissal: %v", err)
 	}
-	if len(pairs) != 0 || remaining != 0 {
+	if len(pairs) != 0 || remaining.Remaining != 0 {
 		t.Fatalf("a dismissed pair must stop resurfacing, got %+v (remaining %d)", pairs, remaining)
 	}
 }
