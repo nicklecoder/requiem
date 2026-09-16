@@ -14,6 +14,9 @@ relationships:
     - to: principles/retrieval-not-judge
       type: refines
       note: It surfaces that a proposal points here and stops; whether the challenge is right stays with the reader.
+    - to: model/open-questions-are-proposals
+      type: depends_on
+      note: Only proposals can challenge a decision, so the flag fires only as often as open questions are actually recorded as proposed rather than hedged into an active body.
 ---
 
 A check result marks a statement as challenged when a proposed statement conflicts with it or would supersede it. A corpus of settled decisions makes existing decisions easy to honour, which is the point and also the risk: in the field an agent planning against this corpus treated the current identity key as settled and never asked whether changing it was the real fix, where an earlier plan written without the corpus had named exactly that as the root cause. Only proposals count, because a conflict recorded between two active statements is a judgment already made and not yet resolved, while a proposal pointing at a statement is someone arguing that this specific decision is wrong.

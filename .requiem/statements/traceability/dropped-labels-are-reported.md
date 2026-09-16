@@ -16,6 +16,12 @@ relationships:
     - to: traceability/labels-not-enforced
       type: depends_on
       note: 'Stays inside the prohibition only because it never asks for a label that did not exist: it reports the patch deleting one. If that line moves, this rule goes with it.'
+    - to: traceability/principles-covered-transitively
+      type: conflicts_with
+      note: 'The two disagree on what counts as referenced. principles-covered-transitively makes a statement covered when the statements refining it are labelled; dropped-labels-are-reported tests direct code refs only, so removing a refined statement''s own last label reports that no code references it now while list --unreferenced, asked the same moment, calls it covered. Reproduced: parent refined by a labelled child, parent''s own label removed — check --diff reports dropped, list --unreferenced returns empty. In practice abstract mostly masks it, since principles are abstract; a non-abstract refined rule is the live case.'
+    - to: traceability/label-typos-uncaught
+      type: depends_on
+      note: 'Excluding a label that names no statement is only safe because the near-miss check catches a typo elsewhere: retyping ns/foo as ns/fooo reports ns/foo as dropped here and ns/fooo as a near miss on reindex, so neither half goes silent.'
 ---
 
 check --diff reports a decision whose last code label the patch removes, and the gate fails on it. The removed line is in the patch — a label deletion is an ordinary minus line — but the scan only ever read the post-image, so the one patch that makes a decision invisible was the one patch reporting no covering decisions at all: measured on a stripped label, covering came back empty while code_refs dropped to zero and nothing failed. A moved label needs no special case and gets none: the working tree is rescanned after the change, so a label that merely travelled between files is still found and nothing is reported. Four exclusions, each because the removal is correct rather than a loss — a label naming no statement, one naming a rejection, one on a retired decision, and one on an abstract statement, which audit asks you to delete anyway. Scoped to code files: a mention in a .md was never coverage, so losing it loses nothing.
