@@ -14,11 +14,12 @@ func newBatchCmd() *cobra.Command {
 		Use:   "batch",
 		Short: "Apply many writes from JSON Lines on stdin, reporting each record's outcome",
 		Long: "Reads one JSON object per line from stdin, each carrying an \"op\" of add,\n" +
-			"reject, update or link plus that op's fields. Blank lines and # comments\n" +
-			"are skipped.\n\n" +
+			"reject, update, link, unlink or dismiss plus that op's fields. Blank lines\n" +
+			"and # comments are skipped.\n\n" +
 			"  {\"op\":\"add\",\"namespace\":\"auth\",\"id\":\"hashed-tokens\",\"kind\":\"rule\",\"body\":\"...\"}\n" +
 			"  {\"op\":\"reject\",\"namespace\":\"auth\",\"id\":\"sliding-expiry\",\"body\":\"...\"}\n" +
-			"  {\"op\":\"link\",\"from\":\"auth/hashed-tokens\",\"to\":\"principles/least-privilege\",\"type\":\"refines\"}\n\n" +
+			"  {\"op\":\"link\",\"from\":\"auth/hashed-tokens\",\"to\":\"principles/least-privilege\",\"type\":\"refines\"}\n" +
+			"  {\"op\":\"dismiss\",\"from\":\"auth/hashed-tokens\",\"to\":\"billing/integer-cents\",\"note\":\"...\"}\n\n" +
 			"A line that does not parse aborts the whole batch before anything is\n" +
 			"written — that is a defect in the caller, identical on a retry. A write\n" +
 			"requiem refuses (a duplicate body, a link to a missing statement) is a\n" +

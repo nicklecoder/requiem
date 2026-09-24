@@ -1,4 +1,4 @@
-<!-- >>> requiem v24 >>> -->
+<!-- >>> requiem v25 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -232,6 +232,10 @@ Record what you find:
 - `requiem dismiss <a> <b> --note "..."` — seen and unrelated. Stored as a
   verdict, not an edge, so dismissals never accumulate in the graph you read
   to understand how decisions fit together. `--restore` takes one back.
+
+A first audit is mostly dismissals. Record them in one `requiem batch` —
+`{"op":"dismiss","from":"<a>","to":"<b>","note":"..."}` per line,
+beside `link` records for the real findings.
 
 **Linking decisions to code.** Label the code that implements a statement so a
 changed decision can report what it affects:

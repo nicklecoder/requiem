@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 24
+const docBlockVersion = 25
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -276,6 +276,10 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- `requiem dismiss <a> <b> --note \"...\"` — seen and unrelated. Stored as a",
 	"  verdict, not an edge, so dismissals never accumulate in the graph you read",
 	"  to understand how decisions fit together. `--restore` takes one back.",
+	"",
+	"A first audit is mostly dismissals. Record them in one `requiem batch` —",
+	"`{\"op\":\"dismiss\",\"from\":\"<a>\",\"to\":\"<b>\",\"note\":\"...\"}` per line,",
+	"beside `link` records for the real findings.",
 	"",
 	"**Linking decisions to code.** Label the code that implements a statement so a",
 	"changed decision can report what it affects:",

@@ -115,3 +115,39 @@ func TestBatchApply_RefusedWriteIsReportedAndTheRestApply(t *testing.T) {
 		t.Fatalf("expected exactly one failure for the exit code, got %d", n)
 	}
 }
+
+// An audit is adjudicated in bulk: most of a first sweep is dismissals.
+// requiem: cli/batch-dismiss
+func TestBatchApply_DismissRecordsAVerdict(t *testing.T) {
+	s := newTestService(t)
+	for _, p := range []AddParams{
+		{ID: "hashed-tokens", Namespace: "auth", Kind: "rule", Body: "Session tokens are stored hashed, never in plaintext."},
+		{ID: "integer-cents", Namespace: "billing", Kind: "rule", Body: "Monetary amounts are stored as integer cents."},
+	} {
+		if _, err := s.Add(p); err != nil {
+			t.Fatalf("seed Add: %v", err)
+		}
+	}
+
+	in := strings.NewReader(strings.Join([]string{
+		`{"op":"dismiss","from":"auth/hashed-tokens","to":"billing/integer-cents","note":"different subjects"}`,
+		`{"op":"dismiss","from":"auth/hashed-tokens","to":"billing/missing"}`,
+	}, "\n"))
+	results, err := s.BatchApply(in)
+	if err != nil {
+		t.Fatalf("BatchApply: %v", err)
+	}
+	if len(results) != 2 || !results[0].Applied || results[1].Applied {
+		t.Fatalf("expected the first dismissal applied and the dangling one refused, got %+v", results)
+	}
+	if _, err := s.Store.ReadVerdict("auth/hashed-tokens", "billing/integer-cents"); err != nil {
+		t.Fatalf("expected a verdict on disk: %v", err)
+	}
+}
+
+func TestBatchApply_DismissNeedsBothEnds(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.BatchApply(strings.NewReader(`{"op":"dismiss","from":"auth/x"}`)); err == nil {
+		t.Fatal("a dismiss with one end is a malformed record and must abort the batch")
+	}
+}
