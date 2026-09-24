@@ -41,7 +41,12 @@ type Candidate struct {
 	// when the caller supplied a query vector), or "both" when the two paths
 	// agreed. A semantic hit can surface a related statement worded
 	// completely differently, which lexical search structurally cannot.
+	// "graph" marks a record reached through a recorded edge from a direct
+	// hit instead (see ExpandGraph); Via names the edge.
 	MatchKind string `json:"match_kind,omitempty"`
+
+	// requiem: retrieval/graph-expansion
+	Via *GraphVia `json:"via,omitempty"`
 
 	// Verdict bands how strongly this candidate resembles the draft: a
 	// duplicate at rank 1 and noise at rank 1 were previously

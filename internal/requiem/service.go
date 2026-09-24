@@ -1107,6 +1107,18 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 	if err != nil {
 		return nil, Coverage{}, err
 	}
+	// Appended after the direct hits rather than returned apart: check's
+	// output is a bare array, and match_kind already says how each record
+	// was found. Skipped under --tags, which narrows the search to records
+	// carrying them and which a neighbour need not carry.
+	// requiem: retrieval/graph-expansion
+	if len(p.Tags) == 0 {
+		neighbours, err := ix.ExpandGraph(candidates, p.Namespace, p.Text, p.Touches)
+		if err != nil {
+			return nil, Coverage{}, err
+		}
+		candidates = append(candidates, neighbours...)
+	}
 	markStale(s.Root, candidates)
 	if len(vector) == 0 {
 		return candidates, Coverage{}, nil
