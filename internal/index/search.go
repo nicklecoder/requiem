@@ -1,11 +1,11 @@
 package index
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/nicklecoder/requiem/internal/model"
 )
@@ -815,6 +815,10 @@ const minCorpusForDFFilter = 20
 // is computed per table on purpose: a term saturating the statement corpus
 // may be rare among rejections, and filtering the rejection query by
 // statement frequencies would discard a term that still discriminates there.
+// ftsTokenizer is the tokenizer both FTS tables index with, and the one
+// queryStems runs a draft through so a frequency lookup finds the same terms.
+const ftsTokenizer = "porter unicode61"
+
 const (
 	statementsFTSTable = "statements_fts"
 	rejectionsFTSTable = "rejections_fts"
@@ -845,16 +849,19 @@ func (ix *Index) buildMatchQuery(text, vocabTable, ftsTable string) (string, err
 		return "", nil
 	}
 
-	freq, total, err := ix.docFrequencies(vocabTable, ftsTable, fields)
+	stems, err := ix.queryStems(fields)
+	if err != nil {
+		return "", err
+	}
+	freq, total, err := ix.docFrequencies(vocabTable, ftsTable, stems)
 	if err != nil {
 		return "", err
 	}
 
 	kept := make([]string, 0, len(fields))
 	if total >= minCorpusForDFFilter {
-		for _, f := range fields {
-			// doc*2 > total mirrors FTS5's own N < 2*nHit condition exactly.
-			if freq[normalizeTerm(f)]*2 > total {
+		for i, f := range fields {
+			if saturates(stems[i], freq, total) {
 				continue
 			}
 			kept = append(kept, f)
@@ -875,19 +882,20 @@ func (ix *Index) buildMatchQuery(text, vocabTable, ftsTable string) (string, err
 	return strings.Join(parts, " OR "), nil
 }
 
-// docFrequencies looks up how many rows contain each term, plus the table's
-// total row count. Terms are normalized first (see normalizeTerm); anything
-// that fails to match a vocab entry simply returns 0 and is therefore kept.
-func (ix *Index) docFrequencies(vocabTable, ftsTable string, fields []string) (map[string]int, int, error) {
-	terms := make([]string, 0, len(fields))
+// docFrequencies looks up how many rows contain each stem, plus the table's
+// total row count. A stem that matches no vocab entry reads as 0 and is
+// therefore kept.
+func (ix *Index) docFrequencies(vocabTable, ftsTable string, stems [][]string) (map[string]int, int, error) {
+	var terms []string
 	seen := map[string]bool{}
-	for _, f := range fields {
-		t := normalizeTerm(f)
-		if t == "" || seen[t] {
-			continue
+	for _, field := range stems {
+		for _, t := range field {
+			if seen[t] {
+				continue
+			}
+			seen[t] = true
+			terms = append(terms, t)
 		}
-		seen[t] = true
-		terms = append(terms, t)
 	}
 	if len(terms) == 0 {
 		return nil, 0, nil
@@ -931,20 +939,76 @@ func (ix *Index) docFrequencies(vocabTable, ftsTable string, fields []string) (m
 	return freq, total, rows.Err()
 }
 
-// normalizeTerm approximates what the unicode61 tokenizer did on the way in:
-// case-fold, and strip the leading/trailing punctuation that tokenizer treats
-// as a separator, so "tokens." looks up the indexed term "tokens".
+// saturates reports whether a query field carries no information: every
+// term it tokenizes to occurs in more than half the table's rows. doc*2 >
+// total mirrors FTS5's own N < 2*nHit condition exactly.
 //
-// It is an approximation on purpose. A word with interior punctuation
-// ("auth/session") tokenizes into several terms and will not match a single
-// vocab row, so its frequency reads as 0 and the term is kept. Every way this
-// can be wrong therefore fails toward keeping a term, which only forgoes an
-// optimization — whereas dropping a term wrongly would discard signal the
-// caller asked us to search for.
-func normalizeTerm(s string) string {
-	return strings.TrimFunc(strings.ToLower(s), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
+// A field that tokenizes to nothing is kept, and one tokenizing to several
+// terms ("auth/session") is dropped only when all of them saturate. Both
+// fail toward keeping a term, which only forgoes an optimization, whereas
+// dropping one wrongly would discard signal the caller asked us to search for.
+func saturates(stems []string, freq map[string]int, total int) bool {
+	if len(stems) == 0 {
+		return false
+	}
+	for _, t := range stems {
+		if freq[t]*2 <= total {
+			return false
+		}
+	}
+	return true
+}
+
+// queryStems tokenizes each field of a draft exactly as the FTS tables
+// tokenized the corpus, returning the terms per field in order.
+//
+// The vocab tables hold stems once the index stems, so a frequency lookup by
+// the raw word would miss for every inflected form and silently disable the
+// filter. SQLite does the tokenizing rather than a Go port of the stemmer: a
+// port that drifted from fts5_porter.c by one rule would fail exactly this
+// silently, and a temp table using the same tokenizer string cannot drift.
+// It lives in the temp schema, which belongs to this connection alone, so it
+// takes no lock on the shared index file.
+func (ix *Index) queryStems(fields []string) ([][]string, error) {
+	ctx := context.Background()
+	conn, err := ix.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	for _, stmt := range []string{
+		`CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms USING fts5(t, tokenize='` + ftsTokenizer + `')`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms_vocab USING fts5vocab(temp, query_terms, instance)`,
+		`DELETE FROM temp.query_terms`,
+	} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return nil, fmt.Errorf("tokenize query: %w", err)
+		}
+	}
+	for i, f := range fields {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO temp.query_terms (rowid, t) VALUES (?, ?)`, i, f); err != nil {
+			return nil, fmt.Errorf("tokenize query: %w", err)
+		}
+	}
+
+	out := make([][]string, len(fields))
+	rows, err := conn.QueryContext(ctx, `SELECT doc, term FROM temp.query_terms_vocab ORDER BY doc, offset`)
+	if err != nil {
+		return nil, fmt.Errorf("tokenize query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var doc int
+		var term string
+		if err := rows.Scan(&doc, &term); err != nil {
+			return nil, err
+		}
+		if doc >= 0 && doc < len(out) {
+			out[doc] = append(out[doc], term)
+		}
+	}
+	return out, rows.Err()
 }
 
 func searchExcerpt(body string) string {

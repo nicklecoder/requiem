@@ -592,3 +592,78 @@ func TestScanLimit_WideMultipleAndUnlimitedPassesThrough(t *testing.T) {
 		t.Fatalf("expected 10x for larger limits, got %d", got)
 	}
 }
+
+// The field report's miss: "may cancel" never reached a rule worded
+// "cancellable" or "cancellation", because the index kept each word form as a
+// separate term. The semantic path missed it too, so check reported nothing.
+// requiem: retrieval/lexical-stemming
+func TestCheck_StemmingMatchesOtherWordForms(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedStatement(t, s, model.Statement{
+		ID: "cancellation-policy", Namespace: "offering", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "A subscription is cancellable only until the offering closes; cancellation after that is refused.",
+	})
+	seedStatement(t, s, model.Statement{
+		ID: "unrelated", Namespace: "offering", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Invoices are rendered as PDF documents for archival.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	results, err := ix.Check("", "investor may cancel", nil, nil, "", 0, nil)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(results) == 0 || results[0].FullID != "offering/cancellation-policy" {
+		t.Fatalf("expected 'cancel' to reach 'cancellable'/'cancellation', got %+v", results)
+	}
+}
+
+// The vocab tables hold stems, so the frequency filter has to look up stems:
+// a lookup by the raw word would miss every inflected form and silently stop
+// dropping it.
+// requiem: retrieval/lexical-stemming
+func TestBuildMatchQuery_FiltersByStemNotSurfaceForm(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	seedCorpus(t, s, ix, 30, "the session tokens")
+
+	q, err := ix.buildMatchQuery("token sessions unique3", statementsVocab, statementsFTSTable)
+	if err != nil {
+		t.Fatalf("buildMatchQuery: %v", err)
+	}
+	for _, dropped := range []string{"token", "sessions"} {
+		if strings.Contains(q, `"`+dropped+`"`) {
+			t.Fatalf("%q stems to a saturating term and should be dropped, got: %s", dropped, q)
+		}
+	}
+	if !strings.Contains(q, `"unique3"`) {
+		t.Fatalf("expected the rare term kept, got: %s", q)
+	}
+}
+
+// A draft is tokenized by SQLite with the tokenizer the index uses, so the
+// two cannot disagree about a stem.
+func TestQueryStems_MatchesTheIndexTokenizer(t *testing.T) {
+	ix := newTestIndex(t)
+	stems, err := ix.queryStems([]string{"Cancellation", "cancel", "auth/session", "—"})
+	if err != nil {
+		t.Fatalf("queryStems: %v", err)
+	}
+	if len(stems) != 4 {
+		t.Fatalf("expected one entry per field, got %v", stems)
+	}
+	if len(stems[0]) != 1 || len(stems[1]) != 1 || stems[0][0] != stems[1][0] {
+		t.Fatalf("expected 'Cancellation' and 'cancel' to share a stem, got %v", stems)
+	}
+	if len(stems[2]) != 2 {
+		t.Fatalf("expected 'auth/session' to tokenize into two terms, got %v", stems[2])
+	}
+	if len(stems[3]) != 0 {
+		t.Fatalf("expected punctuation alone to tokenize to nothing, got %v", stems[3])
+	}
+}

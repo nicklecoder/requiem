@@ -431,3 +431,60 @@ func TestListStatements_Filters(t *testing.T) {
 		t.Fatalf("unexpected tag filter result: %+v", byTag)
 	}
 }
+
+// An index built before the FTS tables stemmed has to be upgraded on open:
+// CREATE VIRTUAL TABLE IF NOT EXISTS would otherwise keep the old tokenizer
+// for good, and stemming would ship without ever reaching an existing project.
+// requiem: retrieval/lexical-stemming
+func TestOpen_RebuildsUnstemmedFullTextTables(t *testing.T) {
+	s := newTestStore(t)
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	ix, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	seedStatement(t, s, model.Statement{
+		ID: "cancellation-policy", Namespace: "offering", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "A subscription is cancellable until close.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	// Recreate the tables the way an older requiem built them, and roll the
+	// derivation back so the upgrade has to do the whole job.
+	for _, stmt := range []string{
+		`DROP TABLE statements_vocab`, `DROP TABLE rejections_vocab`,
+		`DROP TABLE statements_fts`, `DROP TABLE rejections_fts`,
+		`CREATE VIRTUAL TABLE statements_fts USING fts5(full_id UNINDEXED, namespace, body, tags)`,
+		`CREATE VIRTUAL TABLE rejections_fts USING fts5(full_id UNINDEXED, namespace, body)`,
+		`CREATE VIRTUAL TABLE statements_vocab USING fts5vocab(statements_fts, row)`,
+		`CREATE VIRTUAL TABLE rejections_vocab USING fts5vocab(rejections_fts, row)`,
+		`INSERT INTO statements_fts (full_id, namespace, body, tags) VALUES ('offering/cancellation-policy', 'offering', 'A subscription is cancellable until close.', '')`,
+		`UPDATE index_meta SET value = '4' WHERE key = 'derivation_version'`,
+	} {
+		if _, err := ix.db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.Reindex(s); err != nil {
+		t.Fatalf("Reindex after upgrade: %v", err)
+	}
+	results, err := reopened.Check("", "cancel", nil, nil, "", 0, nil)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(results) != 1 || results[0].FullID != "offering/cancellation-policy" {
+		t.Fatalf("expected the upgraded index to stem, got %+v", results)
+	}
+}
