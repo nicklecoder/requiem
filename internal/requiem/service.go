@@ -1113,7 +1113,7 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 	// carrying them and which a neighbour need not carry.
 	// requiem: retrieval/graph-expansion
 	if len(p.Tags) == 0 {
-		neighbours, err := ix.ExpandGraph(candidates, p.Namespace, p.Text, p.Touches)
+		neighbours, err := ix.ExpandGraph(candidates, p.Namespace, p.Text, p.Touches, p.Limit)
 		if err != nil {
 			return nil, Coverage{}, err
 		}

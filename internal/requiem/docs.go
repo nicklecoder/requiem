@@ -20,7 +20,7 @@ var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 26
+const docBlockVersion = 27
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -133,12 +133,12 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"a second time on its negation, phrased the way whoever wrote the opposing",
 	"rule would have put it.",
 	"",
-	"After the ranked hits, check appends up to five records one recorded edge",
-	"away from the top three, marked `match_kind: graph` with `via` naming the",
-	"edge. They match nothing in your draft; they are there because the graph",
-	"put them next to something that did, which is where a contradicting rule",
-	"worded from the other side tends to sit. Read a `conflicts_with` or",
-	"`see_instead` neighbour before proposing.",
+	"After the ranked hits, check appends up to five records (never more than",
+	"`--limit`) one recorded edge away from the top three, marked",
+	"`match_kind: graph` with `via` naming the edge. They match nothing in your",
+	"draft; they are there because the graph put them next to something that",
+	"did, which is where a contradicting rule worded from the other side tends",
+	"to sit. Read a `conflicts_with` or `see_instead` neighbour before proposing.",
 	"",
 	"`--touches <identifier>` retrieves by identifier — a column, field or symbol",
 	"the change touches — which finds a prior decision about",

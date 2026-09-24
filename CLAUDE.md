@@ -1,4 +1,4 @@
-<!-- >>> requiem v26 >>> -->
+<!-- >>> requiem v27 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -89,12 +89,12 @@ entirely. When the idea permits, requires or forbids something, run check
 a second time on its negation, phrased the way whoever wrote the opposing
 rule would have put it.
 
-After the ranked hits, check appends up to five records one recorded edge
-away from the top three, marked `match_kind: graph` with `via` naming the
-edge. They match nothing in your draft; they are there because the graph
-put them next to something that did, which is where a contradicting rule
-worded from the other side tends to sit. Read a `conflicts_with` or
-`see_instead` neighbour before proposing.
+After the ranked hits, check appends up to five records (never more than
+`--limit`) one recorded edge away from the top three, marked
+`match_kind: graph` with `via` naming the edge. They match nothing in your
+draft; they are there because the graph put them next to something that
+did, which is where a contradicting rule worded from the other side tends
+to sit. Read a `conflicts_with` or `see_instead` neighbour before proposing.
 
 `--touches <identifier>` retrieves by identifier — a column, field or symbol
 the change touches — which finds a prior decision about

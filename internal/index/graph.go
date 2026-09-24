@@ -41,7 +41,8 @@ type GraphVia struct {
 }
 
 // ExpandGraph returns the records one recorded edge away from the top direct
-// hits, for appending after them. Each carries match_kind "graph", the edge
+// hits, for appending after them: at most maxGraphNeighbours, and never more
+// than limit when one is set. Each carries match_kind "graph", the edge
 // it was reached through, and rank 0 — after every fused rank, which is
 // always negative — with its verdict computed from its own evidence against
 // the draft.
@@ -55,7 +56,13 @@ type GraphVia struct {
 // Kept out of Check itself: add's duplicate gate runs Check, and a record
 // reached only through an edge is not evidence that a draft is a duplicate.
 // requiem: retrieval/graph-expansion
-func (ix *Index) ExpandGraph(direct []Candidate, namespace, text string, touches []string) ([]Candidate, error) {
+func (ix *Index) ExpandGraph(direct []Candidate, namespace, text string, touches []string, limit int) ([]Candidate, error) {
+	// A caller asking for fewer results than the cap is budgeting context,
+	// and expansion must not add more than it asked for.
+	capN := maxGraphNeighbours
+	if limit > 0 && limit < capN {
+		capN = limit
+	}
 	if len(direct) == 0 {
 		return nil, nil
 	}
@@ -157,7 +164,7 @@ func (ix *Index) ExpandGraph(direct []Candidate, namespace, text string, touches
 
 	var out []Candidate
 	for _, e := range edges {
-		if len(out) == maxGraphNeighbours {
+		if len(out) == capN {
 			break
 		}
 		if seen[e.key] {

@@ -25,7 +25,7 @@ func expandFor(t *testing.T, ix *Index, s *store.Store, text string) ([]Candidat
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	graph, err := ix.ExpandGraph(direct, "", text, nil)
+	graph, err := ix.ExpandGraph(direct, "", text, nil, 0)
 	if err != nil {
 		t.Fatalf("ExpandGraph: %v", err)
 	}
@@ -126,5 +126,32 @@ func TestExpandGraph_CapsWhatItAdds(t *testing.T) {
 	_, graph := expandFor(t, ix, s, "escrow release closing certificate")
 	if len(graph) != maxGraphNeighbours {
 		t.Fatalf("expected expansion capped at %d, got %d", maxGraphNeighbours, len(graph))
+	}
+}
+
+// A caller asking for two results is budgeting context; expansion must not
+// add five.
+func TestExpandGraph_NeverAddsMoreThanTheLimit(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+	var rels []model.Relationship
+	for _, id := range []string{"n1", "n2", "n3", "n4"} {
+		seedStatement(t, s, graphStatement(id, "Unrelated wording "+id+".", model.StatusActive))
+		rels = append(rels, model.Relationship{To: "offering/" + id, Type: model.RelDependsOn})
+	}
+	seedStatement(t, s, graphStatement("hub", "Escrow release requires the closing certificate.", model.StatusActive, rels...))
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	direct, err := ix.Check("", "escrow release closing certificate", nil, nil, "", 2, nil)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	graph, err := ix.ExpandGraph(direct, "", "escrow release closing certificate", nil, 2)
+	if err != nil {
+		t.Fatalf("ExpandGraph: %v", err)
+	}
+	if len(graph) != 2 {
+		t.Fatalf("expected expansion capped at the limit of 2, got %d", len(graph))
 	}
 }
