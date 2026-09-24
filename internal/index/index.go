@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -68,9 +69,16 @@ func (ix *Index) ensureSchema() error {
 	}
 	defer tx.Rollback()
 
-	for _, stmt := range schema {
-		if _, err := tx.Exec(stmt); err != nil {
-			return fmt.Errorf("schema: %w", err)
+	if err := applySchema(tx); err != nil {
+		return err
+	}
+	dropped, err := dropUnstemmedFTS(tx)
+	if err != nil {
+		return fmt.Errorf("upgrade full-text tables: %w", err)
+	}
+	if dropped {
+		if err := applySchema(tx); err != nil {
+			return err
 		}
 	}
 	if err := migrate(tx); err != nil {
@@ -80,6 +88,15 @@ func (ix *Index) ensureSchema() error {
 		return fmt.Errorf("refresh derived data: %w", err)
 	}
 	return tx.Commit()
+}
+
+func applySchema(tx *sql.Tx) error {
+	for _, stmt := range schema {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("schema: %w", err)
+		}
+	}
+	return nil
 }
 
 // derivationVersion identifies the shape of the data reindex *derives* from
@@ -96,7 +113,9 @@ func (ix *Index) ensureSchema() error {
 // table: tightening the facet extractor left every previously-indexed body
 // carrying its old facets, so the filter appeared to do nothing until this
 // moved.
-const derivationVersion = "4"
+// Moving to the Porter tokenizer counts as well: the FTS tables are rebuilt
+// empty, and only a full reparse fills them again.
+const derivationVersion = "5"
 
 // requiem: model/derived-data-is-versioned
 // ensureDerivation rebuilds everything reindex derives from files when the
@@ -228,6 +247,39 @@ func migrateRebuilds(tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// dropUnstemmedFTS drops full-text tables built before they stemmed and
+// reports whether it did, so the caller can recreate them with the current
+// tokenizer. A tokenizer cannot be changed in place, and CREATE VIRTUAL
+// TABLE IF NOT EXISTS would otherwise keep the old one forever. Nothing is
+// lost: the FTS tables hold only what reindex derives from files, and
+// derivationVersion moving with this forces that reparse.
+//
+// The vocab views go first, since each names the table it reads.
+func dropUnstemmedFTS(tx *sql.Tx) (bool, error) {
+	var ddl string
+	err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'statements_fts'`).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if strings.Contains(ddl, ftsTokenizer) {
+		return false, nil
+	}
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS statements_vocab`,
+		`DROP TABLE IF EXISTS rejections_vocab`,
+		`DROP TABLE IF EXISTS statements_fts`,
+		`DROP TABLE IF EXISTS rejections_fts`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return false, fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return true, nil
 }
 
 func hasColumn(tx *sql.Tx, table, column string) (bool, error) {

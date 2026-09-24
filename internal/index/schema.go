@@ -114,8 +114,14 @@ var schema = []string{
 	// plus sync triggers for no real benefit here, since Reindex already
 	// fully controls every write to these — see SPEC.md. Populated/cleared
 	// in reindex.go alongside the relational tables, in the same transaction.
-	`CREATE VIRTUAL TABLE IF NOT EXISTS statements_fts USING fts5(full_id UNINDEXED, namespace, body, tags)`,
-	`CREATE VIRTUAL TABLE IF NOT EXISTS rejections_fts USING fts5(full_id UNINDEXED, namespace, body)`,
+	//
+	// Both stem with the Porter tokenizer, so "cancel", "cancellation" and
+	// "cancellable" index as one term. Without it a draft saying "may cancel"
+	// never lexically reached a rule saying "cancellable_until_close", and the
+	// semantic path missed it too, so check reported nothing to conflict with.
+	// requiem: retrieval/lexical-stemming
+	`CREATE VIRTUAL TABLE IF NOT EXISTS statements_fts USING fts5(full_id UNINDEXED, namespace, body, tags, tokenize='` + ftsTokenizer + `')`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS rejections_fts USING fts5(full_id UNINDEXED, namespace, body, tokenize='` + ftsTokenizer + `')`,
 
 	// code_refs caches the last source scan so `get`/`list`/`check` can show
 	// a reference count without touching the working tree. It is a

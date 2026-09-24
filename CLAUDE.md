@@ -1,4 +1,4 @@
-<!-- >>> requiem v23 >>> -->
+<!-- >>> requiem v27 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -10,7 +10,8 @@ decisions without loading the whole spec into context.
 1. **Before proposing anything non-trivial**, run `check` on the relevant
    namespace. Read the `rejection` results first — those are ideas this
    project already considered and turned down, and re-proposing one is the
-   most common way to waste the human's time.
+   most common way to waste the human's time. If the idea permits, requires
+   or forbids something, check its negation as well (see below).
 2. If a result conflicts with what you were about to do, say so rather than
    silently picking a side. Requiem surfaces candidates; judging them is
    your job, and reporting the conflict is part of judging it.
@@ -79,10 +80,26 @@ identifiers it shares with your draft. A result set that is entirely `weak`
 is the answer "nothing here states this already"; check always fills its
 limit, so the count of results never meant anything on its own.
 
+**Check the opposing side too.** All-`weak` means nothing is *worded like*
+your draft, not that nothing contradicts it. Both lexical and semantic
+search measure resemblance, and a rule your draft conflicts with is usually
+worded from the other side — "irrevocable until close" against "investor
+may cancel" — so it can rank below every paraphrase or miss the list
+entirely. When the idea permits, requires or forbids something, run check
+a second time on its negation, phrased the way whoever wrote the opposing
+rule would have put it.
+
+After the ranked hits, check appends up to five records (never more than
+`--limit`) one recorded edge away from the top three, marked
+`match_kind: graph` with `via` naming the edge. They match nothing in your
+draft; they are there because the graph put them next to something that
+did, which is where a contradicting rule worded from the other side tends
+to sit. Read a `conflicts_with` or `see_instead` neighbour before proposing.
+
 `--touches <identifier>` retrieves by identifier — a column, field or symbol
 the change touches — which finds a prior decision about
 `external_venues.status` even when it was written in words your draft does
-not use.
+not use. It needs no `--text`: the identifier alone is a complete question.
 
 **Checking a change rather than a draft.** `requiem check --diff` takes the
 patch instead: it reports the decisions whose labels sit in an edited hunk,
@@ -222,6 +239,10 @@ Record what you find:
 - `requiem dismiss <a> <b> --note "..."` — seen and unrelated. Stored as a
   verdict, not an edge, so dismissals never accumulate in the graph you read
   to understand how decisions fit together. `--restore` takes one back.
+
+A first audit is mostly dismissals. Record them in one `requiem batch` —
+`{"op":"dismiss","from":"<a>","to":"<b>","note":"..."}` per line,
+beside `link` records for the real findings.
 
 **Linking decisions to code.** Label the code that implements a statement so a
 changed decision can report what it affects:

@@ -78,8 +78,13 @@ func newCheckCmd(semantic bool) *cobra.Command {
 			// anticipate are the ones filed where it would not have
 			// thought to look, and a required scope makes it guess first.
 			// requiem: retrieval/check-scope-defaults-to-corpus
-			if text == "" {
-				return fmt.Errorf("--text is required (or use --diff to scope to a patch instead)")
+			//
+			// --touches alone is a complete question too: the identifier is
+			// an exact key, and a caller who knows the column a change
+			// touches should not have to invent prose to ask about it.
+			// requiem: retrieval/touches-stands-alone
+			if text == "" && len(touches) == 0 {
+				return fmt.Errorf("--text is required (or use --touches to look up an identifier, or --diff to scope to a patch)")
 			}
 
 			var vec []float32
@@ -121,7 +126,7 @@ func newCheckCmd(semantic bool) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to check within, with its children; omit to search every namespace")
-	cmd.Flags().StringVar(&text, "text", "", "draft text to check for related/conflicting statements (required)")
+	cmd.Flags().StringVar(&text, "text", "", "draft text to check for related/conflicting statements (required unless --touches or --diff is given)")
 	cmd.Flags().StringSliceVar(&tags, "tags", nil, "comma-separated tags to narrow the search")
 	cmd.Flags().StringSliceVar(&touches, "touches", nil, "comma-separated identifiers the change touches, e.g. external_venues.status")
 	cmd.Flags().StringVar(&vectorJSON, "vector", "", "JSON array of floats: an embedding of --text, for semantic matching alongside lexical")

@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/nicklecoder/requiem/internal/requiem"
+	"github.com/nicklecoder/requiem/internal/store"
 )
 
 func newUpdateCmd() *cobra.Command {
@@ -76,6 +79,15 @@ func newUpdateCmd() *cobra.Command {
 			}
 			st, err := svc.Update(args[0], params)
 			if err != nil {
+				// check hands back rejections and statements side by side,
+				// so an id copied from its output can be either; name the
+				// flag rather than report the record missing.
+				// requiem: cli/get-reads-rejections
+				if errors.Is(err, store.ErrNotFound) {
+					if _, rerr := svc.GetRejection(args[0]); rerr == nil {
+						return fmt.Errorf("%s is a rejection: pass --rejection to update it", args[0])
+					}
+				}
 				return err
 			}
 			// Reported on stderr so stdout stays bare JSON, and only when the

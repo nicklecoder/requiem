@@ -46,7 +46,7 @@ type BatchRecord struct {
 	// update targets an existing record by full id.
 	FullID string `json:"full_id,omitempty"`
 
-	// link
+	// link / unlink / dismiss
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
 	Type string `json:"type,omitempty"`
@@ -78,6 +78,11 @@ const (
 	batchOpUpdate = "update"
 	batchOpLink   = "link"
 	batchOpUnlink = "unlink"
+	// dismiss records an audit verdict. A first audit on a real corpus
+	// surfaced 387 pairs, 236 of them dismissals, and one process per
+	// verdict is the ingestion problem batch exists to solve.
+	// requiem: cli/batch-dismiss
+	batchOpDismiss = "dismiss"
 )
 
 // maxBatchLineBytes bounds one record, so a file that is not JSONL at all
@@ -184,10 +189,14 @@ func validateBatchRecord(rec BatchRecord) error {
 		if rec.From == "" || rec.To == "" {
 			return fmt.Errorf("unlink needs from and to")
 		}
+	case batchOpDismiss:
+		if rec.From == "" || rec.To == "" {
+			return fmt.Errorf("dismiss needs from and to")
+		}
 	case "":
-		return fmt.Errorf("missing op (add, reject, update, link or unlink)")
+		return fmt.Errorf("missing op (add, reject, update, link, unlink or dismiss)")
 	default:
-		return fmt.Errorf("unknown op %q (expected add, reject, update, link or unlink)", rec.Op)
+		return fmt.Errorf("unknown op %q (expected add, reject, update, link, unlink or dismiss)", rec.Op)
 	}
 	return nil
 }
@@ -232,6 +241,12 @@ func (s *Service) applyBatchRecord(rec BatchRecord) (fullID, warning string, err
 
 	case batchOpUnlink:
 		if _, err := s.Unlink(rec.From, rec.To, model.RelationshipType(rec.Type)); err != nil {
+			return rec.From, "", err
+		}
+		return rec.From, "", nil
+
+	case batchOpDismiss:
+		if _, err := s.DismissPair(rec.From, rec.To, rec.Note); err != nil {
 			return rec.From, "", err
 		}
 		return rec.From, "", nil

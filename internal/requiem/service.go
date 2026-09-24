@@ -397,6 +397,19 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 	return &st, nil
 }
 
+// GetRejection fetches one rejection by its composite id. check returns
+// rejections as candidates beside statements and tells the caller to fetch
+// the full body of any that matters, so a get that only knew statements
+// dead-ended on the record most worth reading.
+// requiem: cli/get-reads-rejections
+func (s *Service) GetRejection(fullID string) (*model.Rejection, error) {
+	r, err := s.Store.ReadRejection(fullID)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // embeddingStatus classifies a statement's embedding, mirroring
 // computeStale's read-time-comparison pattern rather than storing the
 // verdict anywhere: "missing" if no vector is on record, "stale" if the
@@ -1093,6 +1106,18 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 	candidates, err := ix.Check(p.Namespace, p.Text, p.Tags, vector, embModel, p.Limit, p.Touches)
 	if err != nil {
 		return nil, Coverage{}, err
+	}
+	// Appended after the direct hits rather than returned apart: check's
+	// output is a bare array, and match_kind already says how each record
+	// was found. Skipped under --tags, which narrows the search to records
+	// carrying them and which a neighbour need not carry.
+	// requiem: retrieval/graph-expansion
+	if len(p.Tags) == 0 {
+		neighbours, err := ix.ExpandGraph(candidates, p.Namespace, p.Text, p.Touches, p.Limit)
+		if err != nil {
+			return nil, Coverage{}, err
+		}
+		candidates = append(candidates, neighbours...)
 	}
 	markStale(s.Root, candidates)
 	if len(vector) == 0 {

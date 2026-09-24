@@ -12,6 +12,7 @@ import (
 
 	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/model"
+	"github.com/nicklecoder/requiem/internal/store"
 )
 
 // newTestService sets up a Service in a real (not mocked) temp git repo,
@@ -276,6 +277,29 @@ func TestGet_NotFound(t *testing.T) {
 	_, err := s.Get("ns/does-not-exist")
 	if !errors.Is(err, index.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// check hands back rejections as candidates and says to get the ones that
+// matter; get has to be able to answer for them.
+// requiem: cli/get-reads-rejections
+func TestGetRejection_ReadsARejectionCheckReturned(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{ID: "cap-per-project", Namespace: "limits", Body: "Cap per project. Rejected: the regulation caps per offering."}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := s.Get("limits/cap-per-project"); !errors.Is(err, index.ErrNotFound) {
+		t.Fatalf("Get on a rejection: expected ErrNotFound so the caller falls back, got %v", err)
+	}
+	r, err := s.GetRejection("limits/cap-per-project")
+	if err != nil {
+		t.Fatalf("GetRejection: %v", err)
+	}
+	if !strings.Contains(r.Body, "caps per offering") || r.FullID() != "limits/cap-per-project" {
+		t.Fatalf("unexpected rejection: %+v", r)
+	}
+	if _, err := s.GetRejection("limits/nothing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected store.ErrNotFound for a missing rejection, got %v", err)
 	}
 }
 
@@ -2036,5 +2060,41 @@ func TestBatch_UnlinkOp(t *testing.T) {
 	}
 	if len(persisted.Relationships) != 0 {
 		t.Fatalf("expected the edge removed, got %+v", persisted.Relationships)
+	}
+}
+
+// check appends graph neighbours after its direct hits in the one array it
+// prints, and leaves them out when --tags narrows the search.
+// requiem: retrieval/graph-expansion
+func TestCheck_AppendsGraphNeighboursAfterDirectHits(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "lifecycle", Namespace: "offering", Kind: "rule", Tags: []string{"lifecycle"},
+		Body: "An investor subscription moves through pending, funded and closed."}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "irrevocable", Namespace: "offering", Kind: "rule",
+		Body: "Funds become irrevocable once the escrow agent confirms receipt."}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := s.Link("offering/irrevocable", "offering/lifecycle", model.RelRefines, ""); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	got, _, err := s.Check(CheckParams{Text: "an investor subscription may be withdrawn"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(got) != 2 || got[0].FullID != "offering/lifecycle" || got[1].FullID != "offering/irrevocable" || got[1].MatchKind != index.MatchGraph {
+		t.Fatalf("expected the direct hit then its neighbour, got %+v", got)
+	}
+
+	tagged, _, err := s.Check(CheckParams{Text: "an investor subscription may be withdrawn", Tags: []string{"lifecycle"}})
+	if err != nil {
+		t.Fatalf("Check with tags: %v", err)
+	}
+	for _, c := range tagged {
+		if c.MatchKind == index.MatchGraph {
+			t.Fatalf("--tags narrows to records carrying them; a neighbour need not: %+v", tagged)
+		}
 	}
 }
