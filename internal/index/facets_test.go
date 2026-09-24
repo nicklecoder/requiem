@@ -119,6 +119,38 @@ func TestCheck_TouchesFindsARecordSharingNoVocabulary(t *testing.T) {
 	}
 }
 
+// An identifier alone is a complete query: no draft, only the key.
+// requiem: retrieval/touches-stands-alone
+func TestCheck_TouchesWithNoDraftText(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	seedStatement(t, s, model.Statement{
+		ID: "cancellation", Namespace: "offering", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "A subscription stays cancellable_until_close, and is irrevocable afterwards.",
+	})
+	seedStatement(t, s, model.Statement{
+		ID: "unrelated", Namespace: "offering", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Invoices are rendered as PDF documents for archival.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	results, err := ix.Check("", "", nil, nil, "", 0, []string{"cancellable_until_close"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(results) != 1 || results[0].FullID != "offering/cancellation" {
+		t.Fatalf("expected exactly the record naming the identifier, got %+v", results)
+	}
+	if results[0].Verdict == VerdictWeak {
+		t.Fatalf("a shared identifier is not a weak match: %+v", results[0])
+	}
+}
+
 // A duplicate at rank 1 and noise at rank 1 used to look identical, because
 // RRF scores position and discards magnitude.
 // requiem: retrieval/calibrated-verdict

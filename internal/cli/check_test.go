@@ -45,3 +45,21 @@ func TestCheckCmd_StillRequiresTextOrADiff(t *testing.T) {
 		t.Fatalf("expected a missing --text to be reported, got %v", err)
 	}
 }
+
+// --touches is documented as retrieval by identifier, and it was refused
+// unless a draft came with it.
+// requiem: retrieval/touches-stands-alone
+func TestCheckCmd_AcceptsTouchesWithoutText(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	root := NewRootCmd()
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"check", "--touches", "external_venues.status"})
+
+	err := root.Execute()
+	if err != nil && strings.Contains(err.Error(), "--text is required") {
+		t.Fatalf("check refused --touches without --text: %v", err)
+	}
+}
