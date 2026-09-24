@@ -12,6 +12,7 @@ import (
 
 	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/model"
+	"github.com/nicklecoder/requiem/internal/store"
 )
 
 // newTestService sets up a Service in a real (not mocked) temp git repo,
@@ -276,6 +277,29 @@ func TestGet_NotFound(t *testing.T) {
 	_, err := s.Get("ns/does-not-exist")
 	if !errors.Is(err, index.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// check hands back rejections as candidates and says to get the ones that
+// matter; get has to be able to answer for them.
+// requiem: cli/get-reads-rejections
+func TestGetRejection_ReadsARejectionCheckReturned(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Reject(RejectParams{ID: "cap-per-project", Namespace: "limits", Body: "Cap per project. Rejected: the regulation caps per offering."}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := s.Get("limits/cap-per-project"); !errors.Is(err, index.ErrNotFound) {
+		t.Fatalf("Get on a rejection: expected ErrNotFound so the caller falls back, got %v", err)
+	}
+	r, err := s.GetRejection("limits/cap-per-project")
+	if err != nil {
+		t.Fatalf("GetRejection: %v", err)
+	}
+	if !strings.Contains(r.Body, "caps per offering") || r.FullID() != "limits/cap-per-project" {
+		t.Fatalf("unexpected rejection: %+v", r)
+	}
+	if _, err := s.GetRejection("limits/nothing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected store.ErrNotFound for a missing rejection, got %v", err)
 	}
 }
 

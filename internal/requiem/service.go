@@ -397,6 +397,19 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 	return &st, nil
 }
 
+// GetRejection fetches one rejection by its composite id. check returns
+// rejections as candidates beside statements and tells the caller to fetch
+// the full body of any that matters, so a get that only knew statements
+// dead-ended on the record most worth reading.
+// requiem: cli/get-reads-rejections
+func (s *Service) GetRejection(fullID string) (*model.Rejection, error) {
+	r, err := s.Store.ReadRejection(fullID)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // embeddingStatus classifies a statement's embedding, mirroring
 // computeStale's read-time-comparison pattern rather than storing the
 // verdict anywhere: "missing" if no vector is on record, "stale" if the
