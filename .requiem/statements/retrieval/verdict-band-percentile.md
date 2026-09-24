@@ -10,6 +10,9 @@ relationships:
     - to: retrieval/calibrated-verdict
       type: depends_on
       note: Questions the thresholds calibrated-verdict set.
+    - to: retrieval/audit-queue-drains
+      type: depends_on
+      note: audit-queue-drains already argues that an absolute cosine names a property of the model rather than the corpus, which is the case for percentiles.
 ---
 
 Open question: should the verdict's similarity bands be set by percentile within the corpus rather than by raw cosine? In a single-domain corpus cosines crowd into a narrow band: a field report saw 0.63 for a conflicting rule and 0.79 for an agreeing one, around a related threshold of 0.72, so a fixed threshold separates little. What hangs on it: retrieval/score-normalization rejected rescaling scores to merge lists, which is a different use, but percentiles move as the corpus grows, so a verdict would change without either record changing.
