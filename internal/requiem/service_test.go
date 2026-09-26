@@ -35,7 +35,7 @@ func newTestService(t *testing.T) *Service {
 	runGit("config", "user.name", "Test")
 
 	s := Open(dir)
-	if _, err := s.Init(); err != nil {
+	if _, err := s.Init(InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	// Init stages .requiem/.gitignore; commit it so tests start from a
@@ -48,7 +48,7 @@ func newTestService(t *testing.T) *Service {
 
 func TestInit_CreatesLayout(t *testing.T) {
 	s := newTestService(t)
-	res, err := s.Init()
+	res, err := s.Init(InitOptions{})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestInit_CreatesLayout(t *testing.T) {
 func TestInit_InstallsReindexHooks(t *testing.T) {
 	s := newTestService(t) // already calls Init once during setup
 
-	res, err := s.Init() // idempotent: re-running must not error or duplicate
+	res, err := s.Init(InitOptions{}) // idempotent: re-running must not error or duplicate
 	if err != nil {
 		t.Fatalf("second Init: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestInit_ChainsAfterPreexistingHook(t *testing.T) {
 	}
 
 	s := Open(dir)
-	if _, err := s.Init(); err != nil {
+	if _, err := s.Init(InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
@@ -1607,7 +1607,7 @@ func TestInit_InstallsEmbeddingHooksOnlyWhenOptedIn(t *testing.T) {
 		[]byte("embedding:\n  endpoint: http://127.0.0.1:1/v1/embeddings\n  model: m\nhooks:\n  embed: true\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if _, err := s.Init(); err != nil {
+	if _, err := s.Init(InitOptions{}); err != nil {
 		t.Fatalf("re-Init: %v", err)
 	}
 	if got := read(t, s); !strings.Contains(got, "reindex --embed") {
@@ -2096,5 +2096,84 @@ func TestCheck_AppendsGraphNeighboursAfterDirectHits(t *testing.T) {
 		if c.MatchKind == index.MatchGraph {
 			t.Fatalf("--tags narrows to records carrying them; a neighbour need not: %+v", tagged)
 		}
+	}
+}
+
+// A project set up by an older requiem: a .requiem/.gitignore listing only
+// the index, an endpoint committed in config.yaml, and the agent block left
+// uncommitted in AGENTS.md and CLAUDE.md. Re-running init must bring it over.
+// requiem: cli/init-is-rerunnable
+func TestInit_MigratesAProjectFromAnOlderRequiem(t *testing.T) {
+	s := newTestService(t)
+	gitOut := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = s.Root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	writeFile := func(rel, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(s.Root, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(".requiem/.gitignore", "index.sqlite\n")
+	writeFile(".requiem/config.yaml", "embedding:\n  endpoint: http://localhost:11434/v1/embeddings\n  model: m\n")
+	if err := os.Remove(filepath.Join(s.Root, ".requiem", "config.local.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	gitOut("add", ".requiem")
+	gitOut("commit", "-q", "-m", "old layout")
+	for _, n := range []string{"AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"} {
+		_ = os.Remove(filepath.Join(s.Root, n))
+	}
+	old := "<!-- >>> requiem v1 >>> -->\nold\n<!-- <<< requiem <<< -->\n"
+	writeFile("AGENTS.md", old)
+	writeFile("CLAUDE.md", old)
+
+	res, err := s.Init(InitOptions{})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	ignore, _ := os.ReadFile(filepath.Join(s.Root, ".requiem", ".gitignore"))
+	for _, want := range requiemIgnores {
+		if !strings.Contains(string(ignore), want+"\n") {
+			t.Fatalf("expected %q in .requiem/.gitignore, got:\n%s", want, ignore)
+		}
+	}
+	if len(res.ConfigMoved) != 1 {
+		t.Fatalf("expected the endpoint moved, got %v", res.ConfigMoved)
+	}
+	staged := gitOut("show", ":.requiem/config.yaml")
+	if strings.Contains(staged, "endpoint") {
+		t.Fatalf("the staged config.yaml must not carry the endpoint, got:\n%s", staged)
+	}
+	if gitOut("check-ignore", ".requiem/config.local.yaml") == "" {
+		t.Fatal("config.local.yaml must be ignored")
+	}
+	for _, n := range []string{"AGENTS.md", "CLAUDE.md"} {
+		if _, err := os.Stat(filepath.Join(s.Root, n)); !os.IsNotExist(err) {
+			t.Fatalf("%s held only an uncommitted block and should be gone", n)
+		}
+	}
+	if gitOut("check-ignore", "CLAUDE.local.md") == "" {
+		t.Fatal("CLAUDE.local.md must be ignored")
+	}
+	if strings.Contains(gitOut("status", "--porcelain", "--", ".gitignore"), ".gitignore") {
+		t.Fatal("the project's own .gitignore must not be touched")
+	}
+
+	// And it settles.
+	again, err := s.Init(InitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.ConfigMoved)+len(again.DocsUpdated)+len(again.DocsRemoved)+len(again.ExcludedLocally) != 0 {
+		t.Fatalf("a second init should change nothing, got %+v", again)
 	}
 }

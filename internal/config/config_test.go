@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,5 +137,107 @@ func TestHooksEmbed_OffByDefaultAndRequiresAnEndpoint(t *testing.T) {
 	}
 	if c.HooksEmbed() {
 		t.Fatal("hook embedding needs an endpoint to be meaningful")
+	}
+}
+
+func writeLocal(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, LocalFileName), []byte(body), 0o644); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+}
+
+// The usual split: the committed file names the model, the local one only
+// the endpoint. Overlaying section by section would drop the model.
+// requiem: embedding/local-endpoint-overlay
+func TestLoad_LocalOverlaysSharedFieldByField(t *testing.T) {
+	dir := write(t, "embedding:\n  model: m\n  batch_size: 8\nhooks:\n  embed: true\ngate:\n  diff: warn\n")
+	writeLocal(t, dir, "embedding:\n  endpoint: http://lan:11434/v1/embeddings\n  batch_size: 2\nhooks:\n  embed: false\n")
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.EmbeddingConfigured() || c.Embedding.Model != "m" || c.Embedding.Endpoint != "http://lan:11434/v1/embeddings" {
+		t.Fatalf("expected model from shared and endpoint from local, got %+v", c.Embedding)
+	}
+	if c.Embedding.BatchSize != 2 {
+		t.Fatalf("local batch_size should win, got %d", c.Embedding.BatchSize)
+	}
+	if c.Hooks.Embed {
+		t.Fatal("a local embed: false must be able to turn the shared setting off")
+	}
+	if c.GateDiff() != GateWarn {
+		t.Fatalf("gate should come through from shared, got %q", c.GateDiff())
+	}
+}
+
+func TestLoad_LocalTemplateParsesAsUnconfigured(t *testing.T) {
+	dir := write(t, Template)
+	writeLocal(t, dir, LocalTemplate)
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.EmbeddingConfigured() {
+		t.Fatal("the commented templates must parse as unconfigured")
+	}
+}
+
+func TestLoad_MalformedLocalIsAnError(t *testing.T) {
+	dir := write(t, "")
+	writeLocal(t, dir, "embedding: [unclosed\n")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected a parse error")
+	}
+}
+
+// A config.yaml from before the overlay carried the endpoint in git.
+func TestMigrateLocalFields_MovesEndpointOutOfSharedFile(t *testing.T) {
+	dir := write(t, "# team settings\nembedding:\n  endpoint: http://localhost:11434/v1/embeddings\n  model: m\n")
+	writeLocal(t, dir, LocalTemplate)
+
+	moved, changed, err := MigrateLocalFields(dir)
+	if err != nil {
+		t.Fatalf("MigrateLocalFields: %v", err)
+	}
+	if !changed || len(moved) != 1 || moved[0] != "embedding.endpoint" {
+		t.Fatalf("got moved=%v changed=%v", moved, changed)
+	}
+	shared, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if strings.Contains(string(shared), "endpoint") || !strings.Contains(string(shared), "# team settings") {
+		t.Fatalf("expected endpoint gone and comments kept, got:\n%s", shared)
+	}
+	local, _ := os.ReadFile(filepath.Join(dir, LocalFileName))
+	if !strings.Contains(string(local), "requiem local configuration") {
+		t.Fatalf("expected the template's comments kept, got:\n%s", local)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Embedding.Endpoint != "http://localhost:11434/v1/embeddings" || c.Embedding.Model != "m" {
+		t.Fatalf("the effective config must not change, got %+v", c.Embedding)
+	}
+
+	if _, changed, err := MigrateLocalFields(dir); err != nil || changed {
+		t.Fatalf("a second run must be a no-op, got changed=%v err=%v", changed, err)
+	}
+}
+
+// A local endpoint was already winning; the shared copy is dropped, never
+// allowed to overwrite it.
+func TestMigrateLocalFields_KeepsExistingLocalEndpoint(t *testing.T) {
+	dir := write(t, "embedding:\n  endpoint: http://old\n")
+	writeLocal(t, dir, "embedding:\n  endpoint: http://mine\n")
+	if _, _, err := MigrateLocalFields(dir); err != nil {
+		t.Fatal(err)
+	}
+	shared, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if strings.Contains(string(shared), "embedding") {
+		t.Fatalf("an emptied embedding section should go, got:\n%s", shared)
+	}
+	c, _ := Load(dir)
+	if c.Embedding.Endpoint != "http://mine" {
+		t.Fatalf("got %q", c.Embedding.Endpoint)
 	}
 }

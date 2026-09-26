@@ -124,7 +124,8 @@ func labelID(match string) string {
 // statements reference each other by id and those are relationships, not code
 // references.
 //
-// AGENTS.md and CLAUDE.md are excluded because requiem writes them: the doc
+// AGENTS.md, CLAUDE.md and CLAUDE.local.md are excluded because requiem
+// writes them: the doc
 // block `init` installs carries a worked example label, so scanning them
 // would give every project a phantom reference to the id in requiem's own
 // documentation. The example has to stay concrete — a vague one is
@@ -138,7 +139,7 @@ func Scan(root string) ([]Ref, error) {
 	cmd := exec.Command("git", "grep",
 		"--untracked", "--no-color", "-I", "-n", "-z", "-i", "-E", labelPattern,
 		"--", ".", ":(exclude).requiem",
-		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md")
+		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md", ":(exclude)CLAUDE.local.md")
 	cmd.Dir = root
 
 	out, err := cmd.Output()

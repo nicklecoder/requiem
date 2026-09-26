@@ -80,7 +80,24 @@ type InitResult struct {
 	Path           string   `json:"path"`
 	HooksInstalled []string `json:"hooks_installed,omitempty"`
 	DocsUpdated    []string `json:"docs_updated,omitempty"`
+	// DocsRemoved are agent doc files a moved block left empty.
+	DocsRemoved []string `json:"docs_removed,omitempty"`
+	// ConfigMoved names shared config keys moved into config.local.yaml.
+	ConfigMoved []string `json:"config_moved,omitempty"`
+	// ExcludedLocally are paths added to .git/info/exclude.
+	ExcludedLocally []string `json:"excluded_locally,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
 }
+
+// InitOptions are the inputs to Init.
+type InitOptions struct {
+	Docs DocsMode
+}
+
+// requiemIgnores are the lines .requiem/.gitignore must carry: the index
+// and its SQLite sidecar files, which are a disposable cache, and the local
+// config overlay, which describes one machine.
+var requiemIgnores = []string{indexFile, indexFile + "-*", config.LocalFileName}
 
 // hookedEvents are the git operations that can silently invalidate large
 // chunks of the index at once by changing files without going through the
@@ -111,24 +128,28 @@ const hookCommandEmbed = "requiem reindex --embed >/dev/null 2>&1 || true"
 // Init creates .requiem/statements (and an empty, schema-ready index) if
 // they don't already exist, and installs reindex hooks for post-checkout/
 // post-merge/post-rewrite — see hookedEvents.
-func (s *Service) Init() (*InitResult, error) {
+func (s *Service) Init(opts InitOptions) (*InitResult, error) {
 	if err := s.Store.EnsureLayout(); err != nil {
 		return nil, err
 	}
-	// The index is a disposable cache, never canonical — keep it out of
-	// whatever git repo the statement files themselves live in. Staged
-	// (not just written) so it isn't silently lost — without this, a fresh
-	// clone would have no .gitignore until someone happened to commit it.
-	gitignorePath := filepath.Join(s.Store.Root, ".gitignore")
-	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
-		if err := os.WriteFile(gitignorePath, []byte(indexFile+"\n"), 0o644); err != nil {
-			return nil, err
-		}
-	} else if err != nil {
+	res := &InitResult{Path: s.Store.Root}
+
+	// Everything that must stay out of git — the disposable index and the
+	// per-machine config — is listed in requiem's own .gitignore, and lines
+	// are added to an existing one rather than only written on creation, so
+	// re-running init brings a project set up by an older requiem up to
+	// date. Staged (not just written) so it isn't silently lost — without
+	// this, a fresh clone would have no .gitignore until someone happened
+	// to commit it.
+	// requiem: cli/init-is-rerunnable
+	changed, err := ensureLines(filepath.Join(s.Store.Root, ".gitignore"), requiemIgnores)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.stagePath(".gitignore"); err != nil {
-		return nil, err
+	if changed {
+		if err := s.stagePath(".gitignore"); err != nil {
+			return nil, err
+		}
 	}
 
 	// A commented-out template, staged like every other requiem write. It
@@ -140,11 +161,35 @@ func (s *Service) Init() (*InitResult, error) {
 		if err := os.WriteFile(configPath, []byte(config.Template), 0o644); err != nil {
 			return nil, err
 		}
+		if err := s.stagePath(config.FileName); err != nil {
+			return nil, err
+		}
 	} else if err != nil {
 		return nil, err
 	}
-	if err := s.stagePath(config.FileName); err != nil {
+	// The local overlay: gitignored above, so written but never staged.
+	// This is the part of setup a fresh clone is missing, which is why init
+	// has to be safe to run again.
+	localPath := filepath.Join(s.Store.Root, config.LocalFileName)
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		if err := os.WriteFile(localPath, []byte(config.LocalTemplate), 0o644); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
 		return nil, err
+	}
+	// A config.yaml from before the overlay existed carries the endpoint in
+	// git; move it out, so the next commit stops publishing it.
+	// requiem: embedding/local-endpoint-overlay
+	moved, sharedChanged, err := config.MigrateLocalFields(s.Store.Root)
+	if err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", config.FileName, err)
+	}
+	res.ConfigMoved = moved
+	if sharedChanged {
+		if err := s.stagePath(config.FileName); err != nil {
+			return nil, err
+		}
 	}
 
 	ix, err := s.openIndex()
@@ -155,8 +200,8 @@ func (s *Service) Init() (*InitResult, error) {
 		return nil, err
 	}
 
-	// Read after the config template is written, so a project that has
-	// already opted in keeps its choice when init is re-run.
+	// Read after the config files are written and migrated, so a project
+	// that has already opted in keeps its choice when init is re-run.
 	cfg, err := config.Load(s.Store.Root)
 	if err != nil {
 		return nil, err
@@ -173,17 +218,68 @@ func (s *Service) Init() (*InitResult, error) {
 	if err := s.Git.InstallHook("pre-commit", precommitCommand); err != nil {
 		return nil, fmt.Errorf("install pre-commit hook: %w", err)
 	}
+	res.HooksInstalled = append(append([]string{}, hookedEvents...), "pre-commit")
 
-	// AGENTS.md/CLAUDE.md live at the project root, not under .requiem/ —
-	// they're the project's own files, so unlike everything else Init
-	// writes, they're deliberately left unstaged: they follow the
-	// project's normal commit workflow, not requiem's spec-approval one.
-	docsUpdated, err := ensureAgentDocs(s.Root)
+	// Agent docs live at the project root, not under .requiem/ — they're
+	// the project's own files, so unlike everything else Init writes, they
+	// are deliberately left unstaged: they follow the project's normal
+	// commit workflow, not requiem's spec-approval one.
+	// requiem: cli/agent-docs-local-by-default
+	docs, err := ensureAgentDocs(s.Root, opts.Docs, s.Git.IsTracked)
 	if err != nil {
 		return nil, fmt.Errorf("write agent docs: %w", err)
 	}
+	res.DocsUpdated, res.DocsRemoved = docs.Updated, docs.Removed
+	if docs.Note != "" {
+		res.Notes = append(res.Notes, docs.Note)
+	}
+	// CLAUDE.local.md is one person's file, so it is excluded through
+	// info/exclude, which git never shares, rather than the project's
+	// .gitignore — which would be one contributor's requiem editing a file
+	// everyone else's checkout carries.
+	if _, err := os.Stat(filepath.Join(s.Root, localAgentDocFile)); err == nil {
+		ignored, err := s.Git.IsIgnored(localAgentDocFile)
+		if err != nil {
+			return nil, err
+		}
+		if !ignored {
+			if err := s.Git.ExcludeLocally("/" + localAgentDocFile); err != nil {
+				return nil, fmt.Errorf("exclude %s: %w", localAgentDocFile, err)
+			}
+			res.ExcludedLocally = append(res.ExcludedLocally, localAgentDocFile)
+		}
+	}
+	return res, nil
+}
 
-	return &InitResult{Path: s.Store.Root, HooksInstalled: append(append([]string{}, hookedEvents...), "pre-commit"), DocsUpdated: docsUpdated}, nil
+// ensureLines appends each of lines missing from the file at path, creating
+// it if needed. A line counts as present when some line of the file equals
+// it once surrounding whitespace is trimmed.
+func ensureLines(path string, lines []string) (bool, error) {
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	present := map[string]bool{}
+	for _, l := range strings.Split(string(existing), "\n") {
+		present[strings.TrimSpace(l)] = true
+	}
+	content := string(existing)
+	added := false
+	for _, l := range lines {
+		if present[l] {
+			continue
+		}
+		if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		content += l + "\n"
+		added = true
+	}
+	if !added {
+		return false, nil
+	}
+	return true, os.WriteFile(path, []byte(content), 0o644)
 }
 
 // AddParams are the inputs to Add.

@@ -1,3 +1,2 @@
 embedding:
-  endpoint: http://localhost:11434/v1/embeddings
-  model: mxbai-embed-large
+  model: qwen3-embedding:8b

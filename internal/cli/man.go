@@ -107,7 +107,8 @@ func troff(c *cobra.Command, name string) string {
 	}
 
 	b.WriteString(".SH FILES\n.TP\n.B .requiem/statements/\nStatement files, canonical and git-tracked.\n" +
-		".TP\n.B .requiem/config.yaml\nEmbedding endpoint and model; committed, because the index is only disposable if the pipeline that rebuilds it is tracked.\n" +
+		".TP\n.B .requiem/config.yaml\nEmbedding model and project settings; committed, because the index is only disposable if the pipeline that rebuilds it is tracked.\n" +
+		".TP\n.B .requiem/config.local.yaml\nPer-machine overlay, chiefly the embedding endpoint; gitignored, written by \\fBrequiem init\\fR.\n" +
 		".TP\n.B .requiem/index.sqlite\nDisposable cache, gitignored; rebuilt by \\fBrequiem reindex\\fR.\n")
 	return b.String()
 }
