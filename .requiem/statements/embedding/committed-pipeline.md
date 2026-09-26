@@ -16,4 +16,4 @@ relationships:
       note: There is a config worth committing only because the endpoint is configured rather than bundled.
 ---
 
-The embedding endpoint and model live in a committed config file. Vectors cannot be rebuilt by reparsing statement files the way every other index table can, so the index is only genuinely disposable because the pipeline that reproduces it is in version control.
+The embedding model lives in a committed config file. Vectors cannot be rebuilt by reparsing statement files the way every other index table can, so the index is only genuinely disposable because the model that reproduces it is in version control. Where that model is served from is per machine and lives in the local overlay instead.
