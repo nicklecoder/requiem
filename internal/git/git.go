@@ -6,6 +6,7 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -235,6 +236,60 @@ func (c *Client) InstallHook(name, command string) error {
 		out = []byte(content + block)
 	}
 	return os.WriteFile(path, out, 0o755)
+}
+
+// IsIgnored reports whether path (relative to Dir) is already excluded by
+// any of git's ignore sources — a .gitignore at any level, info/exclude, or
+// the user's global excludes file.
+func (c *Client) IsIgnored(path string) (bool, error) {
+	cmd := exec.Command("git", "check-ignore", "-q", "--", path)
+	cmd.Dir = c.Dir
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git check-ignore %s: %w", path, err)
+}
+
+// IsTracked reports whether path (relative to Dir) is in git's index —
+// committed or staged, as opposed to a file only this checkout has.
+func (c *Client) IsTracked(path string) (bool, error) {
+	out, err := c.run("ls-files", "--", path)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+// ExcludeLocally appends pattern to the repository's info/exclude — the
+// ignore file git never shares, so a file only this clone has stays out of
+// source control without touching the project's own .gitignore. Resolved
+// through rev-parse like hooksDir, so it is right under worktrees too.
+func (c *Client) ExcludeLocally(pattern string) error {
+	out, err := c.run("rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	path := strings.TrimSpace(out)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(c.Dir, path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	content := string(existing)
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content+pattern+"\n"), 0o644)
 }
 
 // Discard unstages paths and reverts them: to their last-committed content

@@ -59,7 +59,7 @@ func TestPostCheckoutHook_ReindexesWithoutAnExplicitCall(t *testing.T) {
 	runGit("config", "user.name", "Test")
 
 	s := Open(dir)
-	if _, err := s.Init(); err != nil {
+	if _, err := s.Init(InitOptions{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	if _, err := s.Commit("baseline"); err != nil {

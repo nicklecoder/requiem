@@ -7,49 +7,123 @@ import (
 	"testing"
 )
 
-func TestEnsureAgentDocs_CreatesFreshFiles(t *testing.T) {
+func tracked(names ...string) func(string) (bool, error) {
+	return func(n string) (bool, error) {
+		for _, t := range names {
+			if t == n {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+}
+
+func exists(t *testing.T, path string) bool {
+	t.Helper()
+	_, err := os.Stat(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return err == nil
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+// One contributor adopting requiem must not change the agent instructions
+// every other contributor's checkout loads, so a fresh init touches only the
+// local file.
+// requiem: cli/agent-docs-local-by-default
+func TestEnsureAgentDocs_DefaultsToLocalFile(t *testing.T) {
 	root := t.TempDir()
-	touched, err := ensureAgentDocs(root)
+	res, err := ensureAgentDocs(root, DocsAuto, tracked())
 	if err != nil {
 		t.Fatalf("ensureAgentDocs: %v", err)
 	}
-	if len(touched) != 2 {
-		t.Fatalf("expected both files touched, got %v", touched)
+	if len(res.Updated) != 1 || res.Updated[0] != localAgentDocFile {
+		t.Fatalf("expected only %s written, got %v", localAgentDocFile, res.Updated)
 	}
-	for _, name := range agentDocFiles {
-		content, err := os.ReadFile(filepath.Join(root, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+	for _, name := range sharedAgentDocFiles {
+		if exists(t, filepath.Join(root, name)) {
+			t.Fatalf("%s must not be created by default", name)
 		}
-		if !strings.Contains(string(content), docMarkerBegin) {
-			t.Fatalf("expected %s to contain the requiem block, got:\n%s", name, content)
+	}
+	if !strings.Contains(read(t, filepath.Join(root, localAgentDocFile)), docMarkerBegin) {
+		t.Fatal("expected the block in the local file")
+	}
+}
+
+// Creating CLAUDE.local.md makes Claude Code stop reading AGENTS.md, so in an
+// AGENTS.md-only project the local file has to import it.
+func TestEnsureAgentDocs_LocalFileImportsAgentsMdWhenItWouldHideIt(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("# Team\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureAgentDocs(root, DocsAuto, tracked("AGENTS.md")); err != nil {
+		t.Fatalf("ensureAgentDocs: %v", err)
+	}
+	if got := read(t, filepath.Join(root, localAgentDocFile)); !strings.HasPrefix(got, agentsImport) {
+		t.Fatalf("expected the AGENTS.md import first, got:\n%s", got)
+	}
+	if read(t, filepath.Join(root, "AGENTS.md")) != "# Team\n" {
+		t.Fatal("AGENTS.md must be left alone")
+	}
+
+	// With a CLAUDE.md present Claude Code is not reading AGENTS.md anyway,
+	// so the import would change what it loads.
+	root = t.TempDir()
+	for _, n := range sharedAgentDocFiles {
+		if err := os.WriteFile(filepath.Join(root, n), []byte("# Team\n"), 0o644); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if _, err := ensureAgentDocs(root, DocsAuto, tracked(sharedAgentDocFiles...)); err != nil {
+		t.Fatalf("ensureAgentDocs: %v", err)
+	}
+	if strings.Contains(read(t, filepath.Join(root, localAgentDocFile)), "@AGENTS.md") {
+		t.Fatal("no import expected beside a CLAUDE.md")
+	}
+}
+
+func TestEnsureAgentDocs_SharedWritesBothAndDropsLocalCopy(t *testing.T) {
+	root := t.TempDir()
+	if _, err := ensureAgentDocs(root, DocsAuto, tracked()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ensureAgentDocs(root, DocsShared, tracked())
+	if err != nil {
+		t.Fatalf("ensureAgentDocs: %v", err)
+	}
+	for _, name := range sharedAgentDocFiles {
+		if !strings.Contains(read(t, filepath.Join(root, name)), docMarkerBegin) {
+			t.Fatalf("expected the block in %s", name)
+		}
+	}
+	if exists(t, filepath.Join(root, localAgentDocFile)) {
+		t.Fatalf("the local copy should be gone, leaving one block to load; removed=%v", res.Removed)
 	}
 }
 
 func TestEnsureAgentDocs_Idempotent(t *testing.T) {
-	root := t.TempDir()
-	if _, err := ensureAgentDocs(root); err != nil {
-		t.Fatalf("first ensureAgentDocs: %v", err)
-	}
-	before, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-
-	touched, err := ensureAgentDocs(root)
-	if err != nil {
-		t.Fatalf("second ensureAgentDocs: %v", err)
-	}
-	if len(touched) != 0 {
-		t.Fatalf("expected no files touched on second run, got %v", touched)
-	}
-	after, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(before) != string(after) {
-		t.Fatalf("expected re-running to be a no-op, got:\nbefore:\n%s\nafter:\n%s", before, after)
+	for _, mode := range []DocsMode{DocsAuto, DocsLocal, DocsShared} {
+		root := t.TempDir()
+		if _, err := ensureAgentDocs(root, mode, tracked(sharedAgentDocFiles...)); err != nil {
+			t.Fatalf("first ensureAgentDocs: %v", err)
+		}
+		res, err := ensureAgentDocs(root, mode, tracked(sharedAgentDocFiles...))
+		if err != nil {
+			t.Fatalf("second ensureAgentDocs: %v", err)
+		}
+		if len(res.Updated)+len(res.Removed) != 0 {
+			t.Fatalf("mode %d: expected no changes on a second run, got %+v", mode, res)
+		}
 	}
 }
 
@@ -60,19 +134,15 @@ func TestEnsureAgentDocs_PreservesExistingContent(t *testing.T) {
 		t.Fatalf("write existing: %v", err)
 	}
 
-	touched, err := ensureAgentDocs(root)
+	res, err := ensureAgentDocs(root, DocsShared, tracked())
 	if err != nil {
 		t.Fatalf("ensureAgentDocs: %v", err)
 	}
-	if len(touched) != 2 {
-		t.Fatalf("expected both files touched (AGENTS.md appended, CLAUDE.md created), got %v", touched)
+	if len(res.Updated) != 2 {
+		t.Fatalf("expected both files touched (AGENTS.md appended, CLAUDE.md created), got %v", res.Updated)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	got := string(content)
+	got := read(t, filepath.Join(root, "AGENTS.md"))
 	for _, want := range []string{"My Project", "existing human-written instructions", "requiem check"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q present, got:\n%s", want, got)
@@ -82,6 +152,59 @@ func TestEnsureAgentDocs_PreservesExistingContent(t *testing.T) {
 	idxExisting, idxBlock := strings.Index(got, "My Project"), strings.Index(got, docMarkerBegin)
 	if idxExisting < 0 || idxBlock < 0 || idxExisting > idxBlock {
 		t.Fatalf("expected existing content before the appended block, got:\n%s", got)
+	}
+
+	// Moving the block back out restores the file as its owner wrote it.
+	if _, err := ensureAgentDocs(root, DocsLocal, tracked()); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(root, "AGENTS.md")); got != existing {
+		t.Fatalf("expected AGENTS.md restored exactly, got:\n%q", got)
+	}
+	if exists(t, filepath.Join(root, "CLAUDE.md")) {
+		t.Fatal("a CLAUDE.md holding only the block should be deleted when the block moves")
+	}
+}
+
+// A project initialized by an older requiem has the block in AGENTS.md and
+// CLAUDE.md. Committed there, it is the team's, and stays; left uncommitted,
+// it was one person's init, and moves to the local file.
+// requiem: cli/init-is-rerunnable
+func TestEnsureAgentDocs_MigratesOnlyUncommittedBlocks(t *testing.T) {
+	stale := "# My Project\n\nKeep me.\n\n<!-- >>> requiem >>> -->\n## requiem\n\nOld and wrong.\n<!-- <<< requiem <<< -->\n"
+	setup := func() string {
+		root := t.TempDir()
+		for _, n := range sharedAgentDocFiles {
+			if err := os.WriteFile(filepath.Join(root, n), []byte(stale), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return root
+	}
+
+	root := setup()
+	res, err := ensureAgentDocs(root, DocsAuto, tracked(sharedAgentDocFiles...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Note == "" {
+		t.Fatal("expected a note pointing at --local")
+	}
+	if exists(t, filepath.Join(root, localAgentDocFile)) {
+		t.Fatal("a committed block must not be duplicated into the local file")
+	}
+
+	root = setup()
+	if _, err := ensureAgentDocs(root, DocsAuto, tracked()); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range sharedAgentDocFiles {
+		if got := read(t, filepath.Join(root, n)); got != "# My Project\n\nKeep me.\n" {
+			t.Fatalf("expected the uncommitted block moved out of %s, got:\n%s", n, got)
+		}
+	}
+	if !strings.Contains(read(t, filepath.Join(root, localAgentDocFile)), docMarkerBegin) {
+		t.Fatal("expected the block in the local file")
 	}
 }
 
@@ -95,15 +218,11 @@ func TestEnsureAgentDocs_ReplacesStaleBlockInPlace(t *testing.T) {
 		t.Fatalf("write stale: %v", err)
 	}
 
-	if _, err := ensureAgentDocs(root); err != nil {
+	if _, err := ensureAgentDocs(root, DocsAuto, tracked("AGENTS.md")); err != nil {
 		t.Fatalf("ensureAgentDocs: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	s := string(got)
+	s := read(t, filepath.Join(root, "AGENTS.md"))
 	if strings.Contains(s, "Old and wrong.") {
 		t.Fatalf("expected the stale block to be replaced, got:\n%s", s)
 	}
@@ -117,14 +236,12 @@ func TestEnsureAgentDocs_ReplacesStaleBlockInPlace(t *testing.T) {
 		t.Fatalf("expected exactly one block after upgrade, got %d:\n%s", n, s)
 	}
 	// A second upgrade pass must settle: no further rewrites, no drift.
-	touched, err := ensureAgentDocs(root)
+	res, err := ensureAgentDocs(root, DocsAuto, tracked("AGENTS.md"))
 	if err != nil {
 		t.Fatalf("second ensureAgentDocs: %v", err)
 	}
-	for _, name := range touched {
-		if name == "AGENTS.md" {
-			t.Fatal("expected the refreshed file to be left alone on a second pass")
-		}
+	if len(res.Updated) != 0 {
+		t.Fatalf("expected the refreshed file to be left alone on a second pass, got %v", res.Updated)
 	}
 }
 

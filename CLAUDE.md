@@ -1,4 +1,4 @@
-<!-- >>> requiem v27 >>> -->
+<!-- >>> requiem v28 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -190,15 +190,17 @@ statements refining or depending on it, and `rejected_alternatives` for ideas
 turned down in its favour — read those before re-proposing something.
 
 **Semantic matching.** Lexical search cannot find a prior decision worded in
-vocabulary your draft doesn't share. Embeddings close that gap. If
-`.requiem/config.yaml` names an embedding endpoint, requiem fetches vectors
-itself:
+vocabulary your draft doesn't share. Embeddings close that gap. The model
+is named in the committed `.requiem/config.yaml`; the endpoint serving it
+is per machine, in the gitignored `.requiem/config.local.yaml`. With both
+set, requiem fetches vectors itself:
 
 ```sh
 requiem reindex --embed      # fill every missing or stale vector
 ```
 
-- Vectors live in the gitignored index and **do not survive a clone**. Run
+- Vectors live in the gitignored index and **do not survive a clone**, and
+  neither does the local config. Run `requiem init` then
   `requiem reindex --embed` after cloning; `requiem list --needs-embedding`
   shows what is missing.
 - A partial run exits nonzero and keeps whatever succeeded — re-running

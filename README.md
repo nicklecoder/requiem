@@ -32,10 +32,18 @@ cd /path/to/your/project
 requiem init
 ```
 
-`init` creates `.requiem/`, installs git hooks, and appends a short workflow
-summary to `AGENTS.md` and `CLAUDE.md` — after any existing content, never
-replacing it — so an agent whose harness loads either learns requiem exists
-without being told each session.
+`init` creates `.requiem/`, installs git hooks, and writes a short workflow
+summary to `CLAUDE.local.md`, so Claude Code learns requiem exists without
+being told each session. That file is yours alone — init excludes it through
+`.git/info/exclude` — because one contributor adopting requiem is no reason to
+change every contributor's agent instructions. A team that has adopted it runs
+`requiem init --shared` to write the summary into `AGENTS.md` and `CLAUDE.md`
+instead, after any existing content and never replacing it; `--local` moves it
+back out.
+
+`init` is safe to re-run, and a fresh clone needs it: hooks and the local
+config are not carried by git. Re-running it also brings a project set up by
+an older requiem up to date.
 
 ```sh
 # Before proposing something non-trivial, look for prior decisions.
@@ -100,14 +108,18 @@ records it anyway: requiem states a finding, you still decide.
 
 Lexical search cannot find a decision worded in vocabulary your draft does not
 share — exactly the case when two people wrote the same requirement
-independently. Point `.requiem/config.yaml` at any OpenAI-compatible
-`/v1/embeddings` endpoint (Ollama, LM Studio, llama.cpp, vLLM, LocalAI, or
-OpenAI):
+independently. Name a model in `.requiem/config.yaml`, and in
+`.requiem/config.local.yaml` point at any OpenAI-compatible `/v1/embeddings`
+endpoint serving it (Ollama, LM Studio, llama.cpp, vLLM, LocalAI, or OpenAI):
 
 ```yaml
+# .requiem/config.yaml — committed
+embedding:
+  model: mxbai-embed-large
+
+# .requiem/config.local.yaml — gitignored, overlaid field by field
 embedding:
   endpoint: http://localhost:11434/v1/embeddings
-  model: mxbai-embed-large
   api_key_env: OPENAI_API_KEY   # the variable's NAME, never the key itself
 ```
 
@@ -117,10 +129,11 @@ requiem check --text "..." --semantic
 requiem audit                                # corpus-wide duplicate/conflict sweep
 ```
 
-That file is committed on purpose. Vectors live in the gitignored index and
+The model is committed on purpose. Vectors live in the gitignored index and
 cannot be rebuilt by reparsing statement files the way every other table can,
-so the index is only genuinely disposable because the pipeline that reproduces
-it is in version control.
+so the index is only genuinely disposable because the model that reproduces it
+is in version control. Where that model is served from names a machine, so it
+stays local.
 
 Requiem bundles no model and no inference runtime — it calls a configured
 endpoint, the same posture as shelling out to `git`. With none configured, the

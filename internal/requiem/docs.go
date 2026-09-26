@@ -7,20 +7,47 @@ import (
 	"strings"
 )
 
-// agentDocFiles are written/updated by Init so any agent whose harness
-// loads one of these at session start learns requiem exists and how to use
-// it without a human explaining it each time. AGENTS.md is the emerging
-// cross-harness convention; CLAUDE.md is Claude Code's own, and Claude Code
-// reads only the latter (it has no AGENTS.md fallback), so both are written
-// rather than relying on one to cover the other.
-var agentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
+// sharedAgentDocFiles are the project's own agent startup files. AGENTS.md
+// is the emerging cross-harness convention; CLAUDE.md is Claude Code's own.
+// Both are usually tracked, and one contributor adopting requiem is no
+// reason to put its instructions in front of every other contributor's
+// agent — so init writes them only when asked (--shared), or to refresh a
+// block the project has already committed there.
+var sharedAgentDocFiles = []string{"AGENTS.md", "CLAUDE.md"}
+
+// localAgentDocFile is where init puts the block by default: Claude Code
+// loads it alongside CLAUDE.md at session start, and it is personal by
+// convention, so init keeps it out of git through info/exclude rather than
+// the project's .gitignore.
+const localAgentDocFile = "CLAUDE.local.md"
+
+// agentsImport keeps a CLAUDE.local.md from hiding the team's AGENTS.md:
+// Claude Code reads AGENTS.md only when no CLAUDE.md, .claude/CLAUDE.md or
+// CLAUDE.local.md exists, so creating the local file in an AGENTS.md-only
+// project would silently drop the project's own instructions without this.
+const agentsImport = "@AGENTS.md\n"
+
+// DocsMode chooses where init puts the agent doc block.
+type DocsMode int
+
+const (
+	// DocsAuto refreshes a block the project already committed to a shared
+	// file, moves one that was never committed into CLAUDE.local.md, and
+	// otherwise writes CLAUDE.local.md.
+	DocsAuto DocsMode = iota
+	// DocsLocal moves the block out of the shared files into CLAUDE.local.md.
+	DocsLocal
+	// DocsShared writes AGENTS.md and CLAUDE.md, the team-wide files, and
+	// drops any local copy so the block is not loaded twice.
+	DocsShared
+)
 
 // docBlockVersion is bumped whenever agentDocBlock's content changes, so
 // Init can refresh a block written by an older requiem instead of leaving
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 27
+const docBlockVersion = 28
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -234,15 +261,17 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"turned down in its favour — read those before re-proposing something.",
 	"",
 	"**Semantic matching.** Lexical search cannot find a prior decision worded in",
-	"vocabulary your draft doesn't share. Embeddings close that gap. If",
-	"`.requiem/config.yaml` names an embedding endpoint, requiem fetches vectors",
-	"itself:",
+	"vocabulary your draft doesn't share. Embeddings close that gap. The model",
+	"is named in the committed `.requiem/config.yaml`; the endpoint serving it",
+	"is per machine, in the gitignored `.requiem/config.local.yaml`. With both",
+	"set, requiem fetches vectors itself:",
 	"",
 	"```sh",
 	"requiem reindex --embed      # fill every missing or stale vector",
 	"```",
 	"",
-	"- Vectors live in the gitignored index and **do not survive a clone**. Run",
+	"- Vectors live in the gitignored index and **do not survive a clone**, and",
+	"  neither does the local config. Run `requiem init` then",
 	"  `requiem reindex --embed` after cloning; `requiem list --needs-embedding`",
 	"  shows what is missing.",
 	"- A partial run exits nonzero and keeps whatever succeeded — re-running",
@@ -352,31 +381,157 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"Full reference: `requiem --help`.",
 }, "\n") + "\n" + docMarkerEnd + "\n"
 
-// AgentDocBlock returns the block init writes into AGENTS.md/CLAUDE.md.
+// AgentDocBlock returns the block init writes into the agent doc files.
 // Exported so internal/cli can assert the block keeps pace with the command
 // tree — the block has gone stale three times, each time because a feature
 // shipped and nothing noticed the documentation had stopped being true.
 func AgentDocBlock() string { return agentDocBlock }
 
-// ensureAgentDocs writes agentDocBlock into each of agentDocFiles at root,
-// appending after any existing content (never overwriting it), replacing an
-// older version of the block in place if one is there, and skipping files
-// already carrying the current version — the same idempotent-chaining
-// approach as git.Client.InstallHook, applied to plain text instead of
-// shell scripts. Returns the files actually created or modified.
-func ensureAgentDocs(root string) ([]string, error) {
-	var touched []string
-	for _, name := range agentDocFiles {
-		path := filepath.Join(root, name)
-		changed, err := appendMarkedBlock(path, agentDocBlock)
-		if err != nil {
-			return nil, err
+// agentDocsResult reports what ensureAgentDocs did.
+type agentDocsResult struct {
+	Updated []string // files created or modified
+	Removed []string // files a moved block left empty, and so deleted
+	Note    string   // anything the person running init should decide
+}
+
+// ensureAgentDocs puts agentDocBlock where mode says, following the
+// idempotent marker-block approach of git.Client.InstallHook: content
+// outside the markers is never touched, a stale version is replaced in
+// place, and a current one is left alone. tracked reports whether a
+// root-relative path is in git; it is how DocsAuto tells a block a team
+// committed from one a single contributor's earlier init left lying around.
+func ensureAgentDocs(root string, mode DocsMode, tracked func(string) (bool, error)) (agentDocsResult, error) {
+	var res agentDocsResult
+	has := func(name string) (bool, error) {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if os.IsNotExist(err) {
+			return false, nil
 		}
+		return strings.Contains(string(data), docMarkerPrefix), err
+	}
+	write := func(name string) error {
+		changed, err := appendMarkedBlock(filepath.Join(root, name), agentDocBlock)
 		if changed {
-			touched = append(touched, name)
+			res.Updated = append(res.Updated, name)
+		}
+		return err
+	}
+	remove := func(name string) error {
+		changed, deleted, err := removeMarkedBlock(filepath.Join(root, name))
+		switch {
+		case deleted:
+			res.Removed = append(res.Removed, name)
+		case changed:
+			res.Updated = append(res.Updated, name)
+		}
+		return err
+	}
+
+	if mode == DocsShared {
+		for _, name := range sharedAgentDocFiles {
+			if err := write(name); err != nil {
+				return res, err
+			}
+		}
+		return res, remove(localAgentDocFile)
+	}
+
+	var kept []string
+	for _, name := range sharedAgentDocFiles {
+		ok, err := has(name)
+		if err != nil || !ok {
+			if err != nil {
+				return res, err
+			}
+			continue
+		}
+		keep := false
+		if mode == DocsAuto {
+			if keep, err = tracked(name); err != nil {
+				return res, err
+			}
+		}
+		if keep {
+			kept = append(kept, name)
+			if err := write(name); err != nil {
+				return res, err
+			}
+			continue
+		}
+		if err := remove(name); err != nil {
+			return res, err
 		}
 	}
-	return touched, nil
+	if len(kept) > 0 {
+		// A committed block is the team's choice, so it stays — and a local
+		// copy beside it would load the same instructions twice.
+		res.Note = fmt.Sprintf("the requiem block is committed in %s, so it was refreshed there; "+
+			"run \"requiem init --local\" to move it to %s instead", strings.Join(kept, " and "), localAgentDocFile)
+		return res, remove(localAgentDocFile)
+	}
+
+	localPath := filepath.Join(root, localAgentDocFile)
+	if _, err := os.Stat(localPath); os.IsNotExist(err) && needsAgentsImport(root) {
+		if err := os.WriteFile(localPath, []byte(agentsImport+"\n"), 0o644); err != nil {
+			return res, err
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return res, err
+	}
+	if err := write(localAgentDocFile); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// needsAgentsImport reports whether creating CLAUDE.local.md would stop
+// Claude Code reading the project's AGENTS.md — see agentsImport.
+func needsAgentsImport(root string) bool {
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(root, rel))
+		return err == nil
+	}
+	return exists("AGENTS.md") && !exists("CLAUDE.md") && !exists(filepath.Join(".claude", "CLAUDE.md"))
+}
+
+// removeMarkedBlock deletes the requiem block, of any version, from the file
+// at path, leaving everything outside the markers as it was. A file with
+// nothing else in it — one init created — is deleted rather than left empty;
+// so is a CLAUDE.local.md holding only the AGENTS.md import init added.
+func removeMarkedBlock(path string) (changed, deleted bool, err error) {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	content := string(existing)
+	start := strings.Index(content, docMarkerPrefix)
+	if start < 0 {
+		return false, false, nil
+	}
+	rel := strings.Index(content[start:], docMarkerEnd)
+	if rel < 0 {
+		// Unclosed: guessing where it ends could delete the owner's text.
+		return false, false, nil
+	}
+	end := start + rel + len(docMarkerEnd)
+	before := strings.TrimRight(content[:start], "\n")
+	after := strings.TrimLeft(content[end:], "\n")
+	var rest string
+	switch {
+	case before == "":
+		rest = after
+	case after == "":
+		rest = before + "\n"
+	default:
+		rest = before + "\n\n" + after
+	}
+	if s := strings.TrimSpace(rest); s == "" || (filepath.Base(path) == localAgentDocFile && s+"\n" == agentsImport) {
+		return true, true, os.Remove(path)
+	}
+	return true, false, os.WriteFile(path, []byte(rest), 0o644)
 }
 
 // appendMarkedBlock ensures block's content exists in the file at path,

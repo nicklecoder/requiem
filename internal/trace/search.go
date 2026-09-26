@@ -105,7 +105,7 @@ func Search(root, body string, limit int) ([]SearchHit, error) {
 	cmd := exec.Command("git", "grep",
 		"--untracked", "--no-color", "-I", "-o", "-i", "-z", "-E", pattern,
 		"--", ".", ":(exclude).requiem",
-		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md")
+		":(exclude)AGENTS.md", ":(exclude)CLAUDE.md", ":(exclude)CLAUDE.local.md")
 	cmd.Dir = root
 
 	out, err := cmd.Output()
