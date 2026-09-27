@@ -1,4 +1,4 @@
-<!-- >>> requiem v30 >>> -->
+<!-- >>> requiem v31 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -202,9 +202,10 @@ requiem reindex --embed      # fill every missing or stale vector
 ```
 
 - Vectors live in the gitignored index and **do not survive a clone**, and
-  neither does the local config. Run `requiem init` then
-  `requiem reindex --embed` after cloning; `requiem list --needs-embedding`
-  shows what is missing.
+  neither does the local config. Run `requiem init` after cloning: it
+  finds the endpoint (the machine config, `OLLAMA_HOST`, then localhost),
+  proves it, and embeds the corpus; its `embedding` and `notes` output say
+  what it could not do. `requiem list --needs-embedding` shows what is missing.
 - A partial run exits nonzero and keeps whatever succeeded — re-running
   retries only the failures.
 - `audit` and `check` warn on stderr when part of the corpus is unembedded,

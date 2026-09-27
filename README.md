@@ -41,6 +41,16 @@ change every contributor's agent instructions. A team that has adopted it runs
 instead, after any existing content and never replacing it; `--local` moves it
 back out.
 
+`init` also connects the embedder, so requiem is fully working when it
+returns. It uses the project's committed model (or `--embedding-model`, or the
+machine config's default), finds an endpoint that answers a real request with
+it — `--embedding-endpoint`, the one already configured, the server
+`OLLAMA_HOST` names, then Ollama on localhost; it never scans the network —
+saves it to the machine config so every project on the machine finds it, and
+embeds the corpus. At a terminal it asks for what it cannot find; run by an
+agent it never waits, and reports what is missing instead. `--skip-models`
+leaves all of this alone.
+
 `init` is safe to re-run, and a fresh clone needs it: hooks and the local
 config are not carried by git. Re-running it also brings a project set up by
 an older requiem up to date.

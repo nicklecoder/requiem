@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 30
+const docBlockVersion = 31
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -273,9 +273,10 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"```",
 	"",
 	"- Vectors live in the gitignored index and **do not survive a clone**, and",
-	"  neither does the local config. Run `requiem init` then",
-	"  `requiem reindex --embed` after cloning; `requiem list --needs-embedding`",
-	"  shows what is missing.",
+	"  neither does the local config. Run `requiem init` after cloning: it",
+	"  finds the endpoint (the machine config, `OLLAMA_HOST`, then localhost),",
+	"  proves it, and embeds the corpus; its `embedding` and `notes` output say",
+	"  what it could not do. `requiem list --needs-embedding` shows what is missing.",
 	"- A partial run exits nonzero and keeps whatever succeeded — re-running",
 	"  retries only the failures.",
 	"- `audit` and `check` warn on stderr when part of the corpus is unembedded,",
