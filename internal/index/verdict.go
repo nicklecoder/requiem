@@ -1,9 +1,7 @@
 package index
 
 import (
-	"regexp"
 	"sort"
-	"strings"
 )
 
 // Verdict is how strongly a candidate resembles the draft that was searched
@@ -97,62 +95,96 @@ func classifyVerdict(similarity float64, hasSimilarity bool, sharedFacetCount in
 	}
 }
 
-// coverageTermRe pulls word tokens for the coverage proxy.
-var coverageTermRe = regexp.MustCompile(`[a-zA-Z0-9_]+`)
-
 // coverageStopwords are the function words a draft shares with every piece of
 // prose in any corpus. A fixed list, for the same reason trace.Search uses
 // one: check's adaptive document-frequency filter is the wrong tool here,
 // since in an auth-heavy corpus it would discard "token" and "session" — the
 // very words that decide whether two statements are about the same thing.
-var coverageStopwords = map[string]bool{
-	"the": true, "and": true, "for": true, "are": true, "not": true, "but": true,
-	"any": true, "all": true, "can": true, "has": true, "was": true, "with": true,
-	"that": true, "this": true, "from": true, "into": true, "when": true, "then": true,
-	"than": true, "they": true, "them": true, "their": true, "which": true, "while": true,
-	"would": true, "should": true, "must": true, "never": true, "always": true,
-	"every": true, "each": true, "does": true, "only": true, "other": true, "over": true,
-	"same": true, "such": true, "because": true, "before": true, "after": true,
-	"about": true, "there": true, "where": true, "what": true, "will": true,
-	"been": true, "being": true, "its": true, "one": true, "two": true, "way": true,
-	"how": true, "rather": true, "instead": true, "without": true, "within": true,
-	"per": true, "via": true, "off": true, "out": true, "own": true, "set": true,
+// Written as words; coverage compares their stems (see coverageStopStems).
+var coverageStopwords = []string{
+	"the", "and", "for", "are", "not", "but",
+	"any", "all", "can", "has", "was", "with",
+	"that", "this", "from", "into", "when", "then",
+	"than", "they", "them", "their", "which", "while",
+	"would", "should", "must", "never", "always",
+	"every", "each", "does", "only", "other", "over",
+	"same", "such", "because", "before", "after",
+	"about", "there", "where", "what", "will",
+	"been", "being", "its", "one", "two", "way",
+	"how", "rather", "instead", "without", "within",
+	"per", "via", "off", "out", "own", "set",
 }
 
 // minCoverageTermLen keeps three-letter domain words (ttl, jwt, api) and drops
 // shorter noise.
 const minCoverageTermLen = 3
 
-// coverageTerms reduces text to the distinctive words coverage is measured
-// over.
-func coverageTerms(text string) []string {
+// requiem: retrieval/verdict-coverage-stemmed
+// coverageStems runs the draft and each body through the tokenizer the
+// full-text index uses, so coverage compares the same stems retrieval
+// matched on. Comparing surface words let check find a record through a stem
+// ("cancel" against "cancellation"), score it weak, and on an all-weak page
+// report that nothing states the draft already. The first result is the
+// draft's distinctive stems; the rest are each body's stems as a set.
+func (ix *Index) coverageStems(draft string, bodies []string) ([]string, []map[string]bool, error) {
+	stop, err := ix.coverageStopStems()
+	if err != nil {
+		return nil, nil, err
+	}
+	stems, err := ix.queryStems(append([]string{draft}, bodies...))
+	if err != nil {
+		return nil, nil, err
+	}
 	seen := map[string]bool{}
-	var out []string
-	for _, w := range coverageTermRe.FindAllString(strings.ToLower(text), -1) {
-		if len(w) < minCoverageTermLen || coverageStopwords[w] || seen[w] {
+	var draftTerms []string
+	for _, w := range stems[0] {
+		if len(w) < minCoverageTermLen || stop[w] || seen[w] {
 			continue
 		}
 		seen[w] = true
-		out = append(out, w)
+		draftTerms = append(draftTerms, w)
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(draftTerms)
+	sets := make([]map[string]bool, len(bodies))
+	for i := range bodies {
+		sets[i] = map[string]bool{}
+		for _, w := range stems[i+1] {
+			sets[i][w] = true
+		}
+	}
+	return draftTerms, sets, nil
 }
 
-// termCoverage is the fraction of the draft's distinctive words that appear
-// in body. A proxy, and named as one: it says the vocabulary overlaps, which
+// coverageStopStems stems the stopword list once per open index: the
+// tokenizer turns "being" into "be", so the surface list would stop matching.
+func (ix *Index) coverageStopStems() (map[string]bool, error) {
+	if ix.stopStems != nil {
+		return ix.stopStems, nil
+	}
+	stems, err := ix.queryStems(coverageStopwords)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, ws := range stems {
+		for _, w := range ws {
+			out[w] = true
+		}
+	}
+	ix.stopStems = out
+	return out, nil
+}
+
+// termCoverage is the fraction of the draft's distinctive stems that appear
+// in a body. A proxy, and named as one: it says the vocabulary overlaps, which
 // is weaker than meaning and much weaker than a shared identifier.
-func termCoverage(draftTerms []string, body string) float64 {
+func termCoverage(draftTerms []string, body map[string]bool) float64 {
 	if len(draftTerms) == 0 {
 		return 0
 	}
-	present := make(map[string]bool)
-	for _, w := range coverageTermRe.FindAllString(strings.ToLower(body), -1) {
-		present[w] = true
-	}
 	var hits int
 	for _, t := range draftTerms {
-		if present[t] {
+		if body[t] {
 			hits++
 		}
 	}
