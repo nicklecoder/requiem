@@ -2,7 +2,7 @@
 id: audit-question-rule-noise
 namespace: retrieval
 kind: question
-status: proposed
+status: deprecated
 provenance:
     type: dialogue
 created_at: 2026-09-24T21:08:46.444041299Z

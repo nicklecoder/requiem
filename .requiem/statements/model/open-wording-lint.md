@@ -2,7 +2,7 @@
 id: open-wording-lint
 namespace: model
 kind: question
-status: proposed
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-24T21:08:46.400335542Z

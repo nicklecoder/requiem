@@ -2,7 +2,7 @@
 id: decision-model-pair-scoring
 namespace: retrieval
 kind: question
-status: proposed
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-26T22:40:01.608038548Z

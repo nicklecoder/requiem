@@ -2,7 +2,7 @@
 id: audit-export-with-bodies
 namespace: retrieval
 kind: question
-status: proposed
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-24T21:08:46.466172711Z

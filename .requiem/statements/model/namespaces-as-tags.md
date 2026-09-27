@@ -2,7 +2,7 @@
 id: namespaces-as-tags
 namespace: model
 kind: question
-status: proposed
+status: deprecated
 provenance:
     type: dialogue
 created_at: 2026-09-16T04:27:03.425484189Z
