@@ -198,6 +198,36 @@ func TestCheck_VerdictSeparatesADuplicateFromNoise(t *testing.T) {
 	}
 }
 
+// requiem: retrieval/verdict-coverage-stemmed
+// Retrieval stems, so the verdict has to as well: a draft found through its
+// stems ("cancellation" for "cancellable") must not then be scored on its
+// surface words, which judged it barely related and, across a whole page,
+// reported that nothing stated the draft already.
+func TestCheck_CoverageComparesStems(t *testing.T) {
+	s := newTestStore(t)
+	ix := newTestIndex(t)
+
+	seedStatement(t, s, model.Statement{
+		ID: "cancellable-until-close", Namespace: "offering", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Subscriptions are cancellable until the close of the offering period, and refunds follow.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+
+	got, err := ix.Check("", "subscription cancellation refunds offering period closing", nil, nil, "", 0, nil)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if len(got) == 0 || got[0].FullID != "offering/cancellable-until-close" {
+		t.Fatalf("expected the statement to be found through its stems, got %+v", got)
+	}
+	if got[0].Verdict != VerdictDuplicate {
+		t.Fatalf("every distinctive stem of the draft is in the body, so coverage must say duplicate; got %s", got[0].Verdict)
+	}
+}
+
 // Vocabulary overlap is meaningless on a very short draft: two words matching
 // two words is 100% overlap and evidence of nothing. Without a floor, `add`
 // would refuse to record anything whose body was a phrase.

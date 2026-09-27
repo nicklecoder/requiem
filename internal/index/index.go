@@ -31,6 +31,8 @@ type Index struct {
 	// index, when there is one; while it is set, this build does not write
 	// derived data — see ensureDerivation.
 	newerDerivation string
+	// stopStems caches the stemmed coverage stopwords; see coverageStopStems.
+	stopStems map[string]bool
 }
 
 // Warn receives diagnostics the index has for the user, such as an index

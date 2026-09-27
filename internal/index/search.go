@@ -238,7 +238,14 @@ func (ix *Index) annotateEvidence(candidates []Candidate, text string, touches [
 			queryFacets = append(queryFacets, f)
 		}
 	}
-	draftTerms := coverageTerms(text)
+	bodyTexts := make([]string, len(candidates))
+	for i, c := range candidates {
+		bodyTexts[i] = bodies[EmbKey{c.SourceKind, c.FullID}]
+	}
+	draftTerms, bodyStems, err := ix.coverageStems(text, bodyTexts)
+	if err != nil {
+		return err
+	}
 
 	for i := range candidates {
 		c := &candidates[i]
@@ -252,7 +259,7 @@ func (ix *Index) annotateEvidence(candidates []Candidate, text string, touches [
 		if hasSim {
 			sim = *c.Similarity
 		}
-		c.Verdict = classifyVerdict(sim, hasSim, len(c.SharedFacets), termCoverage(draftTerms, bodies[key]), len(draftTerms))
+		c.Verdict = classifyVerdict(sim, hasSim, len(c.SharedFacets), termCoverage(draftTerms, bodyStems[i]), len(draftTerms))
 	}
 	return nil
 }
