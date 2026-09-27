@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/nicklecoder/requiem/internal/config"
 )
 
 // testBinDir holds the requiem built from this tree for the test run.
@@ -35,6 +37,15 @@ func TestMain(m *testing.M) {
 	}
 	testBinDir = dir
 	os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// requiem: cli/machine-config
+	// Every config.Load reads the machine config too, so a test would pass or
+	// fail by whatever the developer's own ~/.config/requiem holds. Point this
+	// process at an empty directory, and child processes (the hooks) too,
+	// through XDG_CONFIG_HOME, which os.UserConfigDir honours.
+	machine := filepath.Join(dir, "machine-config")
+	config.MachineDir = func() (string, error) { return filepath.Join(machine, "requiem"), nil }
+	os.Setenv("XDG_CONFIG_HOME", machine)
 
 	code := m.Run()
 	os.RemoveAll(dir)
