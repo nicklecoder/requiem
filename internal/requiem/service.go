@@ -1409,6 +1409,66 @@ type MoveResult struct {
 	// OrphanedCodeRefs are sites still naming the old id, populated only
 	// when rewriting was declined with --no-rewrite-refs.
 	OrphanedCodeRefs []ClassifiedRef `json:"orphaned_code_refs,omitempty"`
+	// RewrittenBodies are statements and rejections whose body named the
+	// old id, now rewritten and staged.
+	RewrittenBodies []string `json:"rewritten_bodies,omitempty"`
+}
+
+// rewriteRejection writes r and returns the paths to stage. A record still in
+// a legacy per-namespace _rejected.md leaves that file as part of being
+// rewritten, so both paths are returned.
+func (s *Service) rewriteRejection(r model.Rejection) ([]string, error) {
+	legacy, err := s.Store.RejectionIsLegacy(r.FullID())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Store.WriteRejection(r); err != nil {
+		return nil, err
+	}
+	rel, err := s.Store.RejectionRelPath(r.FullID())
+	if err != nil {
+		return nil, err
+	}
+	rels := []string{rel}
+	if legacy {
+		if err := s.Store.RemoveRejection(r.FullID()); err != nil {
+			return nil, err
+		}
+		rels = append(rels, s.Store.LegacyRejectionsRelPath(r.Namespace))
+	}
+	return rels, nil
+}
+
+// rewriteIDInText replaces each occurrence of from in text with to, counting
+// an occurrence only when the characters on both sides could not continue an
+// id: a letter, digit, '-', '_' or '/'. That keeps a longer id (ns/id-v2), a
+// deeper one (ns/id/child) and a path ending in the id (internal/ns/id) from
+// matching. It returns the new text and how many occurrences it replaced.
+func rewriteIDInText(text, from, to string) (string, int) {
+	idChar := func(b byte) bool {
+		return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_' || b == '/'
+	}
+	var out strings.Builder
+	n, last := 0, 0
+	for i := 0; ; {
+		j := strings.Index(text[i:], from)
+		if j < 0 {
+			break
+		}
+		start, end := i+j, i+j+len(from)
+		if (start == 0 || !idChar(text[start-1])) && (end == len(text) || !idChar(text[end])) {
+			out.WriteString(text[last:start])
+			out.WriteString(to)
+			last = end
+			n++
+		}
+		i = start + 1
+	}
+	if n == 0 {
+		return text, 0
+	}
+	out.WriteString(text[last:])
+	return out.String(), n
 }
 
 // Move relocates a statement to a new namespace/id, rewriting every inbound
@@ -1508,28 +1568,68 @@ func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveR
 		if err != nil {
 			return nil, fmt.Errorf("rejection %s: %w", rejID, err)
 		}
-		legacy, err := s.Store.RejectionIsLegacy(rejID)
-		if err != nil {
-			return nil, err
-		}
 		r.SeeInstead = toID
-		if err := s.Store.WriteRejection(r); err != nil {
-			return nil, err
-		}
-		rejRel, err := s.Store.RejectionRelPath(rejID)
+		rels, err := s.rewriteRejection(r)
 		if err != nil {
 			return nil, err
 		}
-		touched = append(touched, rejRel)
-		if legacy {
-			// The record leaves the shared file as part of being rewritten,
-			// so both paths need staging.
-			if err := s.Store.RemoveRejection(rejID); err != nil {
-				return nil, err
-			}
-			touched = append(touched, s.Store.LegacyRejectionsRelPath(r.Namespace))
-		}
+		touched = append(touched, rels...)
 		updated = append(updated, rejID)
+	}
+
+	// requiem: model/mv-rewrites-body-ids
+	// Agents write ids into bodies as plain text, and a move orphaned every
+	// one of them silently. Only text exactly equal to the old id is
+	// rewritten, so nothing merely shaped like an id is touched.
+	var rewrittenBodies []string
+	if err := s.Store.WalkStatements(func(sf store.StatementFile) error {
+		if sf.Statement.FullID() == fromID {
+			return nil // removed or replaced by a stub below
+		}
+		if _, n := rewriteIDInText(sf.Statement.Body, fromID, toID); n == 0 {
+			return nil
+		}
+		// Re-read: a referrer rewritten above has changed on disk since the
+		// walk began.
+		cur, err := s.Store.ReadStatement(sf.Statement.FullID())
+		if err != nil {
+			return err
+		}
+		cur.Body, _ = rewriteIDInText(cur.Body, fromID, toID)
+		if err := s.Store.WriteStatement(cur); err != nil {
+			return err
+		}
+		rel, err := s.Store.StatementRelPath(cur.FullID())
+		if err != nil {
+			return err
+		}
+		touched = append(touched, rel)
+		rewrittenBodies = append(rewrittenBodies, cur.FullID())
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("rewrite ids in bodies: %w", err)
+	}
+	var rejectionIDs []string
+	if err := s.Store.WalkRejections(func(r model.Rejection) error {
+		if _, n := rewriteIDInText(r.Body, fromID, toID); n > 0 {
+			rejectionIDs = append(rejectionIDs, r.FullID())
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("rewrite ids in bodies: %w", err)
+	}
+	for _, rejID := range rejectionIDs {
+		r, err := s.Store.ReadRejection(rejID)
+		if err != nil {
+			return nil, fmt.Errorf("rejection %s: %w", rejID, err)
+		}
+		r.Body, _ = rewriteIDInText(r.Body, fromID, toID)
+		rels, err := s.rewriteRejection(r)
+		if err != nil {
+			return nil, err
+		}
+		touched = append(touched, rels...)
+		rewrittenBodies = append(rewrittenBodies, rejID)
 	}
 
 	oldRel, err := s.Store.StatementRelPath(fromID)
@@ -1589,7 +1689,7 @@ func (s *Service) Move(fromID, toID string, leaveLink, rewriteRefs bool) (*MoveR
 	if err != nil {
 		return nil, err
 	}
-	result := &MoveResult{From: fromID, To: toID, UpdatedReferences: updated, StubLeft: leaveLink}
+	result := &MoveResult{From: fromID, To: toID, UpdatedReferences: updated, StubLeft: leaveLink, RewrittenBodies: rewrittenBodies}
 	if rewriteRefs && len(stale) > 0 {
 		refs := make([]trace.Ref, len(stale))
 		for i, c := range stale {
