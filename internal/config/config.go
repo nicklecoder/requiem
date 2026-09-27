@@ -1,5 +1,6 @@
-// Package config reads requiem's per-project settings from
-// .requiem/config.yaml, overlaid by a gitignored .requiem/config.local.yaml.
+// Package config reads requiem's settings: a per-machine file in the user's
+// config directory, then the project's .requiem/config.yaml, then a
+// gitignored .requiem/config.local.yaml, each overlaid on the one before.
 // The shared file is git-tracked, not a local preference: SPEC.md's
 // disposability guarantee for the index holds for embedding vectors only
 // because the model that reproduces them is itself version-controlled. Where
@@ -26,6 +27,40 @@ const (
 	FileName      = "config.yaml"
 	LocalFileName = "config.local.yaml"
 )
+
+// MachineDir locates the per-machine config directory: requiem/ under the
+// user's config directory (~/.config on Linux, ~/Library/Application Support
+// on macOS). A variable so tests can point it somewhere empty; a test that
+// read the developer's own machine config would pass or fail by machine.
+var MachineDir = func() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "requiem"), nil
+}
+
+// SetupHint says where each embedding setting belongs, for an error that has
+// to tell the user what to configure: the model in the project's committed
+// config, the endpoint in its local overlay or once for every project in the
+// machine config.
+func SetupHint() string {
+	where := "the machine config"
+	if p, err := MachinePath(); err == nil {
+		where = p
+	}
+	return fmt.Sprintf("name the model as `embedding.model` in .requiem/%s, and the endpoint as `embedding.endpoint` in .requiem/%s or, for every project on this machine, in %s",
+		FileName, LocalFileName, where)
+}
+
+// MachinePath is the per-machine config file.
+func MachinePath() (string, error) {
+	dir, err := MachineDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, FileName), nil
+}
 
 // Defaults applied when a field is omitted. Batch size is modest because the
 // common deployment is a local endpoint (Ollama, LM Studio) where an
@@ -122,23 +157,70 @@ func (c *Config) HooksEmbed() bool {
 	return c.Hooks != nil && c.Hooks.Embed && c.EmbeddingConfigured()
 }
 
-// Load reads requiemDir/config.yaml and overlays requiemDir/config.local.yaml
-// on it, field by field, the local value winning wherever it is set. A
-// missing file is not an error — it means nothing is configured there, which
-// is a valid state — so callers get a zero Config rather than having to
-// distinguish absence from failure.
+// Load layers three files, field by field, each winning over the one before
+// wherever it sets a value: the machine config, requiemDir/config.yaml, then
+// requiemDir/config.local.yaml. A missing file is not an error — it means
+// nothing is configured there, which is a valid state — so callers get a zero
+// Config rather than having to distinguish absence from failure.
 // requiem: embedding/local-endpoint-overlay
 func Load(requiemDir string) (*Config, error) {
+	c, err := LoadMachine()
+	if err != nil {
+		return nil, err
+	}
+	c = c.machineLayer()
 	shared, err := loadFile(filepath.Join(requiemDir, FileName))
 	if err != nil {
 		return nil, err
 	}
+	c.overlay(shared)
 	local, err := loadFile(filepath.Join(requiemDir, LocalFileName))
 	if err != nil {
 		return nil, err
 	}
-	shared.overlay(local)
-	return shared, nil
+	c.overlay(local)
+	return c, nil
+}
+
+// LoadMachine reads the per-machine config file as written, including a
+// model, which only init reads (as the default for a new project).
+func LoadMachine() (*Config, error) {
+	path, err := MachinePath()
+	if err != nil {
+		// No config directory at all (no HOME, say): nothing configured
+		// there, the same as an absent file.
+		return &Config{}, nil
+	}
+	c, err := loadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("machine config %s: %w", path, err)
+	}
+	return c, nil
+}
+
+// requiem: cli/machine-config
+// machineLayer keeps what the machine config may set for every project: how
+// to reach and pace the embedding endpoint. The model is dropped, because
+// every vector in a corpus must come from the one model the project commits;
+// a project that named none must stay unconfigured rather than silently
+// embed with whatever this machine prefers, which another clone would not.
+// Gate and hooks are per-project settings and are not read from here.
+func (c *Config) machineLayer() *Config {
+	if c.Embedding == nil {
+		return &Config{}
+	}
+	e := *c.Embedding
+	e.Model = ""
+	return &Config{Embedding: &e}
+}
+
+// DefaultModel is the embedding model the machine config names, which init
+// writes into a new project's committed config. Empty when none is named.
+func (c *Config) DefaultModel() string {
+	if c.Embedding == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Embedding.Model)
 }
 
 func loadFile(path string) (*Config, error) {
@@ -269,7 +351,9 @@ const Template = `# requiem configuration — committed on purpose.
 #
 # Where the model is served from differs per machine, so the endpoint goes in
 # config.local.yaml beside this file — gitignored, and overlaid on this one
-# field by field. Any OpenAI-compatible /v1/embeddings endpoint works —
+# field by field — or, once for every project on the machine, in the machine
+# config (~/.config/requiem/config.yaml on Linux, ~/Library/Application
+# Support/requiem/config.yaml on macOS). Any OpenAI-compatible /v1/embeddings endpoint works —
 # Ollama, LM Studio, llama.cpp, vLLM, LocalAI, or OpenAI. Uncomment:
 #
 # embedding:
@@ -307,7 +391,10 @@ const LocalTemplate = `# requiem local configuration — gitignored, this clone 
 #
 # Overlaid on config.yaml field by field; anything set here wins. The
 # endpoint belongs here because it names a machine: a localhost Ollama on one
-# laptop is a LAN server on another.
+# laptop is a LAN server on another. An endpoint every project on this
+# machine shares can go in the machine config instead
+# (~/.config/requiem/config.yaml on Linux, ~/Library/Application
+# Support/requiem/config.yaml on macOS), which sits beneath both files.
 #
 # embedding:
 #   endpoint: http://localhost:11434/v1/embeddings

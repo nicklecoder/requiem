@@ -123,6 +123,13 @@ embedding:
   api_key_env: OPENAI_API_KEY   # the variable's NAME, never the key itself
 ```
 
+An endpoint every project on a machine shares can be set once instead, in the
+machine config: `~/.config/requiem/config.yaml` on Linux,
+`~/Library/Application Support/requiem/config.yaml` on macOS. It sits beneath
+both project files, and holds only how to reach the endpoint — a `model` there
+is never used by a project that names none, since two clones must never embed
+one corpus with different models.
+
 ```sh
 requiem reindex --embed                      # fetch missing/stale vectors
 requiem check --text "..." --semantic

@@ -1,4 +1,4 @@
-<!-- >>> requiem v29 >>> -->
+<!-- >>> requiem v30 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -192,7 +192,9 @@ turned down in its favour — read those before re-proposing something.
 **Semantic matching.** Lexical search cannot find a prior decision worded in
 vocabulary your draft doesn't share. Embeddings close that gap. The model
 is named in the committed `.requiem/config.yaml`; the endpoint serving it
-is per machine, in the gitignored `.requiem/config.local.yaml`. With both
+is per machine, in the gitignored `.requiem/config.local.yaml` or, once for
+every project on the machine, in `~/.config/requiem/config.yaml`
+(`~/Library/Application Support/requiem/config.yaml` on macOS). With both
 set, requiem fetches vectors itself:
 
 ```sh

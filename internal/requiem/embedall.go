@@ -3,7 +3,6 @@ package requiem
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -55,8 +54,7 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 		return nil, err
 	}
 	if !cfg.EmbeddingConfigured() {
-		return nil, fmt.Errorf("no embedding endpoint configured: set `embedding.endpoint` and `embedding.model` in %s",
-			filepath.Join(requiemDir, config.FileName))
+		return nil, fmt.Errorf("no embedding endpoint configured: %s", config.SetupHint())
 	}
 
 	client, err := embed.New(*cfg.Embedding)

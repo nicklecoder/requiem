@@ -1160,8 +1160,7 @@ func (s *Service) resolveVector(p CheckParams) ([]float32, string, error) {
 		return nil, "", err
 	}
 	if !cfg.EmbeddingConfigured() {
-		return nil, "", fmt.Errorf("--semantic needs an embedding endpoint: set `embedding.endpoint` and `embedding.model` in %s, or pass --vector/--model yourself",
-			filepath.Join(requiemDir, config.FileName))
+		return nil, "", fmt.Errorf("--semantic needs an embedding endpoint: %s; or pass --vector/--model yourself", config.SetupHint())
 	}
 	client, err := embed.New(*cfg.Embedding)
 	if err != nil {
