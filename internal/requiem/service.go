@@ -992,9 +992,10 @@ type ListFilter struct {
 	Kind      string
 	Status    string
 	Tag       string
-	// NeedsEmbedding, when true, narrows results to statements whose
-	// embedding is missing or stale — the batch-discovery path an agent
-	// uses before running `embed` in bulk, without a dedicated subcommand.
+	// NeedsEmbedding, when true, narrows results to active or proposed
+	// statements whose embedding is missing or stale — the batch-discovery
+	// path an agent uses before running `embed` in bulk, without a dedicated
+	// subcommand.
 	NeedsEmbedding bool
 	// Unreferenced, when true, narrows results to statements no labelled
 	// code site points at — the closest thing this model has to an undefined
@@ -1067,7 +1068,10 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 			n := counts[st.FullID()]
 			summary.CodeRefs = &n
 		}
-		if filter.NeedsEmbedding && summary.EmbeddingStatus == "fresh" {
+		// requiem: embedding/needs-embedding-searchable-only
+		// Only what reindex --embed would embed: a retired statement is never
+		// embedded, so listing it reports a gap no command can close.
+		if filter.NeedsEmbedding && (summary.EmbeddingStatus == "fresh" || !st.Status.Searchable()) {
 			continue
 		}
 		// A filter rather than a field on the summary: a bool that is false
