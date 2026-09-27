@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/nicklecoder/requiem/internal/index"
@@ -10,6 +14,7 @@ func newAuditCmd(semantic bool) *cobra.Command {
 	var namespace string
 	var minScore float64
 	var neighbors, limit int
+	var bodies bool
 
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -47,6 +52,21 @@ func newAuditCmd(semantic bool) *cobra.Command {
 				return err
 			}
 			warnDanglingPointers(dangling)
+			if bodies {
+				pairs, err := svc.WithBodies(candidates)
+				if err != nil {
+					return err
+				}
+				// JSON Lines, the shape batch reads, so the verdicts go
+				// straight back as one dismiss or link record per pair.
+				enc := json.NewEncoder(os.Stdout)
+				for _, p := range pairs {
+					if err := enc.Encode(p); err != nil {
+						return fmt.Errorf("encode output: %w", err)
+					}
+				}
+				return nil
+			}
 			if candidates == nil {
 				candidates = []index.PairCandidate{}
 			}
@@ -71,6 +91,7 @@ func newAuditCmd(semantic bool) *cobra.Command {
 	// five planted duplicates. Kept as a blunt floor for anyone who wants one.
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "optional hard floor on raw cosine similarity (0 = no floor)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of pairs to return (0 = unlimited)")
+	cmd.Flags().BoolVar(&bodies, "bodies", false, "emit JSON Lines, one pair per line, with both full bodies in place of excerpts")
 
 	return cmd
 }

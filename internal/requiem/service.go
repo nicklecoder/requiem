@@ -1317,6 +1317,56 @@ func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64
 	return pairs, progress, cov, nil
 }
 
+// PairWithBodies is an audit candidate carrying both full bodies in place of
+// the excerpts, for an agent judging the pair from one read.
+type PairWithBodies struct {
+	A                string   `json:"a"`
+	B                string   `json:"b"`
+	Score            float64  `json:"score"`
+	Similarity       *float64 `json:"similarity,omitempty"`
+	SharedFacets     []string `json:"shared_facets,omitempty"`
+	SameSource       bool     `json:"same_source,omitempty"`
+	ModalityConflict bool     `json:"modality_conflict,omitempty"`
+	BodyA            string   `json:"body_a"`
+	BodyB            string   `json:"body_b"`
+}
+
+// requiem: retrieval/audit-bodies-flag
+// WithBodies attaches each pair's full bodies, read from the statement files.
+// Judging a pair from excerpts cost the agent two get calls per pair; with
+// the bodies in hand it reads the queue once and returns its verdicts
+// through batch. Pairs keep their order, which is the order to review in.
+func (s *Service) WithBodies(pairs []index.PairCandidate) ([]PairWithBodies, error) {
+	bodies := map[string]string{}
+	body := func(id string) (string, error) {
+		if b, ok := bodies[id]; ok {
+			return b, nil
+		}
+		st, err := s.Store.ReadStatement(id)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", id, err)
+		}
+		bodies[id] = st.Body
+		return st.Body, nil
+	}
+	out := make([]PairWithBodies, 0, len(pairs))
+	for _, p := range pairs {
+		a, err := body(p.A)
+		if err != nil {
+			return nil, err
+		}
+		b, err := body(p.B)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, PairWithBodies{
+			A: p.A, B: p.B, Score: p.Score, Similarity: p.Similarity, SharedFacets: p.SharedFacets,
+			SameSource: p.SameSource, ModalityConflict: p.ModalityConflict, BodyA: a, BodyB: b,
+		})
+	}
+	return out, nil
+}
+
 // DismissPair records that a candidate pair was looked at and judged
 // unrelated, so it stops resurfacing — without putting an edge in the graph.
 //

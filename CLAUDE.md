@@ -1,4 +1,4 @@
-<!-- >>> requiem v28 >>> -->
+<!-- >>> requiem v29 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -244,7 +244,9 @@ Record what you find:
 
 A first audit is mostly dismissals. Record them in one `requiem batch` —
 `{"op":"dismiss","from":"<a>","to":"<b>","note":"..."}` per line,
-beside `link` records for the real findings.
+beside `link` records for the real findings. `requiem audit --bodies` prints
+the same pairs as JSON Lines carrying both full bodies, so you can judge a
+page from one read instead of a `get` per statement.
 
 **Linking decisions to code.** Label the code that implements a statement so a
 changed decision can report what it affects:

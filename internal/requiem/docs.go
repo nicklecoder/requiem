@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 28
+const docBlockVersion = 29
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -315,7 +315,9 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"",
 	"A first audit is mostly dismissals. Record them in one `requiem batch` —",
 	"`{\"op\":\"dismiss\",\"from\":\"<a>\",\"to\":\"<b>\",\"note\":\"...\"}` per line,",
-	"beside `link` records for the real findings.",
+	"beside `link` records for the real findings. `requiem audit --bodies` prints",
+	"the same pairs as JSON Lines carrying both full bodies, so you can judge a",
+	"page from one read instead of a `get` per statement.",
 	"",
 	"**Linking decisions to code.** Label the code that implements a statement so a",
 	"changed decision can report what it affects:",

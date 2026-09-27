@@ -1,6 +1,7 @@
 package requiem
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1336,6 +1337,49 @@ func TestList_NeedsEmbeddingSkipsRetired(t *testing.T) {
 	}
 	if len(needing) != 1 || needing[0].FullID != "ns/live" {
 		t.Fatalf("expected only ns/live, got %+v", needing)
+	}
+}
+
+// requiem: retrieval/audit-bodies-flag
+// Judging a pair needs both whole statements; the excerpts audit prints are
+// cut at 140 characters, so --bodies carries the full text instead.
+func TestAudit_WithBodiesCarriesFullBodies(t *testing.T) {
+	s := newTestService(t)
+	long := "session tokens expire after 30 minutes of inactivity, and the expiry is enforced server-side on every request rather than trusted to the client, " +
+		"because a client clock can be wrong or tampered with and a token that outlives its window is exactly the leak this rule exists to bound"
+	if _, err := s.Add(AddParams{ID: "a", Namespace: "ns", Kind: "rule", Body: long}); err != nil {
+		t.Fatalf("Add a: %v", err)
+	}
+	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "auth tokens must not persist beyond a half hour of inactivity"}); err != nil {
+		t.Fatalf("Add b: %v", err)
+	}
+	for _, id := range []string{"ns/a", "ns/b"} {
+		if _, err := s.Embed(id, "m", []float32{1, 1, 0}, false, false); err != nil {
+			t.Fatalf("Embed %s: %v", id, err)
+		}
+	}
+	pairs, _, _, err := s.Audit("", 5, 0, 0)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	withBodies, err := s.WithBodies(pairs)
+	if err != nil {
+		t.Fatalf("WithBodies: %v", err)
+	}
+	if len(withBodies) != 1 {
+		t.Fatalf("expected 1 pair, got %+v", withBodies)
+	}
+	p := withBodies[0]
+	bodies := map[string]string{p.A: p.BodyA, p.B: p.BodyB}
+	if bodies["ns/a"] != long {
+		t.Fatalf("expected the full body of ns/a, got %q", bodies["ns/a"])
+	}
+	line, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(line), "excerpt_a") || !strings.Contains(string(line), `"body_a"`) {
+		t.Fatalf("expected bodies in place of excerpts, got %s", line)
 	}
 }
 
