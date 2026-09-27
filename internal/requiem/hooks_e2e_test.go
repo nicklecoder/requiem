@@ -4,32 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/nicklecoder/requiem/internal/index"
 )
-
-// buildRequiemBinary compiles the real cmd/requiem binary once per test run
-// into a temp dir, so the installed git hooks (which invoke the bare
-// `requiem` command, relying on PATH — exactly like production) can
-// actually resolve and run it.
-func buildRequiemBinary(t *testing.T) string {
-	t.Helper()
-	binDir := t.TempDir()
-	binName := "requiem"
-	if runtime.GOOS == "windows" {
-		binName += ".exe"
-	}
-	binPath := filepath.Join(binDir, binName)
-
-	cmd := exec.Command("go", "build", "-o", binPath, "github.com/nicklecoder/requiem/cmd/requiem")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build requiem binary: %v\n%s", err, out)
-	}
-	return binDir
-}
 
 // TestPostCheckoutHook_ReindexesWithoutAnExplicitCall is the slow,
 // true end-to-end counterpart to the fast InstallHook unit tests: it fires
@@ -41,7 +20,7 @@ func TestPostCheckoutHook_ReindexesWithoutAnExplicitCall(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	binDir := buildRequiemBinary(t)
+	binDir := testBinDir // built once by TestMain
 
 	dir := t.TempDir()
 	runGit := func(args ...string) {
