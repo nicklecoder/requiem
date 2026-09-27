@@ -169,12 +169,12 @@ func Load(requiemDir string) (*Config, error) {
 		return nil, err
 	}
 	c = c.machineLayer()
-	shared, err := loadFile(filepath.Join(requiemDir, FileName))
+	shared, err := LoadFile(filepath.Join(requiemDir, FileName))
 	if err != nil {
 		return nil, err
 	}
 	c.overlay(shared)
-	local, err := loadFile(filepath.Join(requiemDir, LocalFileName))
+	local, err := LoadFile(filepath.Join(requiemDir, LocalFileName))
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func LoadMachine() (*Config, error) {
 		// there, the same as an absent file.
 		return &Config{}, nil
 	}
-	c, err := loadFile(path)
+	c, err := LoadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("machine config %s: %w", path, err)
 	}
@@ -223,7 +223,9 @@ func (c *Config) DefaultModel() string {
 	return strings.TrimSpace(c.Embedding.Model)
 }
 
-func loadFile(path string) (*Config, error) {
+// LoadFile reads one config file as written, with no layering. A missing
+// file reads as an empty Config.
+func LoadFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -549,4 +551,47 @@ func removeKey(m *yaml.Node, key string) (k, v *yaml.Node) {
 		}
 	}
 	return nil, nil
+}
+
+// SetEmbeddingField sets embedding.<key> in the config file at path to value,
+// creating the file (and its directory) when absent. Edits go through the
+// YAML node tree, as MigrateLocalFields' do, so comments survive — including
+// a file that is nothing but comments, like the templates init writes, whose
+// text is kept as a head comment above the new mapping.
+func SetEmbeddingField(path, key, value string) error {
+	doc, err := readNode(path)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		existing, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		doc = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+		doc.HeadComment = strings.TrimRight(string(existing), "\n")
+	}
+	emb := mappingValue(doc, "embedding")
+	if emb == nil || emb.Kind != yaml.MappingNode {
+		if emb != nil {
+			removeKey(doc.Content[0], "embedding")
+		}
+		emb = &yaml.Node{Kind: yaml.MappingNode}
+		root := doc.Content[0]
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "embedding"}, emb)
+	}
+	set := false
+	for i := 0; i+1 < len(emb.Content); i += 2 {
+		if emb.Content[i].Value == key {
+			emb.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+			set = true
+		}
+	}
+	if !set {
+		emb.Content = append(emb.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, &yaml.Node{Kind: yaml.ScalarNode, Value: value})
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return writeNode(path, doc)
 }

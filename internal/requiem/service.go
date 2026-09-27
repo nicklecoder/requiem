@@ -86,12 +86,16 @@ type InitResult struct {
 	ConfigMoved []string `json:"config_moved,omitempty"`
 	// ExcludedLocally are paths added to .git/info/exclude.
 	ExcludedLocally []string `json:"excluded_locally,omitempty"`
-	Notes           []string `json:"notes,omitempty"`
+	// Embedding reports what init did to connect the embedder, when it
+	// was asked to (see ModelSetupOptions).
+	Embedding *EmbeddingSetup `json:"embedding,omitempty"`
+	Notes     []string        `json:"notes,omitempty"`
 }
 
 // InitOptions are the inputs to Init.
 type InitOptions struct {
-	Docs DocsMode
+	Docs   DocsMode
+	Models ModelSetupOptions
 }
 
 // requiemIgnores are the lines .requiem/.gitignore must carry: the index
@@ -198,6 +202,13 @@ func (s *Service) Init(opts InitOptions) (*InitResult, error) {
 	}
 	if err := ix.Close(); err != nil {
 		return nil, err
+	}
+
+	// Before the hooks: whether they embed depends on an endpoint working.
+	if opts.Models.Enabled {
+		if err := s.setupEmbedding(opts.Models, res); err != nil {
+			return nil, err
+		}
 	}
 
 	// Read after the config files are written and migrated, so a project

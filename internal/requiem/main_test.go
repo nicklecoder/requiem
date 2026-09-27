@@ -46,6 +46,9 @@ func TestMain(m *testing.M) {
 	machine := filepath.Join(dir, "machine-config")
 	config.MachineDir = func() (string, error) { return filepath.Join(machine, "requiem"), nil }
 	os.Setenv("XDG_CONFIG_HOME", machine)
+	// Model setup must not find the developer's own servers either.
+	os.Unsetenv("OLLAMA_HOST")
+	localOllamaEndpoint = "http://127.0.0.1:1/v1/embeddings"
 
 	code := m.Run()
 	os.RemoveAll(dir)
