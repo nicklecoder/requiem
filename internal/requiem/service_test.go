@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -663,6 +664,84 @@ func TestMove_RewritesRejectionSeeInstead(t *testing.T) {
 	}
 	if len(dangling) != 0 {
 		t.Fatalf("expected no dangling pointers after the move, got %+v", dangling)
+	}
+}
+
+// requiem: model/mv-rewrites-body-ids
+func TestRewriteIDInText(t *testing.T) {
+	const from, to = "auth/session/target", "auth/shared/target"
+	for _, c := range []struct {
+		in, want string
+		n        int
+	}{
+		{"auth/session/target", "auth/shared/target", 1},
+		{"See auth/session/target.", "See auth/shared/target.", 1},
+		{"(auth/session/target) and auth/session/target", "(auth/shared/target) and auth/shared/target", 2},
+		{"auth/session/target auth/session/target", "auth/shared/target auth/shared/target", 2},
+		{"auth/session/target-v2 is a different id", "auth/session/target-v2 is a different id", 0},
+		{"auth/session/target/child is deeper", "auth/session/target/child is deeper", 0},
+		{"internal/auth/session/target is a path", "internal/auth/session/target is a path", 0},
+		{"xauth/session/target", "xauth/session/target", 0},
+		{"no id here", "no id here", 0},
+	} {
+		got, n := rewriteIDInText(c.in, from, to)
+		if got != c.want || n != c.n {
+			t.Errorf("rewriteIDInText(%q) = %q, %d; want %q, %d", c.in, got, n, c.want, c.n)
+		}
+	}
+}
+
+// requiem: model/mv-rewrites-body-ids
+// Ids written into bodies as plain text used to survive a move untouched,
+// each one now naming nothing.
+func TestMove_RewritesIDsInBodies(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "target", Namespace: "auth/session", Kind: "rule", Body: "the target"}); err != nil {
+		t.Fatalf("Add target: %v", err)
+	}
+	citing := "Follows auth/session/target (see auth/session/target). Unrelated: auth/session/target-v2, internal/auth/session/target."
+	if _, err := s.Add(AddParams{ID: "citing", Namespace: "auth/other", Kind: "rule", Body: citing, DuplicateOk: true}); err != nil {
+		t.Fatalf("Add citing: %v", err)
+	}
+	if _, err := s.Reject(RejectParams{ID: "old-idea", Namespace: "auth/other", Body: "An old idea. Rejected in favour of auth/session/target."}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := s.Commit("test setup"); err != nil {
+		t.Fatalf("commit setup: %v", err)
+	}
+
+	res, err := s.Move("auth/session/target", "auth/shared/target", false, true)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if !slices.Contains(res.RewrittenBodies, "auth/other/citing") || !slices.Contains(res.RewrittenBodies, "auth/other/old-idea") {
+		t.Fatalf("expected both bodies listed as rewritten, got %v", res.RewrittenBodies)
+	}
+
+	got, err := s.Store.ReadStatement("auth/other/citing")
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	want := "Follows auth/shared/target (see auth/shared/target). Unrelated: auth/session/target-v2, internal/auth/session/target."
+	if got.Body != want {
+		t.Fatalf("body ids not rewritten exactly:\n got %q\nwant %q", got.Body, want)
+	}
+	rej, err := s.Store.ReadRejection("auth/other/old-idea")
+	if err != nil {
+		t.Fatalf("ReadRejection: %v", err)
+	}
+	if !strings.Contains(rej.Body, "auth/shared/target") || strings.Contains(rej.Body, "auth/session/target") {
+		t.Fatalf("rejection body should follow the move, got %q", rej.Body)
+	}
+
+	review, err := s.Review()
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for _, want := range []string{"citing.md", "old-idea.rejected.md"} {
+		if !slices.ContainsFunc(review.Files, func(f string) bool { return strings.HasSuffix(f, want) }) {
+			t.Fatalf("expected %s staged, got %v", want, review.Files)
+		}
 	}
 }
 
