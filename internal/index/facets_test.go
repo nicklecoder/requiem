@@ -332,6 +332,74 @@ func TestOpen_RebuildsDerivedDataWhenTheDerivationChanges(t *testing.T) {
 	}
 }
 
+// requiem: model/derived-data-never-downgrades
+// An older build opening an index a newer build derived must leave it alone:
+// rebuilding it would start the two builds undoing each other, and adding
+// rows of its own would leave data the newer build never repairs.
+func TestOpen_LeavesANewerDerivationAlone(t *testing.T) {
+	s := newTestStore(t)
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	ix, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	seedStatement(t, s, model.Statement{
+		ID: "keying", Namespace: "ingest", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Matched on ticketing_provider_slug.",
+	})
+	if _, err := ix.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if _, err := ix.db.Exec(`UPDATE index_meta SET value = '99' WHERE key = 'derivation_version'`); err != nil {
+		t.Fatalf("stamp a newer derivation: %v", err)
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var warnings []string
+	prev := Warn
+	Warn = func(msg string) { warnings = append(warnings, msg) }
+	defer func() { Warn = prev }()
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "newer requiem") {
+		t.Fatalf("expected one warning about a newer requiem, got %q", warnings)
+	}
+	var stored string
+	if err := reopened.db.QueryRow(`SELECT value FROM index_meta WHERE key = 'derivation_version'`).Scan(&stored); err != nil {
+		t.Fatalf("read derivation version: %v", err)
+	}
+	if stored != "99" {
+		t.Fatalf("an older build must not downgrade the derivation, got %q", stored)
+	}
+	facets, err := reopened.FacetsFor(StatementKey("ingest/keying"))
+	if err != nil || len(facets) == 0 {
+		t.Fatalf("the newer build's derived data must survive, got %v err=%v", facets, err)
+	}
+
+	seedStatement(t, s, model.Statement{
+		ID: "later", Namespace: "ingest", Kind: model.KindRule, Status: model.StatusActive,
+		Provenance: model.Provenance{Type: model.ProvenanceDialogue}, CreatedAt: time.Now().UTC(),
+		Body: "Written after the newer build indexed.",
+	})
+	if _, err := reopened.Reindex(s); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	var n int
+	if err := reopened.db.QueryRow(`SELECT COUNT(*) FROM statements`).Scan(&n); err != nil {
+		t.Fatalf("count statements: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("an older build must not write derived rows into a newer index, found %d statements", n)
+	}
+}
+
 // Facets are derived in the same transaction as the row, so a rewritten body
 // cannot leave its old identifiers behind.
 func TestReindex_FacetsFollowABodyRewrite(t *testing.T) {

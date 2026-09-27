@@ -61,6 +61,13 @@ func isSQLiteBusy(err error) bool {
 // call on every read (see Service.Get/List) rather than only on explicit
 // `reindex`.
 func (ix *Index) Reindex(s *store.Store) (ReindexStats, error) {
+	// requiem: model/derived-data-never-downgrades
+	// Rows this build derived would sit beside ones a newer build derived
+	// differently, and the newer build would never repair them: its stored
+	// version already matches its own. Open has warned.
+	if ix.newerDerivation != "" {
+		return ReindexStats{}, nil
+	}
 	var stats ReindexStats
 	var err error
 	for attempt := 0; attempt < busyRetryAttempts; attempt++ {

@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +27,16 @@ const timeFormat = time.RFC3339Nano
 // Index wraps the SQLite connection backing one project's .requiem/index.sqlite.
 type Index struct {
 	db *sql.DB
+	// newerDerivation is the derivation version a newer requiem left in this
+	// index, when there is one; while it is set, this build does not write
+	// derived data — see ensureDerivation.
+	newerDerivation string
 }
+
+// Warn receives diagnostics the index has for the user, such as an index
+// derived by a newer build. The CLI points it at stderr; it is a no-op
+// otherwise, so library callers and tests stay quiet.
+var Warn = func(string) {}
 
 // Open opens (creating if necessary) the SQLite file at path and ensures
 // its schema exists.
@@ -54,6 +64,10 @@ func Open(path string) (*Index, error) {
 	if err := ix.ensureSchema(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if ix.newerDerivation != "" {
+		Warn(fmt.Sprintf("requiem: warning: this index was built by a newer requiem (derived data version %s, this build writes %s); "+
+			"leaving it as it is — upgrade requiem, since results from this build may be inaccurate", ix.newerDerivation, derivationVersion))
 	}
 	return ix, nil
 }
@@ -84,9 +98,11 @@ func (ix *Index) ensureSchema() error {
 	if err := migrate(tx); err != nil {
 		return fmt.Errorf("migrate index: %w", err)
 	}
-	if err := ensureDerivation(tx); err != nil {
+	newer, err := ensureDerivation(tx)
+	if err != nil {
 		return fmt.Errorf("refresh derived data: %w", err)
 	}
+	ix.newerDerivation = newer
 	return tx.Commit()
 }
 
@@ -125,14 +141,26 @@ const derivationVersion = "5"
 // Embeddings and code_refs are deliberately left alone. Vectors cannot be
 // recovered by reparsing a file — only by a network call — which is the same
 // reason schema changes here migrate rather than wipe.
-func ensureDerivation(tx *sql.Tx) error {
+//
+// It returns the stored version when a newer build wrote it, and changes
+// nothing in that case.
+func ensureDerivation(tx *sql.Tx) (string, error) {
 	var stored string
 	err := tx.QueryRow(`SELECT value FROM index_meta WHERE key = 'derivation_version'`).Scan(&stored)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return "", err
 	}
 	if stored == derivationVersion {
-		return nil
+		return "", nil
+	}
+	// requiem: model/derived-data-never-downgrades
+	// A git hook runs whichever requiem is on PATH, so an older installed
+	// build and a newer one in use used to rebuild each other's derived data
+	// on every alternation, and the older one then queried data it did not
+	// derive. Only an older stored version is rebuilt; a newer one is left
+	// for the build that wrote it.
+	if newerThanThisBuild(stored) {
+		return stored, nil
 	}
 
 	// Dependents first, manifest last: statements.file_path and
@@ -150,13 +178,25 @@ func ensureDerivation(tx *sql.Tx) error {
 		`DELETE FROM manifest`,
 	} {
 		if _, err := tx.Exec(stmt); err != nil {
-			return fmt.Errorf("%s: %w", stmt, err)
+			return "", fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
 	_, err = tx.Exec(
 		`INSERT INTO index_meta (key, value) VALUES ('derivation_version', ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, derivationVersion)
-	return err
+	return "", err
+}
+
+// newerThanThisBuild reports whether a stored derivation version is a later
+// one than this build's. A version that is not a number predates numbering
+// or is damaged, and is rebuilt like any older one.
+func newerThanThisBuild(stored string) bool {
+	s, err := strconv.Atoi(stored)
+	if err != nil {
+		return false
+	}
+	mine, err := strconv.Atoi(derivationVersion)
+	return err == nil && s > mine
 }
 
 // migrate brings an index created by an older build up to the current shape.
