@@ -1237,6 +1237,29 @@ func TestList_NeedsEmbeddingFilter(t *testing.T) {
 	}
 }
 
+// requiem: embedding/needs-embedding-searchable-only
+func TestList_NeedsEmbeddingSkipsRetired(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Add(AddParams{ID: "live", Namespace: "ns", Kind: "rule", Body: "still in force"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Retired with no vector: what a forced re-embed leaves behind, since
+	// reindex --embed only embeds what the semantic paths search.
+	for _, st := range []model.Status{model.StatusSuperseded, model.StatusDeprecated} {
+		if _, err := s.Add(AddParams{ID: string(st), Namespace: "ns", Kind: "rule", Body: "withdrawn " + string(st), Status: string(st)}); err != nil {
+			t.Fatalf("Add %s: %v", st, err)
+		}
+	}
+
+	needing, err := s.List(ListFilter{NeedsEmbedding: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(needing) != 1 || needing[0].FullID != "ns/live" {
+		t.Fatalf("expected only ns/live, got %+v", needing)
+	}
+}
+
 func TestAudit_SurfacesSimilarPairAndSkipsAfterLink(t *testing.T) {
 	s := newTestService(t)
 	if _, err := s.Add(AddParams{ID: "a", Namespace: "ns", Kind: "rule", Body: "session tokens expire after 30 minutes"}); err != nil {
