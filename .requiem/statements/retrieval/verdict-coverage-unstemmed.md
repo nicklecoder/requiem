@@ -2,7 +2,7 @@
 id: verdict-coverage-unstemmed
 namespace: retrieval
 kind: question
-status: proposed
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-24T21:00:22.891318198Z

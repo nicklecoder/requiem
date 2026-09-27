@@ -2,7 +2,7 @@
 id: tests-use-path-binary
 namespace: cli
 kind: question
-status: proposed
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-24T21:08:46.573988921Z
