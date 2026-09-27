@@ -9,6 +9,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/nicklecoder/requiem/internal/index"
 )
 
 // version is set via -ldflags at release build time (see M7); "dev" locally.
@@ -146,6 +148,15 @@ CONVENTIONS
 // Bare data goes to stdout on success; errors go to stderr with a nonzero
 // exit code — no {ok,data} envelope (see SPEC.md CLI output convention).
 func Execute() int {
+	// A command opens the index several times; the reader needs each
+	// diagnostic once.
+	seen := map[string]bool{}
+	index.Warn = func(msg string) {
+		if !seen[msg] {
+			seen[msg] = true
+			fmt.Fprintln(os.Stderr, msg)
+		}
+	}
 	cmd := NewRootCmd()
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
