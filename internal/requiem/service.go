@@ -19,6 +19,7 @@ import (
 	"github.com/nicklecoder/requiem/internal/hash"
 	"github.com/nicklecoder/requiem/internal/index"
 	"github.com/nicklecoder/requiem/internal/model"
+	"github.com/nicklecoder/requiem/internal/reach"
 	"github.com/nicklecoder/requiem/internal/store"
 	"github.com/nicklecoder/requiem/internal/trace"
 )
@@ -1175,50 +1176,65 @@ type CheckParams struct {
 
 // resolveVector supplies the query vector when Semantic is set, leaving a
 // caller-supplied one untouched otherwise.
-func (s *Service) resolveVector(p CheckParams) ([]float32, string, error) {
+// resolveVector returns the query vector for check, or none with a note
+// saying why the semantic half could not run: degraded is set when the
+// endpoint is out of reach, in which case check answers from word search.
+func (s *Service) resolveVector(p CheckParams) (vec []float32, embModel, degraded string, err error) {
 	if !p.Semantic {
-		return p.Vector, p.Model, nil
+		return p.Vector, p.Model, "", nil
 	}
 	if len(p.Vector) > 0 {
-		return nil, "", fmt.Errorf("--semantic and --vector are mutually exclusive: one asks requiem to compute the query vector, the other supplies one")
+		return nil, "", "", fmt.Errorf("--semantic and --vector are mutually exclusive: one asks requiem to compute the query vector, the other supplies one")
 	}
 	if strings.TrimSpace(p.Text) == "" {
-		return nil, "", fmt.Errorf("--semantic needs --text to embed")
+		return nil, "", "", fmt.Errorf("--semantic needs --text to embed")
 	}
 
 	cfg, err := config.Load(s.Store.Root)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if !cfg.EmbeddingConfigured() {
-		return nil, "", fmt.Errorf("--semantic needs an embedding endpoint: %s; or pass --vector/--model yourself", config.SetupHint())
+		return nil, "", "", fmt.Errorf("--semantic needs an embedding endpoint: %s; or pass --vector/--model yourself", config.SetupHint())
 	}
 	client, err := embed.New(*cfg.Embedding)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
+	}
+	// requiem: retrieval/semantic-check-degrades
+	// check is what an agent runs before proposing anything, so an
+	// unreachable endpoint must not stop it: word search still finds most
+	// prior decisions, and the note keeps the answer honest.
+	lexicalOnly := "requiem: warning: results are from word search only; "
+	if until, down := s.endpointDown(client.Endpoint()); down {
+		return nil, "", lexicalOnly + downNote("the embedding endpoint", client.Endpoint(), until), nil
 	}
 	timeout, err := cfg.Embedding.ResolvedTimeout()
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	vecs, err := client.Embed(ctx, []string{p.Text})
+	s.recordReach(client.Endpoint(), err)
 	if err != nil {
-		return nil, "", fmt.Errorf("embed query text: %w", err)
+		if reach.Unreachable(err) || errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+			return nil, "", lexicalOnly + fmt.Sprintf("the embedding endpoint %s did not answer (%v)", client.Endpoint(), err), nil
+		}
+		return nil, "", "", fmt.Errorf("embed query text: %w", err)
 	}
 	// The model comes from the same config the corpus was embedded under, so
 	// the mismatch guard in the index has nothing to catch here — but it
 	// still runs, and would catch a config edited since the last embed run.
-	return vecs[0], client.Model(), nil
+	return vecs[0], client.Model(), "", nil
 }
 
 // Coverage is only computed when a query vector is in play: without one the
 // semantic path never runs, so an unembedded corpus costs the caller nothing
 // and a warning about it would be noise on the common path.
 func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
-	vector, embModel, err := s.resolveVector(p)
+	vector, embModel, degraded, err := s.resolveVector(p)
 	if err != nil {
 		return nil, Coverage{}, err
 	}
@@ -1251,7 +1267,7 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 	}
 	markStale(s.Root, candidates)
 	if len(vector) == 0 {
-		return candidates, Coverage{}, nil
+		return candidates, Coverage{Degraded: degraded}, nil
 	}
 	cov, err := embeddingCoverage(ix, p.Namespace)
 	if err != nil {

@@ -1,4 +1,4 @@
-<!-- >>> requiem v34 >>> -->
+<!-- >>> requiem v35 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -215,6 +215,11 @@ requiem reindex --embed      # fill every missing or stale vector
 - `audit` and `check` warn on stderr when part of the corpus is unembedded,
   because a short result list would otherwise be indistinguishable from a
   thorough one.
+- A model server can be out of reach (a LAN server, away from home). Then
+  `check --semantic` answers from word search and says so on stderr: treat
+  that answer as the lexical half only. Connecting gives up after 2 seconds,
+  and an unreachable server is skipped for 5 minutes by commands that can
+  do without it.
 
 Add `--semantic` to search by meaning as well as vocabulary — requiem embeds
 the query text for you:
