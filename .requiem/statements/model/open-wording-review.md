@@ -19,9 +19,9 @@ relationships:
     - to: model/verdicts-are-not-edges
       type: depends_on
       note: a cleared statement is a verdict, stored like audit dismissals
-    - to: retrieval/nli-classifier-endpoint
-      type: depends_on
     - to: principles/models-are-optional
+      type: depends_on
+    - to: retrieval/classifier-endpoint-kinds
       type: depends_on
 ---
 

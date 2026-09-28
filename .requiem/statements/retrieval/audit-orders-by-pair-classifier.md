@@ -17,9 +17,9 @@ relationships:
     - to: retrieval/audit-pairs-share-identifiers
       type: refines
       note: changes the order of the candidates audit already builds, not which pairs it builds
-    - to: retrieval/nli-classifier-endpoint
-      type: depends_on
     - to: principles/models-are-optional
+      type: depends_on
+    - to: retrieval/classifier-endpoint-kinds
       type: depends_on
 ---
 
