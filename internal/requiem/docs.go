@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 34
+const docBlockVersion = 35
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -286,6 +286,11 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"- `audit` and `check` warn on stderr when part of the corpus is unembedded,",
 	"  because a short result list would otherwise be indistinguishable from a",
 	"  thorough one.",
+	"- A model server can be out of reach (a LAN server, away from home). Then",
+	"  `check --semantic` answers from word search and says so on stderr: treat",
+	"  that answer as the lexical half only. Connecting gives up after 2 seconds,",
+	"  and an unreachable server is skipped for 5 minutes by commands that can",
+	"  do without it.",
 	"",
 	"Add `--semantic` to search by meaning as well as vocabulary — requiem embeds",
 	"the query text for you:",

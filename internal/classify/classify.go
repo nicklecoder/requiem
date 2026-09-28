@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/nicklecoder/requiem/internal/config"
+	"github.com/nicklecoder/requiem/internal/reach"
 )
 
 // The questions each kind is asked, exactly as they were measured.
@@ -70,7 +71,7 @@ func New(cfg config.Classifier) (*Client, error) {
 	return &Client{
 		kind: kind, endpoint: endpoint, model: cfg.Model, apiKey: cfg.APIKey(),
 		batch: cfg.ResolvedBatchSize(), concurrency: cfg.ResolvedConcurrency(),
-		reasoningEffort: effort, http: &http.Client{Timeout: timeout},
+		reasoningEffort: effort, http: reach.Client(timeout),
 	}, nil
 }
 

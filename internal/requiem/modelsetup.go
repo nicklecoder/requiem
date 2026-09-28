@@ -161,7 +161,9 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 	}
 	found := ""
 	for _, c := range candidates {
-		if err := proveEndpoint(base, c.endpoint); err != nil {
+		err := proveEndpoint(base, c.endpoint)
+		s.recordReach(c.endpoint, err)
+		if err != nil {
 			setup.Failures = append(setup.Failures, EndpointAttempt{Endpoint: c.endpoint, Source: c.source, Error: err.Error()})
 			continue
 		}
@@ -177,7 +179,9 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 		if ep == "" {
 			break
 		}
-		if err := proveEndpoint(base, ep); err != nil {
+		err = proveEndpoint(base, ep)
+		s.recordReach(ep, err)
+		if err != nil {
 			setup.Failures = append(setup.Failures, EndpointAttempt{Endpoint: ep, Source: SourcePrompt, Error: err.Error()})
 			continue
 		}
@@ -339,7 +343,9 @@ func (s *Service) checkClassifier(res *InitResult) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if _, err := client.Contradiction(ctx, []classify.Pair{{A: "requiem classifier check", B: "requiem classifier check"}}); err != nil {
+	_, err = client.Contradiction(ctx, []classify.Pair{{A: "requiem classifier check", B: "requiem classifier check"}})
+	s.recordReach(client.Endpoint(), err)
+	if err != nil {
 		check.Error = err.Error()
 		res.Notes = append(res.Notes, fmt.Sprintf("the configured classifier at %s did not answer (%v); audit orders its queue without it until it does", client.Endpoint(), err))
 		return nil

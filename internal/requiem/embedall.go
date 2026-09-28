@@ -11,6 +11,7 @@ import (
 	"github.com/nicklecoder/requiem/internal/embed"
 	"github.com/nicklecoder/requiem/internal/hash"
 	"github.com/nicklecoder/requiem/internal/index"
+	"github.com/nicklecoder/requiem/internal/reach"
 )
 
 // EmbedFailure records one statement requiem could not embed, with the
@@ -178,6 +179,23 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 		}
 	}
 
+	// reindex --embed always tries, whatever the outage record says; what it
+	// finds updates the record for the commands that do skip.
+	var unreachable error
+	for _, batch := range outcomes {
+		for _, out := range batch {
+			if out.err != nil && reach.Unreachable(out.err) {
+				unreachable = out.err
+			}
+		}
+	}
+	switch {
+	case result.Embedded > 0:
+		s.recordReach(client.Endpoint(), nil)
+	case unreachable != nil:
+		s.recordReach(client.Endpoint(), unreachable)
+	}
+
 	sort.Slice(result.Failures, func(i, j int) bool { return result.Failures[i].FullID < result.Failures[j].FullID })
 	return result, nil
 }
@@ -212,7 +230,17 @@ func embedBatch(client *embed.Client, batch []index.EmbeddableRecord, timeout ti
 	}
 
 	out := make([]itemOutcome, len(batch))
-	if vecs, err := call(batch); err == nil {
+	vecs, err := call(batch)
+	// A server that cannot be reached will not be reached member by member
+	// either, and retrying each would cost a connect timeout apiece.
+	// requiem: embedding/fail-fast-unreachable
+	if err != nil && reach.Unreachable(err) {
+		for i, r := range batch {
+			out[i] = itemOutcome{record: r, err: err}
+		}
+		return out
+	}
+	if err == nil {
 		for i, r := range batch {
 			out[i] = itemOutcome{record: r, vector: vecs[i]}
 		}

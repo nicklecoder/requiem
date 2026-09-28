@@ -6,6 +6,13 @@ package index
 // database only exists to make queries fast and can be deleted and rebuilt
 // via `reindex` at any time.
 var schema = []string{
+	// endpoint_status remembers model endpoints that failed to connect, so
+	// commands that can do without them skip them for a while instead of
+	// waiting on each. A cache like the rest: losing it costs one retry.
+	`CREATE TABLE IF NOT EXISTS endpoint_status (
+		endpoint   TEXT PRIMARY KEY,
+		down_until TEXT NOT NULL
+	)`,
 	// classifier_scores caches what an optional classifier said about a
 	// pair of bodies (or one body, with an empty b_hash), keyed by which
 	// model said it, so re-running audit does not re-score and an edited

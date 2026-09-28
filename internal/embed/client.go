@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/nicklecoder/requiem/internal/config"
+	"github.com/nicklecoder/requiem/internal/reach"
 )
 
 // maxErrorBody caps how much of a failed response is quoted back. Endpoints
@@ -48,12 +49,15 @@ func New(cfg config.Embedding) (*Client, error) {
 		endpoint: cfg.Endpoint,
 		model:    cfg.Model,
 		apiKey:   cfg.APIKey(),
-		http:     &http.Client{Timeout: timeout},
+		http:     reach.Client(timeout),
 	}, nil
 }
 
 // Model is the model name every vector from this client is attributed to.
 func (c *Client) Model() string { return c.model }
+
+// Endpoint is the URL the client calls.
+func (c *Client) Endpoint() string { return c.endpoint }
 
 type request struct {
 	Model string   `json:"model"`

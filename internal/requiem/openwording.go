@@ -120,6 +120,7 @@ func (s *Service) openWordingScores(ctx context.Context, client *classify.Client
 			ask[j] = bodies[i]
 		}
 		scores, err := client.OpenWording(ctx, ask)
+		s.recordReach(client.Endpoint(), err)
 		if err != nil {
 			return nil, fmt.Errorf("classifier %s did not answer: %w", client.Identity(), err)
 		}
@@ -189,6 +190,9 @@ func (s *Service) OpenWordingWarning(fullID string) string {
 	}
 	client, err := classify.New(*cfg.Classifier)
 	if err != nil {
+		return ""
+	}
+	if _, down := s.endpointDown(client.Endpoint()); down {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), writeCheckTimeout)

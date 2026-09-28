@@ -19,6 +19,9 @@ type Coverage struct {
 	Fresh   int `json:"fresh"`
 	Stale   int `json:"stale"`
 	Missing int `json:"missing"`
+	// Degraded explains why the semantic half did not run at all, when the
+	// caller asked for it and the endpoint was out of reach.
+	Degraded string `json:"-"`
 }
 
 // Shortfall is how many in-scope statements semantic search cannot see.
@@ -31,6 +34,9 @@ func (c Coverage) Complete() bool { return c.Shortfall() == 0 }
 // coverage is complete. It stays one line on purpose: this is a diagnostic
 // an agent skims alongside real output, not a report.
 func (c Coverage) Warning() string {
+	if c.Degraded != "" {
+		return c.Degraded
+	}
 	if c.Complete() || c.Total == 0 {
 		return ""
 	}
