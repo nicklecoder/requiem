@@ -6,6 +6,18 @@ package index
 // database only exists to make queries fast and can be deleted and rebuilt
 // via `reindex` at any time.
 var schema = []string{
+	// classifier_scores caches what an optional classifier said about a
+	// pair of bodies (or one body, with an empty b_hash), keyed by which
+	// model said it, so re-running audit does not re-score and an edited
+	// statement re-scores only its own pairs. A cache like the rest: delete
+	// it and the next audit asks again.
+	`CREATE TABLE IF NOT EXISTS classifier_scores (
+		identity TEXT NOT NULL,
+		a_hash   TEXT NOT NULL,
+		b_hash   TEXT NOT NULL,
+		score    REAL NOT NULL,
+		PRIMARY KEY (identity, a_hash, b_hash)
+	)`,
 	// index_meta records facts about the index itself, notably which shape
 	// of derived data it was built with — see derivationVersion.
 	`CREATE TABLE IF NOT EXISTS index_meta (

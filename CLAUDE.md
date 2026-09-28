@@ -1,4 +1,4 @@
-<!-- >>> requiem v31 >>> -->
+<!-- >>> requiem v32 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -250,6 +250,12 @@ A first audit is mostly dismissals. Record them in one `requiem batch` —
 beside `link` records for the real findings. `requiem audit --bodies` prints
 the same pairs as JSON Lines carrying both full bodies, so you can judge a
 page from one read instead of a `get` per statement.
+
+If a classifier is configured (optional; see the README), audit puts the
+likeliest contradictions first and each pair carries a `contradiction` score.
+The score only orders the queue: a high one is a pair to read first, not a
+finding, and small models score some unrelated pairs near 1.0. Judge each
+pair yourself and record the verdict, which keeps it from coming back.
 
 **Linking decisions to code.** Label the code that implements a statement so a
 changed decision can report what it affects:

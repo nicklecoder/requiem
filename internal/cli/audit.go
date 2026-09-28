@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nicklecoder/requiem/internal/index"
+	"github.com/nicklecoder/requiem/internal/requiem"
 )
 
 func newAuditCmd(semantic bool) *cobra.Command {
@@ -31,12 +32,16 @@ func newAuditCmd(semantic bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, progress, coverage, err := svc.Audit(namespace, neighbors, limit, minScore)
+			res, err := svc.AuditOrdered(namespace, neighbors, limit, minScore, func(n int, classifier string) {
+				fmt.Fprintf(os.Stderr, "requiem: scoring %d pair(s) with %s\n", n, classifier)
+			})
 			if err != nil {
 				return err
 			}
-			warnCoverage(coverage)
-			warnAuditBacklog(len(candidates), progress)
+			candidates := res.Pairs
+			warnCoverage(res.Coverage)
+			warnAuditBacklog(len(candidates), res.Progress)
+			warnAuditOrdering(res.Ordering)
 			contradicting, err := svc.AuditRefs()
 			if err != nil {
 				return err
@@ -94,4 +99,18 @@ func newAuditCmd(semantic bool) *cobra.Command {
 	cmd.Flags().BoolVar(&bodies, "bodies", false, "emit JSON Lines, one pair per line, with both full bodies in place of excerpts")
 
 	return cmd
+}
+
+// warnAuditOrdering says on stderr whether a classifier ordered the queue.
+// A classifier that failed is reported, never fatal: audit still answers in
+// its usual order (principles/models-are-optional).
+func warnAuditOrdering(o requiem.AuditOrdering) {
+	switch {
+	case o.Classifier == "" && o.Error == "":
+		return
+	case o.Error != "":
+		fmt.Fprintf(os.Stderr, "requiem: %s; queue shown in its usual order\n", o.Error)
+	default:
+		fmt.Fprintf(os.Stderr, "requiem: queue ordered by %s, likeliest contradictions first (%d scored, %d cached)\n", o.Classifier, o.Scored, o.Cached) // requiem:ignore message text, not a label
+	}
 }
