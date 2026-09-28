@@ -42,6 +42,9 @@ func newAuditCmd(semantic bool) *cobra.Command {
 			warnCoverage(res.Coverage)
 			warnAuditBacklog(len(candidates), res.Progress)
 			warnAuditOrdering(res.Ordering)
+			if edges, err := svc.UnconfirmedEdges(namespace); err == nil && len(edges) > 0 {
+				fmt.Fprintf(os.Stderr, "requiem: %d edge(s) applied through batch are unreviewed; see `requiem list --unconfirmed-edges`\n", len(edges)) // requiem:ignore message text, not a label
+			}
 			contradicting, err := svc.AuditRefs()
 			if err != nil {
 				return err

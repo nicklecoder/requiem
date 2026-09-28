@@ -195,7 +195,20 @@ type Relationship struct {
 	To   string           `yaml:"to" json:"to"`
 	Type RelationshipType `yaml:"type" json:"type"`
 	Note string           `yaml:"note,omitempty" json:"note,omitempty"`
+	// Via is how the edge was made: ViaLink or ViaBatch. Empty for an edge
+	// recorded before origins existed.
+	Via string `yaml:"via,omitempty" json:"via,omitempty"`
+	// Unconfirmed marks an edge applied in bulk that no one has reviewed
+	// yet. Stored only when true, so every older edge reads as confirmed.
+	// requiem: model/edge-origin-and-review
+	Unconfirmed bool `yaml:"unconfirmed,omitempty" json:"unconfirmed,omitempty"`
 }
+
+// The origins an edge can record: the two requiem can observe.
+const (
+	ViaLink  = "link"
+	ViaBatch = "batch"
+)
 
 type relationshipKey struct {
 	to  string
@@ -218,7 +231,14 @@ func DedupeRelationships(rels []Relationship) []Relationship {
 	for _, rel := range rels {
 		key := relationshipKey{rel.To, rel.Type}
 		if i, ok := pos[key]; ok {
-			out[i] = rel
+			// One reviewed copy is enough to count the edge reviewed, and
+			// the origin is where the edge first came from.
+			merged := rel
+			merged.Unconfirmed = out[i].Unconfirmed && rel.Unconfirmed
+			if out[i].Via != "" {
+				merged.Via = out[i].Via
+			}
+			out[i] = merged
 			continue
 		}
 		pos[key] = len(out)

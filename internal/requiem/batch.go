@@ -46,6 +46,10 @@ type BatchRecord struct {
 	// update targets an existing record by full id.
 	FullID string `json:"full_id,omitempty"`
 
+	// link: confirmed records that the edges were reviewed before being
+	// applied; without it a new edge from batch starts unconfirmed.
+	Confirmed bool `json:"confirmed,omitempty"`
+
 	// dismiss with open_wording clears one statement (from) from the
 	// open-wording review list instead of dismissing a pair.
 	OpenWording bool `json:"open_wording,omitempty"`
@@ -241,7 +245,7 @@ func (s *Service) applyBatchRecord(rec BatchRecord) (fullID, warning string, err
 		return rec.FullID, "", nil
 
 	case batchOpLink:
-		res, err := s.Link(rec.From, rec.To, model.RelationshipType(rec.Type), rec.Note)
+		res, err := s.LinkVia(rec.From, rec.To, model.RelationshipType(rec.Type), rec.Note, model.ViaBatch, rec.Confirmed)
 		if err != nil {
 			return rec.From, "", err
 		}

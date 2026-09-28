@@ -132,8 +132,9 @@ func applySchema(tx *sql.Tx) error {
 // carrying its old facets, so the filter appeared to do nothing until this
 // moved.
 // Moving to the Porter tokenizer counts as well: the FTS tables are rebuilt
-// empty, and only a full reparse fills them again.
-const derivationVersion = "5"
+// empty, and only a full reparse fills them again. Version 6 derives whether
+// each relationship is unconfirmed.
+const derivationVersion = "6"
 
 // requiem: model/derived-data-is-versioned
 // ensureDerivation rebuilds everything reindex derives from files when the
@@ -225,6 +226,7 @@ func migrate(tx *sql.Tx) error {
 		{"code_refs", "kind", `ALTER TABLE code_refs ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'`},
 		// statements.abstract marks a statement no code can implement.
 		{"statements", "abstract", `ALTER TABLE statements ADD COLUMN abstract INTEGER NOT NULL DEFAULT 0`},
+		{"relationships", "unconfirmed", `ALTER TABLE relationships ADD COLUMN unconfirmed INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		has, err := hasColumn(tx, m.table, m.column)

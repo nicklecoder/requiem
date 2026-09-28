@@ -65,6 +65,7 @@ var schema = []string{
 		to_id   TEXT NOT NULL,
 		type    TEXT NOT NULL,
 		note    TEXT,
+		unconfirmed INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (from_id, to_id, type)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_relationships_to ON relationships(to_id)`,
