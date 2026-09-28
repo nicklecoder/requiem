@@ -38,6 +38,10 @@ type GraphVia struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	Type string `json:"type"`
+	// Unconfirmed marks an edge applied in bulk and not yet reviewed: the
+	// neighbour is still offered, but the connection is unchecked.
+	// requiem: model/edge-origin-and-review
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 }
 
 // ExpandGraph returns the records one recorded edge away from the top direct
@@ -91,19 +95,19 @@ func (ix *Index) ExpandGraph(direct []Candidate, namespace, text string, touches
 				return nil, err
 			}
 			if to != "" {
-				edges = append(edges, edge{EmbKey{SourceKindStatement, to}, GraphVia{seed.FullID, to, "see_instead"}, i})
+				edges = append(edges, edge{EmbKey{SourceKindStatement, to}, GraphVia{From: seed.FullID, To: to, Type: "see_instead"}, i})
 			}
 			continue
 		}
 		rows, err := ix.db.Query(`
-			SELECT from_id, to_id, type FROM relationships WHERE from_id = ? OR to_id = ?`,
+			SELECT from_id, to_id, type, unconfirmed FROM relationships WHERE from_id = ? OR to_id = ?`,
 			seed.FullID, seed.FullID)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
 			var v GraphVia
-			if err := rows.Scan(&v.From, &v.To, &v.Type); err != nil {
+			if err := rows.Scan(&v.From, &v.To, &v.Type, &v.Unconfirmed); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -126,7 +130,7 @@ func (ix *Index) ExpandGraph(direct []Candidate, namespace, text string, touches
 				rej.Close()
 				return nil, err
 			}
-			edges = append(edges, edge{EmbKey{SourceKindRejection, id}, GraphVia{id, seed.FullID, "see_instead"}, i})
+			edges = append(edges, edge{EmbKey{SourceKindRejection, id}, GraphVia{From: id, To: seed.FullID, Type: "see_instead"}, i})
 		}
 		if err := rej.Close(); err != nil {
 			return nil, err

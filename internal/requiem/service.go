@@ -689,6 +689,15 @@ func (r LinkResult) Warning() string {
 }
 
 func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note string) (*LinkResult, error) {
+	return s.LinkVia(fromID, toID, relType, note, model.ViaLink, true)
+}
+
+// LinkVia is Link recording how the edge was made. A new edge made in bulk
+// starts unconfirmed unless the caller says it was reviewed; linking an
+// existing edge again confirms it when confirmed is set, and never
+// un-confirms one, since a later bulk pass does not undo a review.
+// requiem: model/edge-origin-and-review
+func (s *Service) LinkVia(fromID, toID string, relType model.RelationshipType, note, via string, confirmed bool) (*LinkResult, error) {
 	// A dismissal is recorded, not linked. The type stays readable so a
 	// corpus written by an older requiem still parses — validated on write,
 	// tolerated on read, as everywhere else.
@@ -715,12 +724,17 @@ func (s *Service) Link(fromID, toID string, relType model.RelationshipType, note
 			if note != "" {
 				from.Relationships[i].Note = note
 			}
+			if confirmed {
+				from.Relationships[i].Unconfirmed = false
+			}
 			updated = true
 			break
 		}
 	}
 	if !updated {
-		from.Relationships = append(from.Relationships, model.Relationship{To: toID, Type: relType, Note: note})
+		from.Relationships = append(from.Relationships, model.Relationship{
+			To: toID, Type: relType, Note: note, Via: via, Unconfirmed: !confirmed,
+		})
 	}
 	if err := s.Store.WriteStatement(from); err != nil {
 		return nil, err

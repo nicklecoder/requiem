@@ -8,7 +8,7 @@ import (
 
 func newListCmd() *cobra.Command {
 	var namespace, kind, status, tag string
-	var needsEmbedding, unreferenced, direct, abstract, openWording, bodies bool
+	var needsEmbedding, unreferenced, direct, abstract, openWording, bodies, unconfirmedEdges bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -18,6 +18,16 @@ func newListCmd() *cobra.Command {
 			svc, err := openService()
 			if err != nil {
 				return err
+			}
+			if unconfirmedEdges {
+				edges, err := svc.UnconfirmedEdges(namespace)
+				if err != nil {
+					return err
+				}
+				if edges == nil {
+					edges = []requiem.Edge{}
+				}
+				return printJSON(edges)
 			}
 			if openWording {
 				items, err := svc.OpenWordingQueue(namespace, bodies)
@@ -56,6 +66,8 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&openWording, "open-wording", false,
 		"rank active statements by how likely their body leaves the decision open, skipping cleared ones (needs a classifier)")
 	cmd.Flags().BoolVar(&bodies, "bodies", false, "with --open-wording, carry each full body instead of an excerpt")
+	cmd.Flags().BoolVar(&unconfirmedEdges, "unconfirmed-edges", false,
+		"list edges applied through batch that no one has reviewed; confirm one by linking it again, or remove it with unlink")
 	cmd.Flags().BoolVar(&needsEmbedding, "needs-embedding", false, "only active or proposed statements with a missing or stale embedding")
 	cmd.Flags().BoolVar(&unreferenced, "unreferenced", false, "only statements no labelled code site references (empty where labelling is unused)")
 	cmd.Flags().BoolVar(&direct, "direct", false, "with --unreferenced, ignore coverage inherited from refining statements")

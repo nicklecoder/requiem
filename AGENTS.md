@@ -1,4 +1,4 @@
-<!-- >>> requiem v33 >>> -->
+<!-- >>> requiem v34 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -133,7 +133,11 @@ dead end leaves no trace if you back out:
   naming what it found; `--duplicate-ok` records it anyway.
 - `requiem batch` — many writes as JSON Lines on stdin, one `{"op":...}` per
   line, with a per-record result for each. A malformed line writes nothing;
-  a refused write is reported against its line while the rest apply.
+  a refused write is reported against its line while the rest apply. A link
+  from batch starts unconfirmed, and `requiem list --unconfirmed-edges` lists
+  it until it is reviewed: add `"confirmed":true` to a link record only when
+  you have read that edge, confirm one later by linking it again, or remove
+  it with `unlink`. An unconfirmed edge still reaches `check`, marked as such.
 - `requiem unlink <from> <to> [--type]` — take an edge back. Without
   `--type` every relationship joining the pair goes; with it, just that
   one. This is what an audit finding that turned out to be wrong needs:

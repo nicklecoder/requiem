@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 33
+const docBlockVersion = 34
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -204,7 +204,11 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"  naming what it found; `--duplicate-ok` records it anyway.",
 	"- `requiem batch` — many writes as JSON Lines on stdin, one `{\"op\":...}` per",
 	"  line, with a per-record result for each. A malformed line writes nothing;",
-	"  a refused write is reported against its line while the rest apply.",
+	"  a refused write is reported against its line while the rest apply. A link",
+	"  from batch starts unconfirmed, and `requiem list --unconfirmed-edges` lists",
+	"  it until it is reviewed: add `\"confirmed\":true` to a link record only when",
+	"  you have read that edge, confirm one later by linking it again, or remove",
+	"  it with `unlink`. An unconfirmed edge still reaches `check`, marked as such.",
 	"- `requiem unlink <from> <to> [--type]` — take an edge back. Without",
 	"  `--type` every relationship joining the pair goes; with it, just that",
 	"  one. This is what an audit finding that turned out to be wrong needs:",

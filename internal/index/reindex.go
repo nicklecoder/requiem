@@ -424,8 +424,8 @@ func insertStatement(tx *sql.Tx, st model.Statement, relPath string) error {
 	}
 	for _, rel := range st.Relationships {
 		_, err := tx.Exec(
-			`INSERT INTO relationships (from_id, to_id, type, note) VALUES (?, ?, ?, ?)`,
-			fullID, rel.To, string(rel.Type), nullIfEmpty(rel.Note),
+			`INSERT INTO relationships (from_id, to_id, type, note, unconfirmed) VALUES (?, ?, ?, ?, ?)`,
+			fullID, rel.To, string(rel.Type), nullIfEmpty(rel.Note), rel.Unconfirmed,
 		)
 		if err != nil {
 			return fmt.Errorf("insert relationship %s -> %s: %w", fullID, rel.To, err)
