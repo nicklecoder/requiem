@@ -42,6 +42,7 @@ func newAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnOpenWording(svc, st.FullID())
 			return printJSON(st)
 		},
 	}

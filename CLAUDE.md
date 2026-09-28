@@ -1,4 +1,4 @@
-<!-- >>> requiem v32 >>> -->
+<!-- >>> requiem v33 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -256,6 +256,13 @@ likeliest contradictions first and each pair carries a `contradiction` score.
 The score only orders the queue: a high one is a pair to read first, not a
 finding, and small models score some unrelated pairs near 1.0. Judge each
 pair yourself and record the verdict, which keeps it from coming back.
+
+The same classifier ranks active statements that may leave their decision
+open: `requiem list --open-wording`. Read each; split a real open question
+into a proposed statement, and clear a settled one with
+`requiem dismiss <id> --open-wording --note "..."` (in batch:
+`{"op":"dismiss","from":"<id>","open_wording":true}`). A warning
+after `add` or `update` means the same thing for the statement just written.
 
 **Linking decisions to code.** Label the code that implements a statement so a
 changed decision can report what it affects:

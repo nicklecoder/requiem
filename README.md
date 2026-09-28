@@ -225,6 +225,16 @@ Measured on the sbs corpus (91 known conflicts, 945 compatible pairs):
 | `cross-encoder/nli-deberta-v3-large` (435M) | nli | 57% | Apache-2.0; trained on SNLI and MultiNLI. |
 | `gemma4` 8B via Ollama | chat | about the same as the first row | Ranked the one real defect found first where the NLI model ranked it 79th; no server beyond Ollama; about 0.7 s a pair on the Mini. |
 
+The same classifier powers an open-wording review. An active statement whose
+body leaves part of its decision open ("the exact means are undecided") hides
+a question from `list --status proposed`. `list --open-wording` ranks active
+statements by how likely that is, and `dismiss <id> --open-wording` clears one
+you have read and judged settled, until its body changes. With an `nli`
+classifier, `add` and `update` also warn above `open_wording_threshold` (0.9
+by default); they never refuse, and never wait more than 3 seconds on the
+classifier. Expect false alarms at the top: statements *about* deciding score
+high too.
+
 Neither kind of server is Ollama's own embedding endpoint, and requiem ships,
 downloads and defaults no classifier model. `requiem init` proves a configured
 classifier and says nothing when none is configured.

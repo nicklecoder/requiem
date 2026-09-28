@@ -592,6 +592,66 @@ func (s *Store) WalkVerdictFiles(fn func(VerdictFile) error) error {
 	})
 }
 
+// openWordingDirName holds open-wording clearances. A directory of its own
+// rather than verdicts/, whose files are all pair verdicts.
+const openWordingDirName = "open-wording"
+
+// ClearanceRelPath is a statement's clearance file, relative to Root.
+func (s *Store) ClearanceRelPath(fullID string) string {
+	return filepath.ToSlash(filepath.Join(openWordingDirName, strings.ReplaceAll(fullID, "/", "-")+statementExt))
+}
+
+// WriteClearance records one clearance, replacing any earlier one for the
+// same statement.
+func (s *Store) WriteClearance(c model.OpenWordingClearance) error {
+	if c.ID == "" || c.BodyHash == "" {
+		return fmt.Errorf("a clearance needs a statement id and the body hash it judged")
+	}
+	data, err := serializeClearance(c)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(s.Root, filepath.FromSlash(s.ClearanceRelPath(c.ID))), data)
+}
+
+// RemoveClearance deletes a statement's clearance, returning it to review.
+func (s *Store) RemoveClearance(fullID string) error {
+	if err := os.Remove(filepath.Join(s.Root, filepath.FromSlash(s.ClearanceRelPath(fullID)))); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s: %w", fullID, ErrNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
+// Clearances returns every recorded clearance, keyed by statement id.
+func (s *Store) Clearances() (map[string]model.OpenWordingClearance, error) {
+	out := map[string]model.OpenWordingClearance{}
+	entries, err := os.ReadDir(filepath.Join(s.Root, openWordingDirName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != statementExt {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.Root, openWordingDirName, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		c, err := parseClearance(data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", e.Name(), err)
+		}
+		out[c.ID] = c
+	}
+	return out, nil
+}
+
 func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

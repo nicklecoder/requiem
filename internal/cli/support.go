@@ -213,3 +213,12 @@ func warnRewrittenRefs(res *requiem.MoveResult) {
 		}
 	}
 }
+
+// warnOpenWording prints on stderr when a classifier judges a newly written
+// active body likely to leave its decision open. Silent otherwise, including
+// when no classifier is configured or it does not answer in time.
+func warnOpenWording(svc *requiem.Service, fullID string) {
+	if w := svc.OpenWordingWarning(fullID); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
+}

@@ -46,6 +46,10 @@ type BatchRecord struct {
 	// update targets an existing record by full id.
 	FullID string `json:"full_id,omitempty"`
 
+	// dismiss with open_wording clears one statement (from) from the
+	// open-wording review list instead of dismissing a pair.
+	OpenWording bool `json:"open_wording,omitempty"`
+
 	// link / unlink / dismiss
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
@@ -190,7 +194,11 @@ func validateBatchRecord(rec BatchRecord) error {
 			return fmt.Errorf("unlink needs from and to")
 		}
 	case batchOpDismiss:
-		if rec.From == "" || rec.To == "" {
+		if rec.OpenWording {
+			if rec.From == "" || rec.To != "" {
+				return fmt.Errorf("dismiss with open_wording needs from and no to: it clears one statement")
+			}
+		} else if rec.From == "" || rec.To == "" {
 			return fmt.Errorf("dismiss needs from and to")
 		}
 	case "":
@@ -246,6 +254,12 @@ func (s *Service) applyBatchRecord(rec BatchRecord) (fullID, warning string, err
 		return rec.From, "", nil
 
 	case batchOpDismiss:
+		if rec.OpenWording {
+			if _, err := s.ClearOpenWording(rec.From, rec.Note); err != nil {
+				return rec.From, "", err
+			}
+			return rec.From, "", nil
+		}
 		if _, err := s.DismissPair(rec.From, rec.To, rec.Note); err != nil {
 			return rec.From, "", err
 		}
