@@ -46,8 +46,16 @@ func hasStoredVectors() bool {
 		return false
 	}
 	defer ix.Close()
-	corpus, err := ix.EmbeddingCorpusInfo()
-	return err == nil && corpus.Count > 0
+	models, err := ix.EmbeddingModels()
+	if err != nil {
+		return false
+	}
+	for _, m := range models {
+		if m.Count > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // semanticAvailable reports whether the commands that compare vectors can do

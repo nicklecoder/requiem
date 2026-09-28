@@ -69,7 +69,7 @@ func newReindexCmd(semantic bool) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&withEmbed, "embed", false, "also compute missing/stale embeddings via the configured endpoint")
-	cmd.Flags().BoolVar(&force, "force", false, "re-embed the whole corpus under the configured model, discarding every existing vector")
+	cmd.Flags().BoolVar(&force, "force", false, "recompute every vector for the configured model, even fresh ones; other models' vectors are kept")
 
 	// After the flags exist: MarkHidden on an undefined flag is a silent no-op.
 	if !semantic {
@@ -86,10 +86,7 @@ func newReindexCmd(semantic bool) *cobra.Command {
 // that exited 0 would let a caller believe the corpus is fully embedded and
 // then trust an audit built on part of it.
 func reportEmbedResult(res *requiem.EmbedAllResult) error {
-	if res.Repinned {
-		fmt.Fprintln(os.Stderr, "requiem: re-pinned the corpus to a new model; every previous vector was discarded") // requiem:ignore message text, not a label
-	}
-	fmt.Fprintf(os.Stderr, "requiem: embedded %d, skipped %d already fresh", res.Embedded, res.Skipped) // requiem:ignore message text, not a label
+	fmt.Fprintf(os.Stderr, "requiem: embedded %d with %s, skipped %d already fresh", res.Embedded, res.Model, res.Skipped) // requiem:ignore message text, not a label
 	if res.Failed == 0 {
 		fmt.Fprintln(os.Stderr)
 		return nil

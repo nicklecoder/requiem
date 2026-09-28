@@ -77,13 +77,12 @@ func CosineSimilarity(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-// UpsertEmbedding stores fullID's vector. The corpus is pinned to a single
-// model/dims (embedding_meta): the first call establishes it, later calls
-// with a different model/dims are refused unless force is set, in which
-// case every existing embedding is wiped and the corpus is re-pinned to the
-// new model — mixing vector spaces would otherwise produce cosine-similarity
-// scores that look plausible but are meaningless.
-// requiem: embedding/model-pinning
+// UpsertEmbedding stores fullID's vector in model's set. Each model keeps its
+// own set, so storing under a new model discards nothing; a model's width is
+// fixed on its first vector, and a vector of another width for the same
+// model is refused unless force is set, which replaces that model's set
+// alone — a model that changed width is a different model in all but name.
+// requiem: embedding/vectors-per-model
 func (ix *Index) UpsertEmbedding(key EmbKey, model string, dims int, vec []float32, sourceHash string, computedAt time.Time, force bool) error {
 	tx, err := ix.db.Begin()
 	if err != nil {
@@ -91,35 +90,32 @@ func (ix *Index) UpsertEmbedding(key EmbKey, model string, dims int, vec []float
 	}
 	defer tx.Rollback()
 
-	var existingModel string
 	var existingDims int
-	err = tx.QueryRow(`SELECT model, dims FROM embedding_meta WHERE id = 1`).Scan(&existingModel, &existingDims)
+	err = tx.QueryRow(`SELECT dims FROM embedding_models WHERE model = ?`, model).Scan(&existingDims)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := tx.Exec(`INSERT INTO embedding_meta (id, model, dims) VALUES (1, ?, ?)`, model, dims); err != nil {
+		if _, err := tx.Exec(`INSERT INTO embedding_models (model, dims) VALUES (?, ?)`, model, dims); err != nil {
 			return err
 		}
 	case err != nil:
 		return err
-	default:
-		if existingModel != model || existingDims != dims {
-			if !force {
-				return fmt.Errorf("embedding model/dims mismatch: corpus is pinned to %s/%d, got %s/%d (pass force to re-embed the whole corpus under the new model — this wipes every existing vector)", existingModel, existingDims, model, dims)
-			}
-			if _, err := tx.Exec(`DELETE FROM embeddings`); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(`UPDATE embedding_meta SET model = ?, dims = ? WHERE id = 1`, model, dims); err != nil {
-				return err
-			}
+	case existingDims != dims:
+		if !force {
+			return fmt.Errorf("embedding dims mismatch: %s vectors here have %d dims, got %d (pass force to replace every %s vector)", model, existingDims, dims, model)
+		}
+		if _, err := tx.Exec(`DELETE FROM embeddings WHERE model = ?`, model); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE embedding_models SET dims = ? WHERE model = ?`, dims, model); err != nil {
+			return err
 		}
 	}
 
 	_, err = tx.Exec(
 		`INSERT INTO embeddings (source_kind, full_id, model, dims, vector, source_hash, computed_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(source_kind, full_id) DO UPDATE SET
-			model = excluded.model, dims = excluded.dims, vector = excluded.vector,
+		 ON CONFLICT(source_kind, full_id, model) DO UPDATE SET
+			dims = excluded.dims, vector = excluded.vector,
 			source_hash = excluded.source_hash, computed_at = excluded.computed_at`,
 		key.SourceKind, key.FullID, model, dims, encodeVector(vec), sourceHash, computedAt.Format(timeFormat),
 	)
@@ -129,34 +125,49 @@ func (ix *Index) UpsertEmbedding(key EmbKey, model string, dims int, vec []float
 	return tx.Commit()
 }
 
-// EmbeddingCorpus describes what the embeddings table currently holds: the
-// model/dims every vector in it is pinned to (see embedding_meta) and how
-// many vectors are on record. Count is 0 — and Model empty — when nothing
-// has been embedded yet.
+// EmbeddingCorpus describes one model's set of vectors: its width and how
+// many vectors it holds. Count is 0 when that model has embedded nothing.
 type EmbeddingCorpus struct {
 	Model string
 	Dims  int
 	Count int
 }
 
-// EmbeddingCorpusInfo reports the pinned model/dims and vector count, so
-// callers can tell "no vectors on record" apart from "swept everything and
-// found nothing" — the two are otherwise indistinguishable in audit/check
-// output, which is the worst possible failure for a tool whose whole job is
-// surfacing what you'd otherwise miss.
-func (ix *Index) EmbeddingCorpusInfo() (EmbeddingCorpus, error) {
-	var c EmbeddingCorpus
-	err := ix.db.QueryRow(`SELECT model, dims FROM embedding_meta WHERE id = 1`).Scan(&c.Model, &c.Dims)
+// EmbeddingCorpusInfo reports model's width and vector count, so callers can
+// tell "no vectors on record" apart from "swept everything and found
+// nothing" — the two are otherwise indistinguishable in audit/check output.
+func (ix *Index) EmbeddingCorpusInfo(model string) (EmbeddingCorpus, error) {
+	c := EmbeddingCorpus{Model: model}
+	err := ix.db.QueryRow(`SELECT dims FROM embedding_models WHERE model = ?`, model).Scan(&c.Dims)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return EmbeddingCorpus{}, err
 	}
-	if err := ix.db.QueryRow(`SELECT COUNT(*) FROM embeddings`).Scan(&c.Count); err != nil {
+	if err := ix.db.QueryRow(`SELECT COUNT(*) FROM embeddings WHERE model = ?`, model).Scan(&c.Count); err != nil {
 		return EmbeddingCorpus{}, err
 	}
 	return c, nil
 }
 
-// RekeyEmbedding moves an embedding row from one full_id to another so a
+// EmbeddingModels lists every model with vectors stored, largest set first.
+func (ix *Index) EmbeddingModels() ([]EmbeddingCorpus, error) {
+	rows, err := ix.db.Query(`SELECT m.model, m.dims, COUNT(e.full_id) FROM embedding_models m
+		LEFT JOIN embeddings e ON e.model = m.model GROUP BY m.model, m.dims ORDER BY COUNT(e.full_id) DESC, m.model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EmbeddingCorpus
+	for rows.Next() {
+		var c EmbeddingCorpus
+		if err := rows.Scan(&c.Model, &c.Dims, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RekeyEmbedding moves a record's vectors, in every model's set, from one full_id to another so a
 // relocated statement (see Service.Move) keeps the vector already computed
 // for its body, which the move doesn't change. Without this, `mv` — the
 // remedy requiem's own docs recommend after `audit` finds a duplicate —
@@ -181,11 +192,11 @@ func (ix *Index) RekeyEmbedding(kind, from, to string) error {
 	return tx.Commit()
 }
 
-// GetEmbedding returns a record's stored vector, or nil if it has none.
-func (ix *Index) GetEmbedding(key EmbKey) (*Embedding, error) {
+// GetEmbedding returns a record's vector in model's set, or nil if it has none.
+func (ix *Index) GetEmbedding(key EmbKey, model string) (*Embedding, error) {
 	row := ix.db.QueryRow(
 		`SELECT source_kind, full_id, model, dims, vector, source_hash, computed_at
-		 FROM embeddings WHERE source_kind = ? AND full_id = ?`, key.SourceKind, key.FullID)
+		 FROM embeddings WHERE source_kind = ? AND full_id = ? AND model = ?`, key.SourceKind, key.FullID, model)
 	var e Embedding
 	var blob []byte
 	if err := row.Scan(&e.SourceKind, &e.FullID, &e.Model, &e.Dims, &blob, &e.SourceHash, &e.ComputedAt); err != nil {
@@ -203,8 +214,10 @@ func (ix *Index) GetEmbedding(key EmbKey) (*Embedding, error) {
 // loading the whole table for an in-memory scan (used by both List's
 // embedding-status lookup and Audit's pairwise comparison) is simpler and
 // cheap enough — no ANN index needed.
-func (ix *Index) AllEmbeddings() (map[EmbKey]Embedding, error) {
-	rows, err := ix.db.Query(`SELECT source_kind, full_id, model, dims, vector, source_hash, computed_at FROM embeddings`)
+//
+// Only model's set is loaded: a comparison never mixes two models.
+func (ix *Index) AllEmbeddings(model string) (map[EmbKey]Embedding, error) {
+	rows, err := ix.db.Query(`SELECT source_kind, full_id, model, dims, vector, source_hash, computed_at FROM embeddings WHERE model = ?`, model)
 	if err != nil {
 		return nil, err
 	}

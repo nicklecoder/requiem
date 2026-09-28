@@ -368,7 +368,7 @@ func TestReindex_RejectionMovingBetweenFilesIsNotADuplicate(t *testing.T) {
 	}
 
 	// The body did not change, so the vector computed for it is still valid.
-	emb, err := ix.GetEmbedding(RejectionKey("ns/moved-idea"))
+	emb, err := ix.GetEmbedding(RejectionKey("ns/moved-idea"), "m")
 	if err != nil {
 		t.Fatalf("GetEmbedding: %v", err)
 	}

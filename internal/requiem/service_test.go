@@ -1277,22 +1277,25 @@ func TestEmbed_GetReflectsFreshMissingStale(t *testing.T) {
 	}
 }
 
-func TestEmbed_ModelMismatchRequiresForce(t *testing.T) {
+// requiem: embedding/vectors-per-model
+// A second model gets its own set; a width change within one model needs
+// force.
+func TestEmbed_SecondModelGetsItsOwnSet(t *testing.T) {
 	s := newTestService(t)
 	if _, err := s.Add(AddParams{ID: "a", Namespace: "ns", Kind: "rule", Body: "a"}); err != nil {
 		t.Fatalf("Add a: %v", err)
 	}
-	if _, err := s.Add(AddParams{ID: "b", Namespace: "ns", Kind: "rule", Body: "b"}); err != nil {
-		t.Fatalf("Add b: %v", err)
-	}
 	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3}, false, false); err != nil {
 		t.Fatalf("Embed a: %v", err)
 	}
-	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, false, false); err == nil {
-		t.Fatal("expected error embedding with a different model/dims than the corpus is pinned to")
+	if _, err := s.Embed("ns/a", "model-b", []float32{1, 2, 3, 4}, false, false); err != nil {
+		t.Fatalf("a second model must be accepted into its own set: %v", err)
 	}
-	if _, err := s.Embed("ns/b", "model-b", []float32{1, 2, 3, 4}, true, false); err != nil {
-		t.Fatalf("Embed b with force: %v", err)
+	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3, 4}, false, false); err == nil {
+		t.Fatal("expected a width change within model-a refused without force")
+	}
+	if _, err := s.Embed("ns/a", "model-a", []float32{1, 2, 3, 4}, true, false); err != nil {
+		t.Fatalf("Embed with force: %v", err)
 	}
 }
 

@@ -32,10 +32,8 @@ type EmbedAllResult struct {
 	Skipped  int            `json:"skipped"`
 	Failed   int            `json:"failed"`
 	Failures []EmbedFailure `json:"failures,omitempty"`
-	// Repinned reports that the corpus was re-pinned to a new model and
-	// every prior vector discarded — worth stating plainly, since it is the
-	// one operation here that destroys data.
-	Repinned bool `json:"repinned,omitempty"`
+	// Model is the vector set this run filled.
+	Model string `json:"model,omitempty"`
 }
 
 // EmbedAll fills in every missing or stale vector by calling the configured
@@ -82,29 +80,19 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	embeddings, err := ix.AllEmbeddings()
+	// Only this model's set: a switch of model fills that model's set and
+	// leaves every other set as it was.
+	// requiem: embedding/vectors-per-model
+	embeddings, err := ix.AllEmbeddings(client.Model())
 	if err != nil {
 		return nil, err
-	}
-
-	// A model change invalidates the whole corpus, not just the stale part:
-	// re-pinning wipes every existing vector, so anything already "fresh"
-	// under the old model must be recomputed too. Refusing without --force
-	// keeps that from happening as a silent side effect of editing config.
-	corpus, err := ix.EmbeddingCorpusInfo()
-	if err != nil {
-		return nil, err
-	}
-	modelChanged := corpus.Count > 0 && corpus.Model != client.Model()
-	if modelChanged && !force {
-		return nil, fmt.Errorf("config model is %s but the corpus is pinned to %s/%d: re-embedding under a new model discards every existing vector — pass --force to do that deliberately",
-			client.Model(), corpus.Model, corpus.Dims)
 	}
 
 	var pending []index.EmbeddableRecord
-	result := &EmbedAllResult{Repinned: modelChanged}
+	result := &EmbedAllResult{Model: client.Model()}
 	for _, r := range records {
-		if !modelChanged {
+		// force recomputes this model's vectors even where they are fresh.
+		if !force {
 			var existing *index.Embedding
 			if e, ok := embeddings[index.EmbKey{SourceKind: r.SourceKind, FullID: r.FullID}]; ok {
 				existing = &e

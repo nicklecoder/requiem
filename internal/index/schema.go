@@ -116,13 +116,20 @@ var schema = []string{
 		vector      BLOB NOT NULL,
 		source_hash TEXT NOT NULL,
 		computed_at TEXT NOT NULL,
-		PRIMARY KEY (source_kind, full_id)
+		PRIMARY KEY (source_kind, full_id, model)
 	)`,
 
-	// embedding_meta pins the whole corpus to a single model/dims: cosine
-	// similarity between vectors from two different embedding models is a
-	// number that looks plausible but means nothing, so this is a hard
-	// guard (see UpsertEmbedding), not just bookkeeping.
+	// embedding_models records each model's width. Every model keeps its own
+	// set of vectors, and a comparison stays inside one set: cosine between
+	// vectors from two models is a number that looks plausible and means
+	// nothing (see UpsertEmbedding).
+	// requiem: embedding/vectors-per-model
+	`CREATE TABLE IF NOT EXISTS embedding_models (
+		model TEXT PRIMARY KEY,
+		dims  INTEGER NOT NULL
+	)`,
+	// embedding_meta is the single-model pin older builds wrote; kept only so
+	// migrate can carry its row into embedding_models.
 	`CREATE TABLE IF NOT EXISTS embedding_meta (
 		id    INTEGER PRIMARY KEY CHECK (id = 1),
 		model TEXT NOT NULL,

@@ -61,7 +61,7 @@ func TestEmbeddingCoverage_CountsFreshStaleAndMissing(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	cov, err := embeddingCoverage(ix, "")
+	cov, err := embeddingCoverage(ix, "", s.activeModel(ix))
 	if err != nil {
 		t.Fatalf("embeddingCoverage: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestEmbeddingCoverage_ScopedToNamespaceAndActiveOnly(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	cov, err := embeddingCoverage(ix, "auth")
+	cov, err := embeddingCoverage(ix, "auth", s.activeModel(ix))
 	if err != nil {
 		t.Fatalf("embeddingCoverage: %v", err)
 	}

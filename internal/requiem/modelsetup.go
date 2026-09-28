@@ -95,7 +95,7 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 		model, source = cfg.Embedding.Model, SourceConfigured
 		if opts.Model != "" && opts.Model != model {
 			res.Notes = append(res.Notes, fmt.Sprintf(
-				"this project already embeds with %s, so --embedding-model %s was not applied: changing the model re-embeds the whole corpus, which is done by editing embedding.model in .requiem/%s and running `requiem reindex --embed --force`",
+				"this project already embeds with %s, so --embedding-model %s was not applied: changing the project's model is done by editing embedding.model in .requiem/%s and running `requiem reindex --embed`, which fills the new model's vectors and keeps the old ones",
 				model, opts.Model, config.FileName))
 		}
 	} else if opts.Model != "" {

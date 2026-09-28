@@ -172,7 +172,7 @@ func (ix *Index) Check(namespace, text string, tags []string, vector []float32, 
 	}
 
 	if len(vector) > 0 {
-		semantic, err := ix.checkSemantic(namespace, vector)
+		semantic, err := ix.checkSemantic(namespace, vector, embModel)
 		if err != nil {
 			return nil, fmt.Errorf("check semantic: %w", err)
 		}
@@ -473,18 +473,15 @@ func fuse(lists [][]Candidate) []Candidate {
 // CosineSimilarity scores as 0 for every statement, so every hit falls below
 // minSemanticScore and vanishes).
 func (ix *Index) validateQueryVector(vector []float32, embModel string) error {
-	corpus, err := ix.EmbeddingCorpusInfo()
+	corpus, err := ix.EmbeddingCorpusInfo(embModel)
 	if err != nil {
 		return err
 	}
 	if corpus.Count == 0 {
-		return fmt.Errorf("--vector given but no statements are embedded yet: semantic matching has nothing to compare against (see `requiem list --needs-embedding`)")
-	}
-	if embModel != corpus.Model {
-		return fmt.Errorf("embedding model mismatch: corpus is pinned to %s/%d, query vector is from %s — cosine similarity across two models is meaningless", corpus.Model, corpus.Dims, embModel)
+		return fmt.Errorf("no statements are embedded with %s yet: semantic matching has nothing to compare against (see `requiem list --needs-embedding`); vectors from another model cannot stand in, since cosine across two models is meaningless", embModel)
 	}
 	if len(vector) != corpus.Dims {
-		return fmt.Errorf("embedding dims mismatch: corpus is pinned to %s/%d, query vector has %d dims", corpus.Model, corpus.Dims, len(vector))
+		return fmt.Errorf("embedding dims mismatch: %s vectors here have %d dims, the query vector has %d", embModel, corpus.Dims, len(vector))
 	}
 	return nil
 }
@@ -514,12 +511,12 @@ func markKind(candidates []Candidate, kind string) []Candidate {
 //
 // Returned in its own best-first order, because RRF reads position — an
 // unsorted list would hand arbitrary positions to the fusion step.
-func (ix *Index) checkSemantic(namespace string, vector []float32) ([]Candidate, error) {
+func (ix *Index) checkSemantic(namespace string, vector []float32, embModel string) ([]Candidate, error) {
 	records, err := ix.embeddableRecords(namespace)
 	if err != nil {
 		return nil, err
 	}
-	embeddings, err := ix.AllEmbeddings()
+	embeddings, err := ix.AllEmbeddings(embModel)
 	if err != nil {
 		return nil, err
 	}
