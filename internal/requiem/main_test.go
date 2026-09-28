@@ -49,6 +49,9 @@ func TestMain(m *testing.M) {
 	// Model setup must not find the developer's own servers either.
 	os.Unsetenv("OLLAMA_HOST")
 	localOllamaEndpoint = "http://127.0.0.1:1/v1/embeddings"
+	// Inside a test the executable is the test binary; relaunching it
+	// would run the tests again.
+	SpawnEmbed = func(root, logPath string) error { return nil }
 
 	code := m.Run()
 	os.RemoveAll(dir)

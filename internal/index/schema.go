@@ -6,6 +6,12 @@ package index
 // database only exists to make queries fast and can be deleted and rebuilt
 // via `reindex` at any time.
 var schema = []string{
+	// background_embed holds the lock that keeps one background embedding
+	// run at a time; a run that died leaves a row that expires.
+	`CREATE TABLE IF NOT EXISTS background_embed (
+		id         INTEGER PRIMARY KEY CHECK (id = 1),
+		started_at TEXT NOT NULL
+	)`,
 	// endpoint_status remembers model endpoints that failed to connect, so
 	// commands that can do without them skip them for a while instead of
 	// waiting on each. A cache like the rest: losing it costs one retry.

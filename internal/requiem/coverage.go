@@ -22,6 +22,8 @@ type Coverage struct {
 	// Degraded explains why the semantic half did not run at all, when the
 	// caller asked for it and the endpoint was out of reach.
 	Degraded string `json:"-"`
+	// Background says a background run was started to fill missing vectors.
+	Background string `json:"-"`
 }
 
 // Shortfall is how many in-scope statements semantic search cannot see.

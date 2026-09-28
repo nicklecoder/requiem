@@ -105,7 +105,7 @@ type InitOptions struct {
 // requiemIgnores are the lines .requiem/.gitignore must carry: the index
 // and its SQLite sidecar files, which are a disposable cache, and the local
 // config overlay, which describes one machine.
-var requiemIgnores = []string{indexFile, indexFile + "-*", config.LocalFileName}
+var requiemIgnores = []string{indexFile, indexFile + "-*", config.LocalFileName, embedLogFile}
 
 // hookedEvents are the git operations that can silently invalidate large
 // chunks of the index at once by changing files without going through the
@@ -1289,13 +1289,18 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 		candidates = append(candidates, neighbours...)
 	}
 	markStale(s.Root, candidates)
+	var background string
+	if p.Semantic {
+		background = s.maybeEmbedInBackground()
+	}
 	if len(vector) == 0 {
-		return candidates, Coverage{Degraded: degraded}, nil
+		return candidates, Coverage{Degraded: degraded, Background: background}, nil
 	}
 	cov, err := embeddingCoverage(ix, p.Namespace, embModel)
 	if err != nil {
 		return nil, Coverage{}, err
 	}
+	cov.Background = background
 	return candidates, cov, nil
 }
 

@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 36
+const docBlockVersion = 37
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -291,6 +291,9 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"  that answer as the lexical half only. Connecting gives up after 2 seconds,",
 	"  and an unreachable server is skipped for 5 minutes by commands that can",
 	"  do without it.",
+	"- When vectors are missing (a new statement, or a changed model),",
+	"  `check --semantic` and `audit` start embedding them in the background and",
+	"  answer at once; a stderr line says so, and later searches improve.",
 	"",
 	"Add `--semantic` to search by meaning as well as vocabulary — requiem embeds",
 	"the query text for you:",

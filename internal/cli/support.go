@@ -48,6 +48,9 @@ func warnCoverage(c requiem.Coverage) {
 	if w := c.Warning(); w != "" {
 		fmt.Fprintln(os.Stderr, w)
 	}
+	if c.Background != "" {
+		fmt.Fprintln(os.Stderr, c.Background)
+	}
 }
 
 // warnLink reports what a recorded relationship leaves for the caller to do.
