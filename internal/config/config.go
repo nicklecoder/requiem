@@ -155,6 +155,26 @@ type Classifier struct {
 	// with its letter rather than opening a thought: "none" by default,
 	// "omit" to leave the field out for a server that rejects it.
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+	// OpenWordingThreshold is the score above which add and update warn that
+	// a body may leave its decision open. Zero means the kind's default.
+	OpenWordingThreshold float64 `yaml:"open_wording_threshold,omitempty"`
+}
+
+// DefaultOpenWordingThreshold is the nli default. A chat classifier has none:
+// its probabilities are not calibrated, so warning at write time is off for
+// it unless a threshold is set.
+const DefaultOpenWordingThreshold = 0.9
+
+// OpenWordingWarnAt returns the threshold add and update warn above, and
+// whether they warn at all.
+func (k *Classifier) OpenWordingWarnAt() (float64, bool) {
+	if k.OpenWordingThreshold > 0 {
+		return k.OpenWordingThreshold, true
+	}
+	if strings.EqualFold(strings.TrimSpace(k.Kind), ClassifierNLI) {
+		return DefaultOpenWordingThreshold, true
+	}
+	return 0, false
 }
 
 // Config is the whole file. Every section is optional: a project that never
@@ -319,6 +339,9 @@ func (c *Config) overlay(o *Config) {
 		}
 		if l.Concurrency != 0 {
 			k.Concurrency = l.Concurrency
+		}
+		if l.OpenWordingThreshold != 0 {
+			k.OpenWordingThreshold = l.OpenWordingThreshold
 		}
 	}
 	if o.Hooks != nil {

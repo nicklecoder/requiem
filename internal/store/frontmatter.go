@@ -102,6 +102,33 @@ func serializeVerdict(v model.AuditVerdict) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+func serializeClearance(c model.OpenWordingClearance) ([]byte, error) {
+	fm, err := yaml.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("marshal clearance frontmatter: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString(frontmatterSep + "\n")
+	b.Write(fm)
+	b.WriteString(frontmatterSep + "\n\n")
+	b.WriteString(strings.TrimSpace(c.Note))
+	b.WriteString("\n")
+	return []byte(b.String()), nil
+}
+
+func parseClearance(data []byte) (model.OpenWordingClearance, error) {
+	fm, body, err := splitFrontmatter(data)
+	if err != nil {
+		return model.OpenWordingClearance{}, err
+	}
+	var c model.OpenWordingClearance
+	if err := yaml.Unmarshal(fm, &c); err != nil {
+		return model.OpenWordingClearance{}, fmt.Errorf("parse clearance frontmatter: %w", err)
+	}
+	c.Note = body
+	return c, nil
+}
+
 func parseVerdict(data []byte) (model.AuditVerdict, error) {
 	fm, body, err := splitFrontmatter(data)
 	if err != nil {

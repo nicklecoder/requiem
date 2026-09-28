@@ -437,6 +437,18 @@ func (v AuditVerdict) Validate() error {
 	return nil
 }
 
+// OpenWordingClearance records that an agent read a statement flagged for
+// open wording and judged its body settled. It is keyed to the body it
+// judged: a changed body is a different text, so the clearance lapses and the
+// statement returns to the review list.
+// requiem: model/open-wording-review
+type OpenWordingClearance struct {
+	ID        string    `yaml:"id" json:"id"`
+	BodyHash  string    `yaml:"body_hash" json:"body_hash"`
+	ClearedAt time.Time `yaml:"cleared_at" json:"cleared_at"`
+	Note      string    `yaml:"-" json:"note,omitempty"`
+}
+
 // Rejection is a lighter-weight companion to Statement: an idea explicitly
 // considered and rejected, recorded so it isn't re-proposed later. Lives in
 // a per-namespace sister file (_rejected.md), not a full Statement.

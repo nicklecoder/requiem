@@ -99,6 +99,7 @@ func newUpdateCmd() *cobra.Command {
 					return err
 				}
 				warnBlastRadius(args[0], refs)
+				warnOpenWording(svc, args[0])
 			}
 			return printJSON(st)
 		},
