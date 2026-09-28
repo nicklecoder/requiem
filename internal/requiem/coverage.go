@@ -55,7 +55,7 @@ func (c Coverage) Warning() string {
 // paths search: counting superseded or deprecated statements here would
 // report a shortfall that no amount of embedding could close.
 // requiem: embedding/coverage-warning
-func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
+func embeddingCoverage(ix *index.Index, namespace, model string) (Coverage, error) {
 	// Counts exactly what the semantic paths search, from the same
 	// enumeration they use — statements *and* rejections. Counting only
 	// statements would report complete coverage while every rejection in
@@ -65,7 +65,7 @@ func embeddingCoverage(ix *index.Index, namespace string) (Coverage, error) {
 	if err != nil {
 		return Coverage{}, err
 	}
-	embeddings, err := ix.AllEmbeddings()
+	embeddings, err := ix.AllEmbeddings(model)
 	if err != nil {
 		return Coverage{}, err
 	}

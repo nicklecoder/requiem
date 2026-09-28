@@ -510,10 +510,10 @@ const Template = `# requiem configuration — committed on purpose.
 # gate:
 #   diff: error
 #
-# Every vector in a project must come from one model: cosine similarity
-# across two models is a plausible-looking number that means nothing.
-# Changing "model" above requires "requiem reindex --embed --force", which
-# discards every existing vector and re-embeds the corpus from scratch.
+# Vectors from two models are never compared: cosine similarity across two
+# models is a plausible-looking number that means nothing. The index keeps a separate set of vectors per model, so changing "model"
+# above discards nothing: "requiem reindex --embed" fills the new model's set,
+# and switching back finds the old one intact.
 `
 
 // LocalTemplate is written by Init when no local config exists, and never

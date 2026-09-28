@@ -32,7 +32,7 @@ func TestUpsertEmbedding_GetRoundTrip(t *testing.T) {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
 
-	got, err := ix.GetEmbedding(StatementKey("ns/a"))
+	got, err := ix.GetEmbedding(StatementKey("ns/a"), "test-model")
 	if err != nil {
 		t.Fatalf("GetEmbedding: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestUpsertEmbedding_GetRoundTrip(t *testing.T) {
 
 func TestGetEmbedding_MissingReturnsNilNoError(t *testing.T) {
 	ix := newTestIndex(t)
-	got, err := ix.GetEmbedding(StatementKey("ns/does-not-exist"))
+	got, err := ix.GetEmbedding(StatementKey("ns/does-not-exist"), "m")
 	if err != nil {
 		t.Fatalf("GetEmbedding: %v", err)
 	}
@@ -58,38 +58,56 @@ func TestGetEmbedding_MissingReturnsNilNoError(t *testing.T) {
 	}
 }
 
-func TestUpsertEmbedding_RejectsModelMismatchWithoutForce(t *testing.T) {
+// requiem: embedding/vectors-per-model
+// Each model keeps its own set: storing under a second model discards
+// nothing, and reading one model's set never returns another's vectors.
+func TestUpsertEmbedding_KeepsASetPerModel(t *testing.T) {
 	ix := newTestIndex(t)
 	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "model-a", 3, []float32{1, 2, 3}, "h", time.Now().UTC(), false); err != nil {
-		t.Fatalf("first UpsertEmbedding: %v", err)
+		t.Fatalf("model-a: %v", err)
 	}
-
-	err := ix.UpsertEmbedding(StatementKey("ns/b"), "model-b", 4, []float32{1, 2, 3, 4}, "h", time.Now().UTC(), false)
-	if err == nil {
-		t.Fatal("expected an error mixing a different model/dims into the corpus without force")
+	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "model-b", 4, []float32{1, 2, 3, 4}, "h", time.Now().UTC(), false); err != nil {
+		t.Fatalf("a second model must not be refused: %v", err)
 	}
-
-	// The rejected call must not have written anything.
-	if got, _ := ix.GetEmbedding(StatementKey("ns/b")); got != nil {
-		t.Fatalf("expected no embedding written for the rejected call, got %+v", got)
+	a, _ := ix.GetEmbedding(StatementKey("ns/a"), "model-a")
+	b, _ := ix.GetEmbedding(StatementKey("ns/a"), "model-b")
+	if a == nil || a.Dims != 3 || b == nil || b.Dims != 4 {
+		t.Fatalf("expected both models' vectors kept, got %+v and %+v", a, b)
+	}
+	setA, err := ix.AllEmbeddings("model-a")
+	if err != nil || len(setA) != 1 || setA[StatementKey("ns/a")].Model != "model-a" {
+		t.Fatalf("expected model-a's set alone, got %+v err=%v", setA, err)
+	}
+	models, err := ix.EmbeddingModels()
+	if err != nil || len(models) != 2 {
+		t.Fatalf("expected two models on record, got %+v err=%v", models, err)
 	}
 }
 
-func TestUpsertEmbedding_ForceRepinsWipesExisting(t *testing.T) {
+// requiem: embedding/vectors-per-model
+// A model's width is fixed: a vector of another width for the same model is
+// refused without force, and force replaces that model's set alone.
+func TestUpsertEmbedding_RefusesAWidthChangeWithoutForce(t *testing.T) {
 	ix := newTestIndex(t)
-	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "model-a", 3, []float32{1, 2, 3}, "h", time.Now().UTC(), false); err != nil {
-		t.Fatalf("first UpsertEmbedding: %v", err)
+	for _, k := range []EmbKey{StatementKey("ns/a"), StatementKey("ns/b")} {
+		if err := ix.UpsertEmbedding(k, "model-a", 3, []float32{1, 2, 3}, "h", time.Now().UTC(), false); err != nil {
+			t.Fatalf("model-a: %v", err)
+		}
 	}
-	if err := ix.UpsertEmbedding(StatementKey("ns/b"), "model-b", 4, []float32{1, 2, 3, 4}, "h", time.Now().UTC(), true); err != nil {
-		t.Fatalf("forced UpsertEmbedding: %v", err)
+	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "model-b", 2, []float32{1, 2}, "h", time.Now().UTC(), false); err != nil {
+		t.Fatalf("model-b: %v", err)
 	}
-
-	if got, _ := ix.GetEmbedding(StatementKey("ns/a")); got != nil {
-		t.Fatalf("expected ns/a's old-model embedding wiped by the forced re-pin, got %+v", got)
+	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "model-a", 4, []float32{1, 2, 3, 4}, "h", time.Now().UTC(), false); err == nil {
+		t.Fatal("expected a width change within one model refused without force")
 	}
-	got, err := ix.GetEmbedding(StatementKey("ns/b"))
-	if err != nil || got == nil {
-		t.Fatalf("expected ns/b's embedding to survive the forced re-pin: got=%+v err=%v", got, err)
+	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "model-a", 4, []float32{1, 2, 3, 4}, "h", time.Now().UTC(), true); err != nil {
+		t.Fatalf("forced: %v", err)
+	}
+	if got, _ := ix.GetEmbedding(StatementKey("ns/b"), "model-a"); got != nil {
+		t.Fatalf("force replaces model-a's set, so ns/b's old-width vector must go, got %+v", got)
+	}
+	if got, _ := ix.GetEmbedding(StatementKey("ns/a"), "model-b"); got == nil {
+		t.Fatal("force must leave every other model's set alone")
 	}
 }
 
@@ -115,7 +133,7 @@ func TestReindex_RemovingStatementDeletesItsEmbedding(t *testing.T) {
 		t.Fatalf("second Reindex: %v", err)
 	}
 
-	got, err := ix.GetEmbedding(StatementKey("ns/a"))
+	got, err := ix.GetEmbedding(StatementKey("ns/a"), "m")
 	if err != nil {
 		t.Fatalf("GetEmbedding: %v", err)
 	}
@@ -151,7 +169,7 @@ func TestReindex_EditingStatementPreservesEmbedding(t *testing.T) {
 		t.Fatalf("second Reindex: %v", err)
 	}
 
-	got, err := ix.GetEmbedding(StatementKey("ns/a"))
+	got, err := ix.GetEmbedding(StatementKey("ns/a"), "m")
 	if err != nil {
 		t.Fatalf("GetEmbedding: %v", err)
 	}
@@ -195,7 +213,7 @@ func TestFindCandidatePairs_AnAdjudicatedPairLeavesTheQueueForGood(t *testing.T)
 		}
 	}
 
-	first, _, err := ix.FindCandidatePairs("", 1, 0, 0)
+	first, _, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -214,7 +232,7 @@ func TestFindCandidatePairs_AnAdjudicatedPairLeavesTheQueueForGood(t *testing.T)
 	if err := ix.upsertRelationshipForTest("ns/a", "ns/b", "not_related"); err != nil {
 		t.Fatalf("record verdict: %v", err)
 	}
-	second, progress, err := ix.FindCandidatePairs("", 1, 0, 0)
+	second, progress, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("second FindCandidatePairs: %v", err)
 	}
@@ -234,7 +252,7 @@ func TestFindCandidatePairs_AnAdjudicatedPairLeavesTheQueueForGood(t *testing.T)
 	}
 
 	// Depth is how you go deeper once a sweep is clear.
-	deeper, deepProgress, err := ix.FindCandidatePairs("", 2, 0, 0)
+	deeper, deepProgress, err := ix.FindCandidatePairs("", "m", 2, 0, 0)
 	if err != nil {
 		t.Fatalf("deeper FindCandidatePairs: %v", err)
 	}
@@ -269,7 +287,7 @@ func TestFindCandidatePairs_ErrorsWithNeitherVectorsNorIdentifiers(t *testing.T)
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	if _, _, err := ix.FindCandidatePairs("", 5, 0, 0); err == nil {
+	if _, _, err := ix.FindCandidatePairs("", "m", 5, 0, 0); err == nil {
 		t.Fatal("expected an error when nothing can be compared, got nil")
 	}
 }
@@ -315,7 +333,7 @@ func TestFindCandidatePairs_PairsStatementsSharingAnIdentifier(t *testing.T) {
 		}
 	}
 
-	pairs, remaining, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, remaining, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -351,7 +369,7 @@ func TestFindCandidatePairs_ExcludesADismissedPair(t *testing.T) {
 	if _, err := ix.Reindex(s); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	pairs, _, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -373,7 +391,7 @@ func TestFindCandidatePairs_ExcludesADismissedPair(t *testing.T) {
 		t.Fatalf("Reindex after dismissal: %v", err)
 	}
 
-	pairs, remaining, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, remaining, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs after dismissal: %v", err)
 	}
@@ -393,7 +411,7 @@ func TestRekeyEmbedding_MovesVectorAndLeavesOldIDEmpty(t *testing.T) {
 		t.Fatalf("RekeyEmbedding: %v", err)
 	}
 
-	moved, err := ix.GetEmbedding(StatementKey("new/ns/id"))
+	moved, err := ix.GetEmbedding(StatementKey("new/ns/id"), "m")
 	if err != nil {
 		t.Fatalf("GetEmbedding new: %v", err)
 	}
@@ -409,7 +427,7 @@ func TestRekeyEmbedding_MovesVectorAndLeavesOldIDEmpty(t *testing.T) {
 		t.Fatalf("expected source_hash to carry over, got %q", moved.SourceHash)
 	}
 
-	old, err := ix.GetEmbedding(StatementKey("old/ns/id"))
+	old, err := ix.GetEmbedding(StatementKey("old/ns/id"), "m")
 	if err != nil {
 		t.Fatalf("GetEmbedding old: %v", err)
 	}
@@ -427,18 +445,18 @@ func TestRekeyEmbedding_MissingSourceIsNoOp(t *testing.T) {
 
 func TestEmbeddingCorpusInfo_ReportsPinnedModelAndCount(t *testing.T) {
 	ix := newTestIndex(t)
-	empty, err := ix.EmbeddingCorpusInfo()
+	empty, err := ix.EmbeddingCorpusInfo("test-model")
 	if err != nil {
 		t.Fatalf("EmbeddingCorpusInfo empty: %v", err)
 	}
-	if empty.Count != 0 || empty.Model != "" {
+	if empty.Count != 0 || empty.Dims != 0 {
 		t.Fatalf("expected an empty corpus, got %+v", empty)
 	}
 
 	if err := ix.UpsertEmbedding(StatementKey("ns/a"), "test-model", 3, []float32{1, 2, 3}, "h", time.Now().UTC(), false); err != nil {
 		t.Fatalf("UpsertEmbedding: %v", err)
 	}
-	got, err := ix.EmbeddingCorpusInfo()
+	got, err := ix.EmbeddingCorpusInfo("test-model")
 	if err != nil {
 		t.Fatalf("EmbeddingCorpusInfo: %v", err)
 	}
@@ -490,7 +508,7 @@ func TestFindCandidatePairs_ModalityIsATiebreakNotARanking(t *testing.T) {
 		}
 	}
 
-	pairs, _, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -538,7 +556,7 @@ func TestFindCandidatePairs_NoFlagWhenModalityAbsent(t *testing.T) {
 		}
 	}
 
-	pairs, _, err := ix.FindCandidatePairs("", 5, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", "m", 5, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -574,7 +592,7 @@ func TestFindCandidatePairs_VolumeIsLinearNotQuadratic(t *testing.T) {
 		}
 	}
 
-	pairs, _, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, _, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}

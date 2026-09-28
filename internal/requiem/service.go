@@ -480,7 +480,7 @@ func (s *Service) Get(fullID string) (*model.Statement, error) {
 		st.Stale = boolPtr(computeStale(s.Root, st.Provenance))
 	}
 
-	emb, err := ix.GetEmbedding(index.StatementKey(fullID))
+	emb, err := ix.GetEmbedding(index.StatementKey(fullID), s.activeModel(ix))
 	if err != nil {
 		return nil, err
 	}
@@ -1075,7 +1075,7 @@ func (s *Service) List(filter ListFilter) ([]StatementSummary, error) {
 		return nil, err
 	}
 
-	embeddings, err := ix.AllEmbeddings()
+	embeddings, err := ix.AllEmbeddings(s.activeModel(ix))
 	if err != nil {
 		return nil, err
 	}
@@ -1269,7 +1269,7 @@ func (s *Service) Check(p CheckParams) ([]index.Candidate, Coverage, error) {
 	if len(vector) == 0 {
 		return candidates, Coverage{Degraded: degraded}, nil
 	}
-	cov, err := embeddingCoverage(ix, p.Namespace)
+	cov, err := embeddingCoverage(ix, p.Namespace, embModel)
 	if err != nil {
 		return nil, Coverage{}, err
 	}
@@ -1352,11 +1352,12 @@ func (s *Service) Audit(namespace string, neighbors, limit int, minScore float64
 		return nil, index.AuditProgress{}, Coverage{}, fmt.Errorf("reindex before audit: %w", err)
 	}
 
-	pairs, progress, err := ix.FindCandidatePairs(namespace, neighbors, limit, minScore)
+	active := s.activeModel(ix)
+	pairs, progress, err := ix.FindCandidatePairs(namespace, active, neighbors, limit, minScore)
 	if err != nil {
 		return nil, progress, Coverage{}, err
 	}
-	cov, err := embeddingCoverage(ix, namespace)
+	cov, err := embeddingCoverage(ix, namespace, active)
 	if err != nil {
 		return nil, progress, Coverage{}, err
 	}

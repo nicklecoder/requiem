@@ -77,7 +77,7 @@ func TestFindCandidatePairs_EachVerdictDrainsTheQueue(t *testing.T) {
 	ix := newTestIndex(t)
 	seedAuditCorpus(t, s, ix, []float64{0, 20, 40, 90})
 
-	pairs, before, err := ix.FindCandidatePairs("", 2, 0, 0)
+	pairs, before, err := ix.FindCandidatePairs("", "m", 2, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestFindCandidatePairs_EachVerdictDrainsTheQueue(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	_, after, err := ix.FindCandidatePairs("", 2, 0, 0)
+	_, after, err := ix.FindCandidatePairs("", "m", 2, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs after verdict: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestFindCandidatePairs_QueueReachesEmptyAndFullySwept(t *testing.T) {
 	ix := newTestIndex(t)
 	seedAuditCorpus(t, s, ix, []float64{0, 30})
 
-	pairs, progress, err := ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, progress, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestFindCandidatePairs_QueueReachesEmptyAndFullySwept(t *testing.T) {
 		t.Fatalf("Reindex: %v", err)
 	}
 
-	pairs, progress, err = ix.FindCandidatePairs("", 1, 0, 0)
+	pairs, progress, err = ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("FindCandidatePairs after verdict: %v", err)
 	}
@@ -151,11 +151,11 @@ func TestFindCandidatePairs_DepthIsADial(t *testing.T) {
 	ix := newTestIndex(t)
 	seedAuditCorpus(t, s, ix, []float64{0, 15, 30, 45, 60})
 
-	_, shallow, err := ix.FindCandidatePairs("", 1, 0, 0)
+	_, shallow, err := ix.FindCandidatePairs("", "m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("shallow sweep: %v", err)
 	}
-	_, deep, err := ix.FindCandidatePairs("", 3, 0, 0)
+	_, deep, err := ix.FindCandidatePairs("", "m", 3, 0, 0)
 	if err != nil {
 		t.Fatalf("deep sweep: %v", err)
 	}

@@ -173,10 +173,10 @@ func TestEmbedAll_ReEmbedsAfterBodyChange(t *testing.T) {
 	}
 }
 
-// Changing the model invalidates the whole corpus, not just the stale part,
-// because re-pinning wipes every vector. It must not happen as a silent side
-// effect of editing config.
-func TestEmbedAll_ModelChangeRequiresForceThenRepinsWholeCorpus(t *testing.T) {
+// requiem: embedding/vectors-per-model
+// Switching model fills that model's own set and discards nothing, so
+// switching back costs nothing; force recomputes the current model's set.
+func TestEmbedAll_ModelSwitchFillsItsOwnSetAndKeepsTheOld(t *testing.T) {
 	s := newTestService(t)
 	srv, _ := embedServer(t, 4, nil)
 	writeConfig(t, s, srv.URL, "model-one", "")
@@ -186,24 +186,28 @@ func TestEmbedAll_ModelChangeRequiresForceThenRepinsWholeCorpus(t *testing.T) {
 			t.Fatalf("Add: %v", err)
 		}
 	}
-	if _, err := s.EmbedAll(false); err != nil {
-		t.Fatalf("EmbedAll: %v", err)
+	if res, err := s.EmbedAll(false); err != nil || res.Embedded != 3 || res.Model != "model-one" {
+		t.Fatalf("model-one: %+v err=%v", res, err)
 	}
 
 	writeConfig(t, s, srv.URL, "model-two", "")
-	if _, err := s.EmbedAll(false); err == nil {
-		t.Fatal("expected a model change without --force to be refused")
+	res, err := s.EmbedAll(false)
+	if err != nil {
+		t.Fatalf("a switch of model must not be refused: %v", err)
+	}
+	if res.Embedded != 3 || res.Model != "model-two" {
+		t.Fatalf("expected model-two's set filled, got %+v", res)
 	}
 
-	res, err := s.EmbedAll(true)
-	if err != nil {
-		t.Fatalf("forced EmbedAll: %v", err)
+	writeConfig(t, s, srv.URL, "model-one", "")
+	res, err = s.EmbedAll(false)
+	if err != nil || res.Embedded != 0 || res.Skipped != 3 {
+		t.Fatalf("switching back must find model-one's set intact, got %+v err=%v", res, err)
 	}
-	if !res.Repinned {
-		t.Fatal("expected the result to report a re-pin")
-	}
-	if res.Embedded != 3 || res.Skipped != 0 {
-		t.Fatalf("a re-pin must re-embed everything, not just stale entries, got %+v", res)
+
+	res, err = s.EmbedAll(true)
+	if err != nil || res.Embedded != 3 {
+		t.Fatalf("force recomputes the current model's vectors, got %+v err=%v", res, err)
 	}
 }
 

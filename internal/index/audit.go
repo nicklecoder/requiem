@@ -153,7 +153,7 @@ const (
 // have to name an absolute cosine, and what counts as close is a property of
 // the embedding model, not of the corpus.
 // requiem: retrieval/audit-queue-drains
-func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minScore float64) ([]PairCandidate, AuditProgress, error) {
+func (ix *Index) FindCandidatePairs(namespace, model string, neighbors, limit int, minScore float64) ([]PairCandidate, AuditProgress, error) {
 	if neighbors <= 0 {
 		neighbors = 1
 	}
@@ -169,7 +169,7 @@ func (ix *Index) FindCandidatePairs(namespace string, neighbors, limit int, minS
 		return nil, progress, nil
 	}
 
-	embeddings, err := ix.AllEmbeddings()
+	embeddings, err := ix.AllEmbeddings(model)
 	if err != nil {
 		return nil, progress, err
 	}

@@ -196,7 +196,7 @@ func TestInit_KeepsTheProjectModel(t *testing.T) {
 	if res.Embedding.Model != "committed-model" || res.Embedding.ModelSource != SourceConfigured {
 		t.Fatalf("expected the committed model kept, got %+v", res.Embedding)
 	}
-	if !strings.Contains(strings.Join(res.Notes, "\n"), "reindex --embed --force") {
+	if !strings.Contains(strings.Join(res.Notes, "\n"), "editing embedding.model") {
 		t.Fatalf("expected a note explaining how to change the model, got %v", res.Notes)
 	}
 }

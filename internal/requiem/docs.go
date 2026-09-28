@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 35
+const docBlockVersion = 36
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -397,9 +397,9 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"something was built rather than where it lives now:",
 	"",
 	"```",
-	"Enforce single-model embedding",
+	"Keep one vector set per embedding model",
 	"",
-	"Requiem-Id: embedding/model-pinning",
+	"Requiem-Id: embedding/vectors-per-model",
 	"```",
 	"",
 	"`requiem trace` reports those commits. Requiem only reads them — you write",

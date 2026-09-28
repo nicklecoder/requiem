@@ -1,4 +1,4 @@
-<!-- >>> requiem v35 >>> -->
+<!-- >>> requiem v36 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -326,9 +326,9 @@ A code commit can also name the decision it implements, which records *when*
 something was built rather than where it lives now:
 
 ```
-Enforce single-model embedding
+Keep one vector set per embedding model
 
-Requiem-Id: embedding/model-pinning
+Requiem-Id: embedding/vectors-per-model
 ```
 
 `requiem trace` reports those commits. Requiem only reads them — you write

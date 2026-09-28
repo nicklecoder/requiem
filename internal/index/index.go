@@ -290,7 +290,53 @@ func migrateRebuilds(tx *sql.Tx) error {
 			}
 		}
 	}
-	return nil
+	return migrateVectorsPerModel(tx)
+}
+
+// migrateVectorsPerModel re-keys embeddings on (source_kind, full_id, model),
+// so each model keeps its own set, and carries the old single-model pin into
+// embedding_models. Guarded on the key rather than a column, since the
+// change adds none. Every existing vector is kept.
+// requiem: embedding/vectors-per-model
+func migrateVectorsPerModel(tx *sql.Tx) error {
+	var keyed int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('embeddings') WHERE name = 'model' AND pk > 0`).Scan(&keyed); err != nil {
+		return err
+	}
+	if keyed == 0 {
+		for _, step := range []string{
+			`CREATE TABLE embeddings_migrated (
+				source_kind TEXT NOT NULL DEFAULT 'statement',
+				full_id     TEXT NOT NULL,
+				model       TEXT NOT NULL,
+				dims        INTEGER NOT NULL,
+				vector      BLOB NOT NULL,
+				source_hash TEXT NOT NULL,
+				computed_at TEXT NOT NULL,
+				PRIMARY KEY (source_kind, full_id, model)
+			)`,
+			`INSERT INTO embeddings_migrated SELECT source_kind, full_id, model, dims, vector, source_hash, computed_at FROM embeddings`,
+			`DROP TABLE embeddings`,
+			`ALTER TABLE embeddings_migrated RENAME TO embeddings`,
+		} {
+			if _, err := tx.Exec(step); err != nil {
+				return fmt.Errorf("re-key embeddings by model: %w", err)
+			}
+		}
+	}
+	// Read before writing: opening the index is otherwise read-only, and an
+	// unconditional write here made every concurrent command contend for
+	// the write lock on open.
+	var pending int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM embedding_meta m
+		WHERE NOT EXISTS (SELECT 1 FROM embedding_models e WHERE e.model = m.model)`).Scan(&pending); err != nil {
+		return err
+	}
+	if pending == 0 {
+		return nil
+	}
+	_, err := tx.Exec(`INSERT INTO embedding_models (model, dims) SELECT model, dims FROM embedding_meta WHERE id = 1`)
+	return err
 }
 
 // dropUnstemmedFTS drops full-text tables built before they stemmed and
