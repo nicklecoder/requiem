@@ -89,7 +89,10 @@ type InitResult struct {
 	// Embedding reports what init did to connect the embedder, when it
 	// was asked to (see ModelSetupOptions).
 	Embedding *EmbeddingSetup `json:"embedding,omitempty"`
-	Notes     []string        `json:"notes,omitempty"`
+	// Classifier reports the proof of a configured classifier; absent when
+	// none is configured.
+	Classifier *ClassifierCheck `json:"classifier,omitempty"`
+	Notes      []string         `json:"notes,omitempty"`
 }
 
 // InitOptions are the inputs to Init.
@@ -207,6 +210,9 @@ func (s *Service) Init(opts InitOptions) (*InitResult, error) {
 	// Before the hooks: whether they embed depends on an endpoint working.
 	if opts.Models.Enabled {
 		if err := s.setupEmbedding(opts.Models, res); err != nil {
+			return nil, err
+		}
+		if err := s.checkClassifier(res); err != nil {
 			return nil, err
 		}
 	}

@@ -231,3 +231,38 @@ func TestNormalizeEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// requiem: cli/init-sets-up-models
+// A configured classifier is proved with one real request; with none
+// configured init says nothing about classifiers at all.
+func TestInit_ProvesAConfiguredClassifierAndIsSilentWithout(t *testing.T) {
+	machineConfigCleanup(t)
+	s := newTestService(t)
+	res := setupInit(t, s, ModelSetupOptions{})
+	if res.Classifier != nil || strings.Contains(strings.Join(res.Notes, "\n"), "classifier") {
+		t.Fatalf("with no classifier configured, init must not mention one: %+v %v", res.Classifier, res.Notes)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/nli" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`{"results":[{"entailment":0.9,"neutral":0.05,"contradiction":0.05},{"entailment":0.9,"neutral":0.05,"contradiction":0.05}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	local := filepath.Join(s.Store.Root, config.LocalFileName)
+	if err := os.WriteFile(local, []byte("classifier:\n  kind: nli\n  endpoint: "+srv.URL+"\n"), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+	res = setupInit(t, s, ModelSetupOptions{})
+	if res.Classifier == nil || !res.Classifier.OK || res.Classifier.Endpoint != srv.URL+"/v1/nli" {
+		t.Fatalf("expected the configured classifier proved, got %+v (notes %v)", res.Classifier, res.Notes)
+	}
+
+	srv.Close()
+	res = setupInit(t, s, ModelSetupOptions{})
+	if res.Classifier == nil || res.Classifier.OK || !strings.Contains(strings.Join(res.Notes, "\n"), "did not answer") {
+		t.Fatalf("expected an unreachable classifier reported, not failed, got %+v (notes %v)", res.Classifier, res.Notes)
+	}
+}

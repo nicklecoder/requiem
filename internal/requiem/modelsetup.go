@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nicklecoder/requiem/internal/classify"
 	"github.com/nicklecoder/requiem/internal/config"
 	"github.com/nicklecoder/requiem/internal/embed"
 )
@@ -300,4 +301,49 @@ func normalizeEndpoint(raw string) string {
 		u.Path = "/v1/embeddings"
 	}
 	return u.String()
+}
+
+// ClassifierCheck reports init's proof of a configured classifier.
+type ClassifierCheck struct {
+	Kind     string `json:"kind"`
+	Endpoint string `json:"endpoint"`
+	Model    string `json:"model"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+}
+
+// requiem: cli/init-sets-up-models
+// checkClassifier proves a configured classifier with one real request. A
+// classifier is optional and has no usual address to probe, so with none
+// configured init says nothing at all (principles/models-are-optional).
+func (s *Service) checkClassifier(res *InitResult) error {
+	cfg, err := config.Load(s.Store.Root)
+	if err != nil {
+		return err
+	}
+	if !cfg.ClassifierConfigured() {
+		return nil
+	}
+	check := &ClassifierCheck{Kind: cfg.Classifier.Kind, Model: cfg.Classifier.Model}
+	res.Classifier = check
+	client, err := classify.New(*cfg.Classifier)
+	if err != nil {
+		check.Error = err.Error()
+		res.Notes = append(res.Notes, "the configured classifier is unusable ("+err.Error()+"); audit orders its queue without it until classifier.* is fixed")
+		return nil
+	}
+	check.Endpoint = client.Endpoint()
+	timeout, err := cfg.Classifier.ResolvedTimeout()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if _, err := client.Contradiction(ctx, []classify.Pair{{A: "requiem classifier check", B: "requiem classifier check"}}); err != nil {
+		check.Error = err.Error()
+		res.Notes = append(res.Notes, fmt.Sprintf("the configured classifier at %s did not answer (%v); audit orders its queue without it until it does", client.Endpoint(), err))
+		return nil
+	}
+	check.OK = true
+	return nil
 }
