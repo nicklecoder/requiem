@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -86,6 +87,15 @@ func newReindexCmd(semantic bool) *cobra.Command {
 // that exited 0 would let a caller believe the corpus is fully embedded and
 // then trust an audit built on part of it.
 func reportEmbedResult(res *requiem.EmbedAllResult) error {
+	// A fallback model's set is reported but never fails the run: the
+	// project's own set is what the exit code answers for.
+	for _, o := range res.Others {
+		fmt.Fprintf(os.Stderr, "requiem: fallback set %s: embedded %d, skipped %d already fresh", o.Model, o.Embedded, o.Skipped) // requiem:ignore message text, not a label
+		if o.Failed > 0 {
+			fmt.Fprintf(os.Stderr, ", %d not embedded (%s)", o.Failed, strings.Join(o.GroupedFailures(), "; "))
+		}
+		fmt.Fprintln(os.Stderr)
+	}
 	fmt.Fprintf(os.Stderr, "requiem: embedded %d with %s, skipped %d already fresh", res.Embedded, res.Model, res.Skipped) // requiem:ignore message text, not a label
 	if res.Failed == 0 {
 		fmt.Fprintln(os.Stderr)

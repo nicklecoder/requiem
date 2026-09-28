@@ -155,3 +155,19 @@ func TestClassifierConfigured_NeedsAKnownKindAndEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// requiem: embedding/fallback-endpoints
+// Fallbacks name machines, so a committed list is ignored; a fallback with
+// no model serves the project's.
+func TestLoad_FallbacksComeFromTheMachineOrOverlay(t *testing.T) {
+	writeMachine(t, "embedding:\n  endpoint: http://mini/v1/embeddings\n  fallbacks:\n    - endpoint: http://localhost/v1/embeddings\n    - endpoint: http://laptop/v1/embeddings\n      model: small\n")
+	dir := write(t, "embedding:\n  model: big\n  fallbacks:\n    - endpoint: http://team-box/v1/embeddings\n")
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := c.Embedders()
+	if len(got) != 3 || got[1].Endpoint != "http://localhost/v1/embeddings" || got[1].Model != "big" || got[2].Model != "small" {
+		t.Fatalf("expected the machine's fallbacks in order, the committed one ignored, got %+v", got)
+	}
+}

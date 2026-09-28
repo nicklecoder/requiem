@@ -151,11 +151,12 @@ func TestInit_ReportsWhenNoEndpointAnswers(t *testing.T) {
 	}
 }
 
-// requiem: cli/init-sets-up-models
-// A broken endpoint in the project's overlay would keep winning over anything
-// saved to the machine config, so the working one replaces it there.
-func TestInit_ReplacesABrokenLocalEndpointInPlace(t *testing.T) {
-	machinePath := machineConfigCleanup(t)
+// requiem: cli/init-keeps-unreachable-endpoint
+// An endpoint that is only out of reach, as a LAN server is from elsewhere,
+// is kept, and a working one found beside it is added as a fallback — in the
+// same overlay, so it is tried only after the configured one.
+func TestInit_KeepsAnUnreachableEndpointAndAddsAFallback(t *testing.T) {
+	machineConfigCleanup(t)
 	srv := fakeEmbedder(t, "test-model")
 	s := newTestService(t)
 	if _, err := s.Init(InitOptions{}); err != nil {
@@ -163,19 +164,53 @@ func TestInit_ReplacesABrokenLocalEndpointInPlace(t *testing.T) {
 	}
 	local := filepath.Join(s.Store.Root, config.LocalFileName)
 	if err := config.SetEmbeddingField(local, "endpoint", "http://127.0.0.1:1/v1/embeddings"); err != nil {
-		t.Fatalf("seed broken endpoint: %v", err)
+		t.Fatalf("seed endpoint: %v", err)
 	}
 	t.Setenv("OLLAMA_HOST", srv.URL)
 	res := setupInit(t, s, ModelSetupOptions{Model: "test-model"})
-	if res.Embedding.SavedTo != local {
-		t.Fatalf("expected the working endpoint saved over the broken local one, got %+v", res.Embedding)
-	}
-	if m, err := config.LoadFile(machinePath); err != nil || (m.Embedding != nil && m.Embedding.Endpoint != "") {
-		t.Fatalf("the endpoint belongs in the overlay, not the machine config: %+v err=%v", m.Embedding, err)
+	if !res.Embedding.SavedAsFallback || res.Embedding.SavedTo != local {
+		t.Fatalf("expected the working endpoint added as a fallback in the overlay, got %+v (notes %v)", res.Embedding, res.Notes)
 	}
 	cfg, err := config.Load(s.Store.Root)
-	if err != nil || cfg.Embedding.Endpoint != srv.URL+"/v1/embeddings" {
-		t.Fatalf("expected the effective endpoint to be the working one, got %+v err=%v", cfg.Embedding, err)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	embedders := cfg.Embedders()
+	if len(embedders) != 2 || embedders[0].Endpoint != "http://127.0.0.1:1/v1/embeddings" || embedders[1].Endpoint != srv.URL+"/v1/embeddings" {
+		t.Fatalf("expected the configured endpoint kept first and the found one after it, got %+v", embedders)
+	}
+
+	// Run again: the fallback now answers as configured, and nothing more is
+	// added.
+	res = setupInit(t, s, ModelSetupOptions{})
+	if res.Embedding.EndpointSource != SourceFallback || res.Embedding.SavedTo != "" {
+		t.Fatalf("expected the configured fallback used and nothing saved, got %+v", res.Embedding)
+	}
+}
+
+// requiem: cli/init-keeps-unreachable-endpoint
+// An endpoint that answers but cannot serve the model is broken, not away,
+// and is replaced.
+func TestInit_ReplacesAnEndpointThatAnswersWrongly(t *testing.T) {
+	machineConfigCleanup(t)
+	good := fakeEmbedder(t, "test-model")
+	wrong := fakeEmbedder(t, "some-other-model")
+	s := newTestService(t)
+	if _, err := s.Init(InitOptions{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	local := filepath.Join(s.Store.Root, config.LocalFileName)
+	if err := config.SetEmbeddingField(local, "endpoint", wrong.URL+"/v1/embeddings"); err != nil {
+		t.Fatalf("seed endpoint: %v", err)
+	}
+	t.Setenv("OLLAMA_HOST", good.URL)
+	res := setupInit(t, s, ModelSetupOptions{Model: "test-model"})
+	if res.Embedding.SavedAsFallback {
+		t.Fatalf("an endpoint that answers wrongly is replaced, not kept: %+v", res.Embedding)
+	}
+	cfg, err := config.Load(s.Store.Root)
+	if err != nil || cfg.Embedding.Endpoint != good.URL+"/v1/embeddings" {
+		t.Fatalf("expected the working endpoint in its place, got %+v err=%v", cfg.Embedding, err)
 	}
 }
 

@@ -45,10 +45,6 @@ func (s *Service) OpenWordingQueue(namespace string, withBodies bool) ([]OpenWor
 	if !cfg.ClassifierConfigured() {
 		return nil, fmt.Errorf("list --open-wording needs a classifier: set classifier.kind and classifier.endpoint in .requiem/%s or the machine config", config.LocalFileName)
 	}
-	client, err := classify.New(*cfg.Classifier)
-	if err != nil {
-		return nil, err
-	}
 	summaries, err := s.List(ListFilter{Namespace: namespace, Status: string(model.StatusActive)})
 	if err != nil {
 		return nil, err
@@ -74,14 +70,20 @@ func (s *Service) OpenWordingQueue(namespace string, withBodies bool) ([]OpenWor
 		items = append(items, it)
 		bodies = append(bodies, st.Body)
 	}
-	timeout, err := cfg.Classifier.ResolvedTimeout()
-	if err != nil {
-		return nil, err
-	}
-	batches := time.Duration(len(bodies)/cfg.Classifier.ResolvedBatchSize() + len(bodies)/cfg.Classifier.ResolvedConcurrency() + 1)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout*batches)
-	defer cancel()
-	scores, err := s.openWordingScores(ctx, client, bodies)
+	// The ranking is this command's whole job, so it always tries every
+	// classifier rather than skipping one remembered as down.
+	var scores []float64
+	_, err = s.withClassifier(cfg, false, func(client *classify.Client, k config.Classifier) error {
+		timeout, err := k.ResolvedTimeout()
+		if err != nil {
+			return err
+		}
+		batches := time.Duration(len(bodies)/k.ResolvedBatchSize() + len(bodies)/k.ResolvedConcurrency() + 1)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout*batches)
+		defer cancel()
+		scores, err = s.openWordingScores(ctx, client, bodies)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -120,9 +122,8 @@ func (s *Service) openWordingScores(ctx context.Context, client *classify.Client
 			ask[j] = bodies[i]
 		}
 		scores, err := client.OpenWording(ctx, ask)
-		s.recordReach(client.Endpoint(), err)
 		if err != nil {
-			return nil, fmt.Errorf("classifier %s did not answer: %w", client.Identity(), err)
+			return nil, err
 		}
 		fresh := map[index.ScoreKey]float64{}
 		for j, i := range todo {
@@ -175,10 +176,6 @@ func (s *Service) OpenWordingWarning(fullID string) string {
 	if err != nil || !cfg.ClassifierConfigured() {
 		return ""
 	}
-	threshold, on := cfg.Classifier.OpenWordingWarnAt()
-	if !on {
-		return ""
-	}
 	st, err := s.Store.ReadStatement(fullID)
 	if err != nil || st.Status != model.StatusActive {
 		return ""
@@ -188,21 +185,29 @@ func (s *Service) OpenWordingWarning(fullID string) string {
 			return ""
 		}
 	}
-	client, err := classify.New(*cfg.Classifier)
-	if err != nil {
-		return ""
-	}
-	if _, down := s.endpointDown(client.Endpoint()); down {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), writeCheckTimeout)
-	defer cancel()
-	scores, err := s.openWordingScores(ctx, client, []string{st.Body})
-	if err != nil || scores[0] < threshold {
+	// Each classifier's own threshold: a chat model's probabilities are not
+	// calibrated, so a chat fallback warns only if it sets one.
+	var score, threshold float64
+	var warn bool
+	used, err := s.withClassifier(cfg, true, func(client *classify.Client, k config.Classifier) error {
+		threshold, warn = k.OpenWordingWarnAt()
+		if !warn {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), writeCheckTimeout)
+		defer cancel()
+		scores, err := s.openWordingScores(ctx, client, []string{st.Body})
+		if err != nil {
+			return err
+		}
+		score = scores[0]
+		return nil
+	})
+	if err != nil || !warn || score < threshold {
 		return ""
 	}
 	return strings.Join([]string{
-		fmt.Sprintf("requiem: %s may leave part of its decision open (score %.2f from %s).", fullID, scores[0], client.Identity()),                   // requiem:ignore message text, not a label
+		fmt.Sprintf("requiem: %s may leave part of its decision open (score %.2f from %s).", fullID, score, used),                                    // requiem:ignore message text, not a label
 		"requiem:   An open question belongs in a proposed statement, where list --status proposed finds it; split it out, or,",                      // requiem:ignore message text, not a label
 		fmt.Sprintf("requiem:   if the body is settled, run `requiem dismiss %s --open-wording --note \"...\"` so it is not flagged again.", fullID), // requiem:ignore message text, not a label
 	}, "\n")

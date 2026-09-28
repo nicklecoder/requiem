@@ -235,6 +235,14 @@ by default); they never refuse, and never wait more than 3 seconds on the
 classifier. Expect false alarms at the top: statements *about* deciding score
 high too.
 
+Away from the LAN, a server that no longer answers costs about 2 seconds
+once, then is skipped for 5 minutes: `check --semantic` answers from word
+search with a note, and `audit` keeps its usual order. To keep full function
+elsewhere, list fallbacks in the machine config — an embedder on the laptop
+(`embedding.fallbacks`, with the same model, or another one whose vectors are
+kept separately) and a classifier (`classifier.fallbacks`). `init` run away
+from the LAN keeps your LAN endpoint and adds what it finds as a fallback.
+
 Neither kind of server is Ollama's own embedding endpoint, and requiem ships,
 downloads and defaults no classifier model. `requiem init` proves a configured
 classifier and says nothing when none is configured.
