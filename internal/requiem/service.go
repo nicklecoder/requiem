@@ -1343,6 +1343,7 @@ type PairWithBodies struct {
 	SharedFacets     []string `json:"shared_facets,omitempty"`
 	SameSource       bool     `json:"same_source,omitempty"`
 	ModalityConflict bool     `json:"modality_conflict,omitempty"`
+	Contradiction    *float64 `json:"contradiction,omitempty"`
 	BodyA            string   `json:"body_a"`
 	BodyB            string   `json:"body_b"`
 }
@@ -1377,7 +1378,7 @@ func (s *Service) WithBodies(pairs []index.PairCandidate) ([]PairWithBodies, err
 		}
 		out = append(out, PairWithBodies{
 			A: p.A, B: p.B, Score: p.Score, Similarity: p.Similarity, SharedFacets: p.SharedFacets,
-			SameSource: p.SameSource, ModalityConflict: p.ModalityConflict, BodyA: a, BodyB: b,
+			SameSource: p.SameSource, ModalityConflict: p.ModalityConflict, Contradiction: p.Contradiction, BodyA: a, BodyB: b,
 		})
 	}
 	return out, nil

@@ -41,6 +41,10 @@ type PairCandidate struct {
 	// set against a must_not on unrelated topics is ordinary.
 	// requiem: model/modality-is-not-conflict-detection
 	ModalityConflict bool `json:"modality_conflict,omitempty"`
+	// Contradiction is a configured classifier's probability that the two
+	// statements contradict each other. Present only when one scored the
+	// pair; it orders the queue and never removes a pair from it.
+	Contradiction *float64 `json:"contradiction,omitempty"`
 }
 
 // AuditProgress reports how much of the corpus has actually been judged, so a
