@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -77,6 +78,10 @@ func newUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var before string
+			if old, err := svc.Store.ReadStatement(args[0]); err == nil {
+				before = old.Body
+			}
 			st, err := svc.Update(args[0], params)
 			if err != nil {
 				// check hands back rejections and statements side by side,
@@ -100,6 +105,9 @@ func newUpdateCmd() *cobra.Command {
 				}
 				warnBlastRadius(args[0], refs)
 				warnOpenWording(svc, args[0])
+				if note := requiem.GrowthNote(args[0], before, st.Body); note != "" {
+					fmt.Fprintln(os.Stderr, note)
+				}
 			}
 			return printJSON(st)
 		},
