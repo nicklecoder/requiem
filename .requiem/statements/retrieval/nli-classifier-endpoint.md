@@ -3,7 +3,7 @@ id: nli-classifier-endpoint
 namespace: retrieval
 kind: rule
 modality: must
-status: active
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-28T00:39:46.464056378Z
