@@ -34,6 +34,8 @@ type EmbedAllResult struct {
 	Failures []EmbedFailure `json:"failures,omitempty"`
 	// Model is the vector set this run filled.
 	Model string `json:"model,omitempty"`
+	// Others reports the sets of fallback embedders serving other models.
+	Others []EmbedAllResult `json:"others,omitempty"`
 }
 
 // EmbedAll fills in every missing or stale vector by calling the configured
@@ -55,20 +57,58 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	if !cfg.EmbeddingConfigured() {
 		return nil, fmt.Errorf("no embedding endpoint configured: %s", config.SetupHint())
 	}
+	// requiem: embedding/fallback-endpoints
+	// Every configured model's set is brought up to date, each by the first
+	// of its embedders that answers: the project's model first, then any
+	// fallback serving another model, whose set is what a laptop away from
+	// the LAN server searches with — kept current while the LAN is there.
+	embedders := cfg.Embedders()
+	var primary *EmbedAllResult
+	done := map[string]bool{}
+	for _, first := range embedders {
+		if done[first.Model] {
+			continue
+		}
+		done[first.Model] = true
+		var res *EmbedAllResult
+		for _, e := range embedders {
+			if e.Model != first.Model {
+				continue
+			}
+			r, unreachable, err := s.embedAllWith(e, force)
+			if err != nil {
+				return nil, err
+			}
+			res = r
+			if !(unreachable && r.Embedded == 0) {
+				break
+			}
+		}
+		if primary == nil {
+			primary = res
+		} else {
+			primary.Others = append(primary.Others, *res)
+		}
+	}
+	return primary, nil
+}
 
-	client, err := embed.New(*cfg.Embedding)
+// embedAllWith fills one embedder's vector set, reporting whether every
+// failure was the endpoint being out of reach.
+func (s *Service) embedAllWith(emb config.Embedding, force bool) (*EmbedAllResult, bool, error) {
+	client, err := embed.New(emb)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	ix, err := s.openIndex()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer ix.Close()
 
 	if _, err := ix.Reindex(s.Store); err != nil {
-		return nil, fmt.Errorf("reindex before embed: %w", err)
+		return nil, false, fmt.Errorf("reindex before embed: %w", err)
 	}
 
 	// Statements *and* rejections: a rejection without a vector can only
@@ -78,14 +118,14 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	// requiem: retrieval/rejections-embedded
 	records, err := ix.EmbeddableRecords("")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Only this model's set: a switch of model fills that model's set and
 	// leaves every other set as it was.
 	// requiem: embedding/vectors-per-model
 	embeddings, err := ix.AllEmbeddings(client.Model())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	var pending []index.EmbeddableRecord
@@ -105,7 +145,7 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 		pending = append(pending, r)
 	}
 	if len(pending) == 0 {
-		return result, nil
+		return result, false, nil
 	}
 
 	// Deterministic order so batching, and therefore any failure grouping,
@@ -117,15 +157,15 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 		return pending[i].FullID < pending[j].FullID
 	})
 
-	timeout, err := cfg.Embedding.ResolvedTimeout()
+	timeout, err := emb.ResolvedTimeout()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	batches := batchRecords(pending, cfg.Embedding.ResolvedBatchSize())
+	batches := batchRecords(pending, emb.ResolvedBatchSize())
 
 	outcomes := make([][]itemOutcome, len(batches))
 
-	sem := make(chan struct{}, cfg.Embedding.ResolvedConcurrency())
+	sem := make(chan struct{}, emb.ResolvedConcurrency())
 	var wg sync.WaitGroup
 	for i, batch := range batches {
 		wg.Add(1)
@@ -185,7 +225,7 @@ func (s *Service) EmbedAll(force bool) (*EmbedAllResult, error) {
 	}
 
 	sort.Slice(result.Failures, func(i, j int) bool { return result.Failures[i].FullID < result.Failures[j].FullID })
-	return result, nil
+	return result, unreachable != nil && result.Embedded == 0, nil
 }
 
 // itemOutcome is per-statement rather than per-batch so one bad input

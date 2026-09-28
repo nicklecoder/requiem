@@ -12,6 +12,7 @@ import (
 	"github.com/nicklecoder/requiem/internal/classify"
 	"github.com/nicklecoder/requiem/internal/config"
 	"github.com/nicklecoder/requiem/internal/embed"
+	"github.com/nicklecoder/requiem/internal/reach"
 )
 
 // ModelSetupOptions control how init connects the models requiem depends on.
@@ -39,6 +40,7 @@ const (
 	SourceLocalhost  = "localhost"
 	SourcePrompt     = "prompt"
 	SourceMachine    = "machine-config"
+	SourceFallback   = "fallback"
 )
 
 // localOllamaEndpoint is Ollama's own default, the usual local server. A
@@ -63,10 +65,15 @@ type EmbeddingSetup struct {
 	SavedTo        string `json:"saved_to,omitempty"`
 	// DefaultModelSaved reports that the model was also recorded as this
 	// machine's default, for the next project init sets up here.
-	DefaultModelSaved bool              `json:"default_model_saved,omitempty"`
-	Embedded          int               `json:"embedded"`
-	Failed            int               `json:"failed,omitempty"`
-	Failures          []EndpointAttempt `json:"tried,omitempty"`
+	DefaultModelSaved bool `json:"default_model_saved,omitempty"`
+	// SavedAsFallback reports that the endpoint was added beside a
+	// configured one that is out of reach, not in its place.
+	SavedAsFallback bool `json:"saved_as_fallback,omitempty"`
+	// FallbackModel names the model of a fallback that serves another one.
+	FallbackModel string            `json:"fallback_model,omitempty"`
+	Embedded      int               `json:"embedded"`
+	Failed        int               `json:"failed,omitempty"`
+	Failures      []EndpointAttempt `json:"tried,omitempty"`
 }
 
 // requiem: cli/init-sets-up-models
@@ -127,9 +134,9 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 	// Candidates in order of how deliberately they were chosen. No network
 	// scan: a sweep is slow, can trip security tools, and is unnecessary
 	// once the machine config holds the endpoint.
-	type candidate struct{ endpoint, source string }
+	type candidate struct{ endpoint, source, model string }
 	var candidates []candidate
-	add := func(raw, source string) {
+	add := func(raw, source, candModel string) {
 		ep := normalizeEndpoint(raw)
 		if ep == "" {
 			return
@@ -139,19 +146,26 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 				return
 			}
 		}
-		candidates = append(candidates, candidate{ep, source})
+		candidates = append(candidates, candidate{ep, source, candModel})
 	}
 	// An endpoint named explicitly is the only one tried: someone who says
 	// which server to use means that one, and quietly saving another after
 	// it failed would leave them believing their choice took.
 	if opts.Endpoint != "" {
-		add(opts.Endpoint, SourceFlag)
+		add(opts.Endpoint, SourceFlag, model)
 	} else {
 		if cfg.Embedding != nil {
-			add(cfg.Embedding.Endpoint, SourceConfigured)
+			add(cfg.Embedding.Endpoint, SourceConfigured, model)
+			for _, f := range cfg.Embedding.Fallbacks {
+				fm := f.Model
+				if fm == "" {
+					fm = model
+				}
+				add(f.Endpoint, SourceFallback, fm)
+			}
 		}
-		add(os.Getenv("OLLAMA_HOST"), SourceOllamaHost)
-		add(localOllamaEndpoint, SourceLocalhost)
+		add(os.Getenv("OLLAMA_HOST"), SourceOllamaHost, model)
+		add(localOllamaEndpoint, SourceLocalhost, model)
 	}
 
 	base := config.Embedding{Model: model}
@@ -160,14 +174,25 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 		base.Model = model
 	}
 	found := ""
+	// configuredAway is set when the configured endpoint failed only by
+	// being out of reach: it is kept rather than replaced.
+	configuredAway := false
 	for _, c := range candidates {
-		err := proveEndpoint(base, c.endpoint)
+		b := base
+		b.Model = c.model
+		err := proveEndpoint(b, c.endpoint)
 		s.recordReach(c.endpoint, err)
 		if err != nil {
+			if c.source == SourceConfigured && reach.Unreachable(err) {
+				configuredAway = true
+			}
 			setup.Failures = append(setup.Failures, EndpointAttempt{Endpoint: c.endpoint, Source: c.source, Error: err.Error()})
 			continue
 		}
 		found, setup.EndpointSource = c.endpoint, c.source
+		if c.model != model {
+			setup.FallbackModel = c.model
+		}
 		break
 	}
 	for found == "" && opts.Prompt != nil && opts.Endpoint == "" {
@@ -195,7 +220,29 @@ func (s *Service) setupEmbedding(opts ModelSetupOptions, res *InitResult) error 
 	}
 	setup.Endpoint = found
 
-	if setup.EndpointSource != SourceConfigured {
+	switch {
+	case setup.EndpointSource == SourceConfigured || setup.EndpointSource == SourceFallback:
+		if setup.EndpointSource == SourceFallback {
+			res.Notes = append(res.Notes, fmt.Sprintf("the configured embedding endpoint is out of reach; using the fallback %s", found))
+		}
+	// requiem: cli/init-keeps-unreachable-endpoint
+	// A configured endpoint that is only out of reach, as a LAN server is
+	// from elsewhere, is kept: replacing it left every project on the
+	// machine on the local server after returning to the LAN. The working
+	// one becomes a fallback. An explicit --embedding-endpoint still sets
+	// the endpoint, since that is an instruction.
+	case configuredAway && setup.EndpointSource != SourceFlag:
+		path, err := s.endpointTarget(opts.SaveLocal)
+		if err != nil {
+			return err
+		}
+		if _, err := config.AddEmbeddingFallback(path, found, ""); err != nil {
+			return fmt.Errorf("save fallback endpoint: %w", err)
+		}
+		setup.SavedTo = path
+		setup.SavedAsFallback = true
+		res.Notes = append(res.Notes, fmt.Sprintf("kept the configured embedding endpoint %s, which is out of reach now, and added %s as a fallback", cfg.Embedding.Endpoint, found))
+	default:
 		path, err := s.endpointTarget(opts.SaveLocal)
 		if err != nil {
 			return err

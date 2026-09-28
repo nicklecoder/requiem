@@ -1,9 +1,15 @@
 package requiem
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/nicklecoder/requiem/internal/classify"
+	"github.com/nicklecoder/requiem/internal/config"
 	"github.com/nicklecoder/requiem/internal/reach"
 )
 
@@ -45,4 +51,44 @@ func (s *Service) recordReach(endpoint string, err error) {
 // downNote is the one line a degraded command prints for a skipped endpoint.
 func downNote(what, endpoint string, until time.Time) string {
 	return fmt.Sprintf("%s %s could not be reached recently; skipping it until %s", what, endpoint, until.Local().Format("15:04"))
+}
+
+// errNoClassifierAnswered means every configured classifier was skipped or
+// out of reach; its message says why each one was passed over.
+type errNoClassifierAnswered struct{ why []string }
+
+func (e errNoClassifierAnswered) Error() string { return strings.Join(e.why, "; ") }
+
+// requiem: embedding/fallback-endpoints
+// withClassifier runs fn against the configured classifier, then each
+// fallback, until one answers, and returns the identity of the one that did.
+// skipDown passes over classifiers recently marked unreachable, for the
+// commands that can do without one; the others always try. A failure that is
+// not an outage (a server error, a wrong model) is returned as it is.
+func (s *Service) withClassifier(cfg *config.Config, skipDown bool, fn func(*classify.Client, config.Classifier) error) (string, error) {
+	var why []string
+	for _, k := range cfg.Classifiers() {
+		client, err := classify.New(k)
+		if err != nil {
+			why = append(why, err.Error())
+			continue
+		}
+		if skipDown {
+			if until, down := s.endpointDown(client.Endpoint()); down {
+				why = append(why, downNote("classifier", client.Endpoint(), until))
+				continue
+			}
+		}
+		err = fn(client, k)
+		s.recordReach(client.Endpoint(), err)
+		if err == nil {
+			return client.Identity(), nil
+		}
+		if reach.Unreachable(err) || errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+			why = append(why, fmt.Sprintf("classifier %s did not answer (%v)", client.Identity(), err))
+			continue
+		}
+		return "", err
+	}
+	return "", errNoClassifierAnswered{why}
 }

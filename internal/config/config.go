@@ -86,6 +86,42 @@ type Embedding struct {
 	Timeout     string `yaml:"timeout,omitempty"`
 	BatchSize   int    `yaml:"batch_size,omitempty"`
 	Concurrency int    `yaml:"concurrency,omitempty"`
+	// Fallbacks are tried in order when the endpoint does not answer. A
+	// fallback naming no model serves the project's; one naming another
+	// model fills and reads that model's own vector set. Read only from the
+	// machine config and config.local.yaml: a fallback names a machine.
+	Fallbacks []EmbeddingFallback `yaml:"fallbacks,omitempty"`
+}
+
+// EmbeddingFallback is one alternative embedder.
+type EmbeddingFallback struct {
+	Endpoint string `yaml:"endpoint"`
+	Model    string `yaml:"model,omitempty"`
+}
+
+// requiem: embedding/fallback-endpoints
+// Embedders lists the configured embedder and then each fallback, as full
+// configs sharing the embedder's key, timeout and batching. Empty when no
+// embedder is configured.
+func (c *Config) Embedders() []Embedding {
+	if !c.EmbeddingConfigured() {
+		return nil
+	}
+	primary := *c.Embedding
+	primary.Fallbacks = nil
+	out := []Embedding{primary}
+	for _, f := range c.Embedding.Fallbacks {
+		if strings.TrimSpace(f.Endpoint) == "" {
+			continue
+		}
+		e := primary
+		e.Endpoint = f.Endpoint
+		if m := strings.TrimSpace(f.Model); m != "" {
+			e.Model = m
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // Hooks configures the git hooks `init` installs.
@@ -158,6 +194,29 @@ type Classifier struct {
 	// OpenWordingThreshold is the score above which add and update warn that
 	// a body may leave its decision open. Zero means the kind's default.
 	OpenWordingThreshold float64 `yaml:"open_wording_threshold,omitempty"`
+	// Fallbacks are tried in order when this classifier does not answer.
+	// Each may be another kind or model: scores are cached per classifier
+	// and never compared across them.
+	Fallbacks []Classifier `yaml:"fallbacks,omitempty"`
+}
+
+// requiem: embedding/fallback-endpoints
+// Classifiers lists the configured classifier and then each usable
+// fallback. Empty when no classifier is configured.
+func (c *Config) Classifiers() []Classifier {
+	if !c.ClassifierConfigured() {
+		return nil
+	}
+	primary := *c.Classifier
+	primary.Fallbacks = nil
+	out := []Classifier{primary}
+	for _, f := range c.Classifier.Fallbacks {
+		if (&Config{Classifier: &f}).ClassifierConfigured() {
+			f.Fallbacks = nil
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // DefaultOpenWordingThreshold is the nli default. A chat classifier has none:
@@ -232,6 +291,11 @@ func Load(requiemDir string) (*Config, error) {
 	// A classifier committed for the team would push one person's model,
 	// and its licence terms, onto every clone; the section is personal.
 	shared.Classifier = nil
+	// Fallback embedders name machines, so like the endpoint they are not
+	// taken from the committed file.
+	if shared.Embedding != nil {
+		shared.Embedding.Fallbacks = nil
+	}
 	c.overlay(shared)
 	local, err := LoadFile(filepath.Join(requiemDir, LocalFileName))
 	if err != nil {
@@ -319,6 +383,9 @@ func (c *Config) overlay(o *Config) {
 		if l.Concurrency != 0 {
 			e.Concurrency = l.Concurrency
 		}
+		if len(l.Fallbacks) > 0 {
+			e.Fallbacks = l.Fallbacks
+		}
 	}
 	// Hooks are a per-developer choice — whether this checkout waits on a
 	// network call — so the section is taken whole; setting embed: false
@@ -342,6 +409,9 @@ func (c *Config) overlay(o *Config) {
 		}
 		if l.OpenWordingThreshold != 0 {
 			k.OpenWordingThreshold = l.OpenWordingThreshold
+		}
+		if len(l.Fallbacks) > 0 {
+			k.Fallbacks = l.Fallbacks
 		}
 	}
 	if o.Hooks != nil {
@@ -539,6 +609,12 @@ const LocalTemplate = `# requiem local configuration — gitignored, this clone 
 #   timeout: 30s      # per request
 #   batch_size: 32    # inputs per request
 #   concurrency: 4    # requests in flight
+#
+#   # Tried in order when the endpoint does not answer, as a LAN server
+#   # does not from elsewhere. One naming no model serves the project's
+#   # model; one naming another model keeps that model's own vectors.
+#   fallbacks:
+#     - endpoint: http://localhost:11434/v1/embeddings
 #
 # hooks:
 #   embed: true
@@ -741,4 +817,58 @@ func SetEmbeddingField(path, key, value string) error {
 		return err
 	}
 	return writeNode(path, doc)
+}
+
+// AddEmbeddingFallback appends {endpoint, model} to embedding.fallbacks in
+// the config file at path, unless that endpoint is already listed. It
+// reports whether it added one. Comments survive, as with
+// SetEmbeddingField.
+// requiem: cli/init-keeps-unreachable-endpoint
+func AddEmbeddingFallback(path, endpoint, model string) (bool, error) {
+	doc, err := readNode(path)
+	if err != nil {
+		return false, err
+	}
+	if doc == nil {
+		existing, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return false, err
+		}
+		doc = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+		doc.HeadComment = strings.TrimRight(string(existing), "\n")
+	}
+	emb := mappingValue(doc, "embedding")
+	if emb == nil || emb.Kind != yaml.MappingNode {
+		emb = &yaml.Node{Kind: yaml.MappingNode}
+		root := doc.Content[0]
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "embedding"}, emb)
+	}
+	var list *yaml.Node
+	for i := 0; i+1 < len(emb.Content); i += 2 {
+		if emb.Content[i].Value == "fallbacks" {
+			list = emb.Content[i+1]
+		}
+	}
+	if list == nil || list.Kind != yaml.SequenceNode {
+		list = &yaml.Node{Kind: yaml.SequenceNode}
+		emb.Content = append(emb.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "fallbacks"}, list)
+	}
+	for _, item := range list.Content {
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			if item.Content[i].Value == "endpoint" && item.Content[i+1].Value == endpoint {
+				return false, nil
+			}
+		}
+	}
+	entry := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+		{Kind: yaml.ScalarNode, Value: "endpoint"}, {Kind: yaml.ScalarNode, Value: endpoint},
+	}}
+	if model != "" {
+		entry.Content = append(entry.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "model"}, &yaml.Node{Kind: yaml.ScalarNode, Value: model})
+	}
+	list.Content = append(list.Content, entry)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	return true, writeNode(path, doc)
 }

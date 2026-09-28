@@ -1197,37 +1197,60 @@ func (s *Service) resolveVector(p CheckParams) (vec []float32, embModel, degrade
 	if !cfg.EmbeddingConfigured() {
 		return nil, "", "", fmt.Errorf("--semantic needs an embedding endpoint: %s; or pass --vector/--model yourself", config.SetupHint())
 	}
-	client, err := embed.New(*cfg.Embedding)
-	if err != nil {
-		return nil, "", "", err
-	}
 	// requiem: retrieval/semantic-check-degrades
 	// check is what an agent runs before proposing anything, so an
 	// unreachable endpoint must not stop it: word search still finds most
 	// prior decisions, and the note keeps the answer honest.
 	lexicalOnly := "requiem: warning: results are from word search only; "
-	if until, down := s.endpointDown(client.Endpoint()); down {
-		return nil, "", lexicalOnly + downNote("the embedding endpoint", client.Endpoint(), until), nil
-	}
-	timeout, err := cfg.Embedding.ResolvedTimeout()
-	if err != nil {
-		return nil, "", "", err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	vecs, err := client.Embed(ctx, []string{p.Text})
-	s.recordReach(client.Endpoint(), err)
-	if err != nil {
-		if reach.Unreachable(err) || errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-			return nil, "", lexicalOnly + fmt.Sprintf("the embedding endpoint %s did not answer (%v)", client.Endpoint(), err), nil
+	var why []string
+	// requiem: embedding/fallback-endpoints
+	for _, e := range cfg.Embedders() {
+		client, err := embed.New(e)
+		if err != nil {
+			return nil, "", "", err
 		}
-		return nil, "", "", fmt.Errorf("embed query text: %w", err)
+		if until, down := s.endpointDown(client.Endpoint()); down {
+			why = append(why, downNote("embedding endpoint", client.Endpoint(), until))
+			continue
+		}
+		timeout, err := e.ResolvedTimeout()
+		if err != nil {
+			return nil, "", "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		vecs, err := client.Embed(ctx, []string{p.Text})
+		cancel()
+		s.recordReach(client.Endpoint(), err)
+		if err != nil {
+			if reach.Unreachable(err) || errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+				why = append(why, fmt.Sprintf("embedding endpoint %s did not answer (%v)", client.Endpoint(), err))
+				continue
+			}
+			return nil, "", "", fmt.Errorf("embed query text: %w", err)
+		}
+		// A fallback serving another model can only be compared against its
+		// own set; until that set has vectors, word search is the answer.
+		if n := s.vectorsFor(client.Model()); n == 0 {
+			why = append(why, fmt.Sprintf("%s answered, but nothing is embedded with %s yet (run `requiem reindex --embed`)", client.Endpoint(), client.Model()))
+			continue
+		}
+		return vecs[0], client.Model(), "", nil
 	}
-	// The model comes from the same config the corpus was embedded under, so
-	// the mismatch guard in the index has nothing to catch here — but it
-	// still runs, and would catch a config edited since the last embed run.
-	return vecs[0], client.Model(), "", nil
+	return nil, "", lexicalOnly + strings.Join(why, "; "), nil
+}
+
+// vectorsFor is how many vectors model's set holds.
+func (s *Service) vectorsFor(model string) int {
+	ix, err := s.openIndex()
+	if err != nil {
+		return 0
+	}
+	defer ix.Close()
+	c, err := ix.EmbeddingCorpusInfo(model)
+	if err != nil {
+		return 0
+	}
+	return c.Count
 }
 
 // Coverage is only computed when a query vector is in play: without one the

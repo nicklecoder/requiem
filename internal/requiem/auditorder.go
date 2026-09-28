@@ -62,20 +62,12 @@ func (s *Service) AuditOrdered(namespace string, neighbors, limit int, minScore 
 		return nil, err
 	}
 	res := &AuditResult{Pairs: pairs, Progress: prog, Coverage: cov}
-	client, err := classify.New(*cfg.Classifier)
-	if err != nil {
-		res.Ordering.Error = err.Error()
-		res.Pairs = page(pairs, limit)
-		return res, nil
-	}
-	res.Ordering.Classifier = client.Identity()
 	// requiem: embedding/unreachable-endpoints-remembered
-	if until, down := s.endpointDown(client.Endpoint()); down {
-		res.Ordering.Error = downNote("classifier", client.Endpoint(), until)
-		res.Pairs = page(pairs, limit)
-		return res, nil
-	}
-	if err := s.orderByClassifier(client, cfg.Classifier, res, progress); err != nil {
+	used, err := s.withClassifier(cfg, true, func(client *classify.Client, k config.Classifier) error {
+		return s.orderByClassifier(client, &k, res, progress)
+	})
+	res.Ordering.Classifier = used
+	if err != nil {
 		res.Ordering.Error = err.Error()
 	}
 	res.Pairs = page(res.Pairs, limit)
@@ -153,9 +145,8 @@ func (s *Service) orderByClassifier(client *classify.Client, cfg *config.Classif
 		ctx, cancel := context.WithTimeout(context.Background(), timeout*timeoutRequests(len(ask), cfg))
 		defer cancel()
 		scores, err := client.Contradiction(ctx, ask)
-		s.recordReach(client.Endpoint(), err)
 		if err != nil {
-			return fmt.Errorf("classifier %s did not answer: %w", client.Identity(), err)
+			return err
 		}
 		fresh := map[index.ScoreKey]float64{}
 		for j, i := range todo {
