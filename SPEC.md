@@ -112,6 +112,10 @@ It **reduces broad matching without bounding it**. Measured on a 200-statement c
 
 A statement with no vector is invisible to semantic search, and an empty result set is indistinguishable from "swept everything, found nothing" — a false all-clear on the one job this tool exists to do. So: zero coverage is an error, and partial coverage emits a warning on stderr naming the shortfall. Warnings go to stderr rather than into the payload so `stdout` stays bare JSON per the CLI output convention; agent harnesses surface combined output, so the warning still reaches its reader.
 
+### Optional classifier
+
+A classifier is an optional model that reads two statements together, which embeddings cannot: cosine judges each statement alone, so among the pairs audit surfaces it could not separate conflicts from compatible pairs (AUC 0.51 with mxbai-embed-large, 0.76 with qwen3-embedding-8b on sbs), where a 435M three-way NLI model reached 0.93. Two kinds are supported. An `nli` server takes premise/hypothesis pairs and answers entailment, neutral and contradiction probabilities; conflict scoring reads each statement as premise with the other as hypothesis and keeps the larger contradiction probability, because a conflict is symmetric and NLI is not. A `chat` classifier is any OpenAI-compatible chat endpoint with logprobs, asked one question with lettered options and scored from the probability of its answer letter. Its probabilities move with the server and prompt format, so every score orders a list and none gates one. The `classifier` config section is read only from the machine config and `config.local.yaml`: which model to run is each user's choice, nothing stored depends on it, and checkpoints differ in licence terms, so requiem ships, downloads and defaults none.
+
 ### Corpus-wide audit
 
 Where `check` compares one draft against prior decisions, `audit` compares the corpus against itself, surfacing pairs worth a human's attention. Pairs already adjudicated are excluded — by a recorded relationship in either direction, or by a dismissal in the verdict store — so a judged pair stops resurfacing.

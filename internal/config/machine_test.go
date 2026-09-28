@@ -113,3 +113,45 @@ func TestLoad_MalformedMachineConfigIsAnError(t *testing.T) {
 		t.Fatal("expected a parse error naming the machine config")
 	}
 }
+
+// requiem: cli/classifier-config-per-user
+// Which classifier to run is each user's choice, so a committed one is
+// ignored, while the machine config supplies it whole, model included.
+func TestLoad_ClassifierIsPersonal(t *testing.T) {
+	writeMachine(t, "classifier:\n  kind: chat\n  endpoint: http://mini:11434\n  model: gemma4\n")
+	dir := write(t, "classifier:\n  kind: nli\n  endpoint: http://team-server:11436\n")
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.ClassifierConfigured() || c.Classifier.Kind != "chat" || c.Classifier.Model != "gemma4" || c.Classifier.Endpoint != "http://mini:11434" {
+		t.Fatalf("expected the machine's classifier and not the committed one, got %+v", c.Classifier)
+	}
+	writeLocal(t, dir, "classifier:\n  kind: nli\n  endpoint: http://mini:11436\n")
+	c, err = Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Classifier.Kind != "nli" || c.Classifier.Endpoint != "http://mini:11436" {
+		t.Fatalf("expected the local overlay to win, got %+v", c.Classifier)
+	}
+}
+
+// requiem: principles/models-are-optional
+func TestClassifierConfigured_NeedsAKnownKindAndEndpoint(t *testing.T) {
+	for _, c := range []struct {
+		k    *Classifier
+		want bool
+	}{
+		{nil, false},
+		{&Classifier{Kind: "nli", Endpoint: "http://x"}, true},
+		{&Classifier{Kind: "chat", Endpoint: "http://x"}, false},
+		{&Classifier{Kind: "chat", Endpoint: "http://x", Model: "m"}, true},
+		{&Classifier{Kind: "reranker", Endpoint: "http://x"}, false},
+		{&Classifier{Kind: "nli"}, false},
+	} {
+		if got := (&Config{Classifier: c.k}).ClassifierConfigured(); got != c.want {
+			t.Errorf("ClassifierConfigured(%+v) = %v, want %v", c.k, got, c.want)
+		}
+	}
+}

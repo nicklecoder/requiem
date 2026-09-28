@@ -185,6 +185,50 @@ real finding, and `dismiss <a> <b>` for a pair you have judged unrelated.
 Dismissals are stored as verdicts rather than edges, so bookkeeping never
 accumulates in the graph you read to understand how decisions relate.
 
+## Optional classifier
+
+Embedding cosine cannot tell a conflict from a compatible pair among the pairs
+`audit` surfaces: on one real corpus it separated them no better than chance
+with mxbai-embed-large, and only moderately with qwen3-embedding-8b. A model
+that reads both statements together can. Configure one and `audit` puts the
+likely contradictions first; it only orders the queue and never hides a pair.
+requiem runs fully without one.
+
+Two kinds are supported, and requiem recommends neither — measured candidates
+are listed below so you can choose knowingly:
+
+```yaml
+# ~/.config/requiem/config.yaml, or .requiem/config.local.yaml — never the
+# committed config.yaml: which classifier to run is each user's choice
+classifier:
+  kind: nli                          # a server answering POST /v1/nli
+  endpoint: http://192.168.1.111:11436
+
+# or any OpenAI-compatible chat endpoint with logprobs, such as Ollama:
+classifier:
+  kind: chat
+  endpoint: http://localhost:11434
+  model: gemma4:latest
+  # reasoning_effort: omit           # if your server rejects the field
+```
+
+An `nli` server takes `{"pairs": [{"premise", "hypothesis"}]}` and answers one
+`{"entailment", "neutral", "contradiction"}` set per pair. A `chat` model is
+asked one question with options A (no) and B (yes) and scored from the
+logprob of its answer letter.
+
+Measured on the sbs corpus (91 known conflicts, 945 compatible pairs):
+
+| Model | Kind | Conflicts in the top tenth of the queue | Notes |
+|---|---|---|---|
+| `MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli` (435M) | nli | 78% | Weights labelled MIT; trained partly on ANLI, which is CC BY-NC 4.0 — whether that carries to the weights is unsettled. About 9 pairs a second on an M4 Mac Mini. |
+| `cross-encoder/nli-deberta-v3-large` (435M) | nli | 57% | Apache-2.0; trained on SNLI and MultiNLI. |
+| `gemma4` 8B via Ollama | chat | about the same as the first row | Ranked the one real defect found first where the NLI model ranked it 79th; no server beyond Ollama; about 0.7 s a pair on the Mini. |
+
+Neither kind of server is Ollama's own embedding endpoint, and requiem ships,
+downloads and defaults no classifier model. `requiem init` proves a configured
+classifier and says nothing when none is configured.
+
 ## Linking decisions to code
 
 A marker comment names the statement a piece of code implements:

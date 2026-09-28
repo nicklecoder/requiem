@@ -123,12 +123,47 @@ const (
 	GateError = "error"
 )
 
+// Classifier kinds: an nli server answering premise/hypothesis pairs with
+// three-way probabilities, or an OpenAI-compatible chat model scored from
+// the logprob of its answer letter.
+const (
+	ClassifierNLI  = "nli"
+	ClassifierChat = "chat"
+)
+
+// DefaultClassifierBatch is how many premise/hypothesis items one nli request
+// carries; a whole audit queue in one request would tie up the server and
+// fail as one unit.
+const DefaultClassifierBatch = 64
+
+// Classifier describes an optional model that scores whether two statements
+// contradict each other, and whether a body leaves its decision open. It is
+// read only from the machine config and config.local.yaml: which one to run
+// is each user's choice, and nothing stored depends on it.
+type Classifier struct {
+	Kind     string `yaml:"kind"`
+	Endpoint string `yaml:"endpoint"`
+	// Model is sent to a chat endpoint; an nli server names its own.
+	Model     string `yaml:"model,omitempty"`
+	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+	Timeout   string `yaml:"timeout,omitempty"`
+	// BatchSize bounds the items in one nli request.
+	BatchSize int `yaml:"batch_size,omitempty"`
+	// Concurrency bounds chat requests in flight.
+	Concurrency int `yaml:"concurrency,omitempty"`
+	// ReasoningEffort is sent to a chat endpoint so a thinking model answers
+	// with its letter rather than opening a thought: "none" by default,
+	// "omit" to leave the field out for a server that rejects it.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+}
+
 // Config is the whole file. Every section is optional: a project that never
 // configures embedding is fully functional, just lexical-only.
 type Config struct {
-	Embedding *Embedding `yaml:"embedding,omitempty"`
-	Hooks     *Hooks     `yaml:"hooks,omitempty"`
-	Gate      *Gate      `yaml:"gate,omitempty"`
+	Embedding  *Embedding  `yaml:"embedding,omitempty"`
+	Classifier *Classifier `yaml:"classifier,omitempty"`
+	Hooks      *Hooks      `yaml:"hooks,omitempty"`
+	Gate       *Gate       `yaml:"gate,omitempty"`
 }
 
 // GateDiff reports the configured diff gate, defaulting to off. An
@@ -173,6 +208,10 @@ func Load(requiemDir string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// requiem: cli/classifier-config-per-user
+	// A classifier committed for the team would push one person's model,
+	// and its licence terms, onto every clone; the section is personal.
+	shared.Classifier = nil
 	c.overlay(shared)
 	local, err := LoadFile(filepath.Join(requiemDir, LocalFileName))
 	if err != nil {
@@ -206,12 +245,13 @@ func LoadMachine() (*Config, error) {
 // embed with whatever this machine prefers, which another clone would not.
 // Gate and hooks are per-project settings and are not read from here.
 func (c *Config) machineLayer() *Config {
-	if c.Embedding == nil {
-		return &Config{}
+	out := &Config{Classifier: c.Classifier}
+	if c.Embedding != nil {
+		e := *c.Embedding
+		e.Model = ""
+		out.Embedding = &e
 	}
-	e := *c.Embedding
-	e.Model = ""
-	return &Config{Embedding: &e}
+	return out
 }
 
 // DefaultModel is the embedding model the machine config names, which init
@@ -263,6 +303,24 @@ func (c *Config) overlay(o *Config) {
 	// Hooks are a per-developer choice — whether this checkout waits on a
 	// network call — so the section is taken whole; setting embed: false
 	// locally must be able to turn a shared embed: true off.
+	if o.Classifier != nil {
+		if c.Classifier == nil {
+			c.Classifier = &Classifier{}
+		}
+		k, l := c.Classifier, o.Classifier
+		setString(&k.Kind, l.Kind)
+		setString(&k.Endpoint, l.Endpoint)
+		setString(&k.Model, l.Model)
+		setString(&k.APIKeyEnv, l.APIKeyEnv)
+		setString(&k.Timeout, l.Timeout)
+		setString(&k.ReasoningEffort, l.ReasoningEffort)
+		if l.BatchSize != 0 {
+			k.BatchSize = l.BatchSize
+		}
+		if l.Concurrency != 0 {
+			k.Concurrency = l.Concurrency
+		}
+	}
 	if o.Hooks != nil {
 		h := *o.Hooks
 		c.Hooks = &h
@@ -296,17 +354,67 @@ func (c *Config) EmbeddingConfigured() bool {
 		strings.TrimSpace(c.Embedding.Model) != ""
 }
 
+// ClassifierConfigured reports whether a usable classifier is configured: a
+// known kind, an endpoint, and for a chat classifier a model. An unknown kind
+// reads as unconfigured rather than failing, as a typo in any other key does.
+// requiem: principles/models-are-optional
+func (c *Config) ClassifierConfigured() bool {
+	k := c.Classifier
+	if k == nil || strings.TrimSpace(k.Endpoint) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(k.Kind)) {
+	case ClassifierNLI:
+		return true
+	case ClassifierChat:
+		return strings.TrimSpace(k.Model) != ""
+	}
+	return false
+}
+
+// ResolvedTimeout parses Timeout, falling back to DefaultTimeout when unset.
+func (k *Classifier) ResolvedTimeout() (time.Duration, error) {
+	return parseTimeout("classifier", k.Timeout)
+}
+
+// ResolvedBatchSize and ResolvedConcurrency clamp to their defaults.
+func (k *Classifier) ResolvedBatchSize() int {
+	if k.BatchSize <= 0 {
+		return DefaultClassifierBatch
+	}
+	return k.BatchSize
+}
+
+func (k *Classifier) ResolvedConcurrency() int {
+	if k.Concurrency <= 0 {
+		return DefaultConcurrency
+	}
+	return k.Concurrency
+}
+
+// APIKey reads the key out of the environment variable named by APIKeyEnv.
+func (k *Classifier) APIKey() string {
+	if k.APIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(k.APIKeyEnv)
+}
+
 // ResolvedTimeout parses Timeout, falling back to DefaultTimeout when unset.
 func (e *Embedding) ResolvedTimeout() (time.Duration, error) {
-	if strings.TrimSpace(e.Timeout) == "" {
+	return parseTimeout("embedding", e.Timeout)
+}
+
+func parseTimeout(section, value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
 		return DefaultTimeout, nil
 	}
-	d, err := time.ParseDuration(e.Timeout)
+	d, err := time.ParseDuration(value)
 	if err != nil {
-		return 0, fmt.Errorf("embedding.timeout %q: %w (expected a Go duration such as \"30s\")", e.Timeout, err)
+		return 0, fmt.Errorf("%s.timeout %q: %w (expected a Go duration such as \"30s\")", section, value, err)
 	}
 	if d <= 0 {
-		return 0, fmt.Errorf("embedding.timeout must be positive, got %q", e.Timeout)
+		return 0, fmt.Errorf("%s.timeout must be positive, got %q", section, value)
 	}
 	return d, nil
 }
@@ -411,6 +519,22 @@ const LocalTemplate = `# requiem local configuration — gitignored, this clone 
 #
 # hooks:
 #   embed: true
+#
+# An optional classifier, which audit uses to put likely contradictions first
+# (it never hides a pair, and requiem works fully without one). It belongs
+# here or in the machine config, never in the committed config.yaml. Either a
+# server answering POST /v1/nli with three-way NLI probabilities:
+#
+# classifier:
+#   kind: nli
+#   endpoint: http://localhost:11436
+#
+# or any OpenAI-compatible chat endpoint with logprobs, such as Ollama:
+#
+# classifier:
+#   kind: chat
+#   endpoint: http://localhost:11434
+#   model: gemma4:latest
 `
 
 // localOnlyEmbeddingKeys are the embedding fields that describe one machine
