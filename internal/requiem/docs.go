@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 37
+const docBlockVersion = 38
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -125,6 +125,14 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"rather than Redis, because it must survive a restart\" matches a future draft",
 	"that shares neither word. Retrieval works on the body, so a body that omits",
 	"the reasoning cannot match a draft that arrives at it differently.",
+	"",
+	// requiem: model/one-decision-per-statement
+	"**One decision per statement.** If part of a statement could be rejected",
+	"or superseded while the rest stands, it is two statements: add the narrower",
+	"one and link it to the other with `refines`. The reasoning belongs in the",
+	"body however long it gets, and a list of what one decision covers is still",
+	"one decision. Length is not the test — a short statement can hold three",
+	"rules — and `update` asks when a body grows a lot at once.",
 	"",
 	"### Commands",
 	"",

@@ -237,10 +237,19 @@ func (s *Service) applyBatchRecord(rec BatchRecord) (fullID, warning string, err
 		return r.FullID(), "", nil
 
 	case batchOpUpdate:
-		if _, err := s.Update(rec.FullID, UpdateParams{
+		var before string
+		if old, err := s.Store.ReadStatement(rec.FullID); err == nil {
+			before = old.Body
+		}
+		updated, err := s.Update(rec.FullID, UpdateParams{
 			Body: rec.Body, Status: rec.Status, Modality: rec.Modality,
-		}); err != nil {
+		})
+		if err != nil {
 			return rec.FullID, "", err
+		}
+		// requiem: model/growth-nudge
+		if rec.Body != "" {
+			return rec.FullID, GrowthNote(rec.FullID, before, updated.Body), nil
 		}
 		return rec.FullID, "", nil
 

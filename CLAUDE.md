@@ -1,4 +1,4 @@
-<!-- >>> requiem v37 >>> -->
+<!-- >>> requiem v38 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -54,6 +54,13 @@ why. "Use Postgres" is not retrievable; "Session state lives in Postgres
 rather than Redis, because it must survive a restart" matches a future draft
 that shares neither word. Retrieval works on the body, so a body that omits
 the reasoning cannot match a draft that arrives at it differently.
+
+**One decision per statement.** If part of a statement could be rejected
+or superseded while the rest stands, it is two statements: add the narrower
+one and link it to the other with `refines`. The reasoning belongs in the
+body however long it gets, and a list of what one decision covers is still
+one decision. Length is not the test — a short statement can hold three
+rules — and `update` asks when a body grows a lot at once.
 
 ### Commands
 
