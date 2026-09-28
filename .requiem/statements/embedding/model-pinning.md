@@ -3,7 +3,7 @@ id: model-pinning
 namespace: embedding
 kind: rule
 modality: must
-status: active
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-13T21:24:38.735414187Z
