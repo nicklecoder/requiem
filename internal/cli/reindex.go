@@ -11,7 +11,7 @@ import (
 )
 
 func newReindexCmd(semantic bool) *cobra.Command {
-	var withEmbed, force bool
+	var withEmbed, force, background bool
 
 	cmd := &cobra.Command{
 		Use:   "reindex",
@@ -30,6 +30,12 @@ func newReindexCmd(semantic bool) *cobra.Command {
 			svc, err := openService()
 			if err != nil {
 				return err
+			}
+			// A run started in the background by another command releases
+			// its lock however it ends.
+			// requiem: embedding/background-embedding
+			if background {
+				defer svc.FinishBackgroundEmbed()
 			}
 			stats, err := svc.Reindex()
 			if err != nil {
@@ -70,6 +76,8 @@ func newReindexCmd(semantic bool) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&withEmbed, "embed", false, "also compute missing/stale embeddings via the configured endpoint")
+	cmd.Flags().BoolVar(&background, "background", false, "internal: this run was started in the background, and releases its lock when done")
+	_ = cmd.Flags().MarkHidden("background")
 	cmd.Flags().BoolVar(&force, "force", false, "recompute every vector for the configured model, even fresh ones; other models' vectors are kept")
 
 	// After the flags exist: MarkHidden on an undefined flag is a silent no-op.

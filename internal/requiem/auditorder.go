@@ -34,6 +34,8 @@ type AuditResult struct {
 	Progress index.AuditProgress
 	Coverage Coverage
 	Ordering AuditOrdering
+	// Background says a background run was started to fill missing vectors.
+	Background string
 }
 
 // requiem: retrieval/audit-orders-by-pair-classifier
@@ -54,14 +56,14 @@ func (s *Service) AuditOrdered(namespace string, neighbors, limit int, minScore 
 		if err != nil {
 			return nil, err
 		}
-		return &AuditResult{Pairs: pairs, Progress: prog, Coverage: cov}, nil
+		return &AuditResult{Pairs: pairs, Progress: prog, Coverage: cov, Background: s.maybeEmbedInBackground()}, nil
 	}
 
 	pairs, prog, cov, err := s.Audit(namespace, neighbors, 0, minScore)
 	if err != nil {
 		return nil, err
 	}
-	res := &AuditResult{Pairs: pairs, Progress: prog, Coverage: cov}
+	res := &AuditResult{Pairs: pairs, Progress: prog, Coverage: cov, Background: s.maybeEmbedInBackground()}
 	// requiem: embedding/unreachable-endpoints-remembered
 	used, err := s.withClassifier(cfg, true, func(client *classify.Client, k config.Classifier) error {
 		return s.orderByClassifier(client, &k, res, progress)

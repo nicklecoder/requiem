@@ -1,4 +1,4 @@
-<!-- >>> requiem v36 >>> -->
+<!-- >>> requiem v37 >>> -->
 ## requiem
 
 This project tracks requirements, rules, and design decisions ("statements")
@@ -220,6 +220,9 @@ requiem reindex --embed      # fill every missing or stale vector
   that answer as the lexical half only. Connecting gives up after 2 seconds,
   and an unreachable server is skipped for 5 minutes by commands that can
   do without it.
+- When vectors are missing (a new statement, or a changed model),
+  `check --semantic` and `audit` start embedding them in the background and
+  answer at once; a stderr line says so, and later searches improve.
 
 Add `--semantic` to search by meaning as well as vocabulary — requiem embeds
 the query text for you:
