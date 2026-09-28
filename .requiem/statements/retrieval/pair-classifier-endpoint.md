@@ -2,7 +2,7 @@
 id: pair-classifier-endpoint
 namespace: retrieval
 kind: question
-status: proposed
+status: superseded
 provenance:
     type: dialogue
 created_at: 2026-09-27T16:47:18.392323623Z
