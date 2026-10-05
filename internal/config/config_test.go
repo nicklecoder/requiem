@@ -241,3 +241,32 @@ func TestMigrateLocalFields_KeepsExistingLocalEndpoint(t *testing.T) {
 		t.Fatalf("got %q", c.Embedding.Endpoint)
 	}
 }
+
+// requiem: cli/related-projects-per-developer
+// A related project is a path to one developer's checkout, so it is read
+// from the local overlay and never from the committed file — which Load
+// reports, rather than leaving a committed section silently without effect.
+func TestLoad_RelatedIsLocalOnly(t *testing.T) {
+	dir := write(t, "related:\n  shared: /from/the/committed/file\n")
+	if err := os.WriteFile(filepath.Join(dir, LocalFileName), []byte("related:\n  mine: /home/me/other\n"), 0o644); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Related) != 1 || c.Related["mine"] != "/home/me/other" {
+		t.Fatalf("Related = %v, want only the local entry", c.Related)
+	}
+	if !c.SharedRelated {
+		t.Fatal("a related: section in the committed config must be reported")
+	}
+
+	c, err = Load(write(t, "related:\n  shared: /x\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Related) != 0 {
+		t.Fatalf("committed related must be ignored, got %v", c.Related)
+	}
+}

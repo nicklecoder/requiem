@@ -47,7 +47,7 @@ const (
 // it frozen forever. The previous scheme keyed purely on an unversioned
 // marker and returned early whenever it was present, which meant a project
 // initialized once could never pick up a correction to this text.
-const docBlockVersion = 38
+const docBlockVersion = 39
 
 const (
 	// docMarkerPrefix matches the opening marker of *any* version, including
@@ -203,6 +203,16 @@ var agentDocBlock = docMarkerBegin + "\n" + strings.Join([]string{
 	"minimal set in force there: must/must_not rules, the principles they refine,",
 	"and what has already been rejected. Small enough to paste into a prompt, and",
 	"it counts what the cap left out instead of hiding it.",
+	"",
+	"**Reading a related project.** Another requiem project on this machine —",
+	"one this project refers to — can be read without merging the two corpora.",
+	"Name it under `related:` in the gitignored `.requiem/config.local.yaml` as",
+	"`<name>: /absolute/path/to/project`, then opt in per command:",
+	"`check --related <name>` (or `--related all`) appends that project's",
+	"candidates after this one's, ranked on its own with its own index and",
+	"model; `brief --related <name>` briefs it; `get <name>:<namespace>/<id>`",
+	"reads one of its records, the form check reports. Without the flag nothing",
+	"changes, and nothing is ever written to the related project's records.",
 	"",
 	"**Recording outcomes.** Writes auto-stage in git but never auto-commit, so a",
 	"dead end leaves no trace if you back out:",

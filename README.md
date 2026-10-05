@@ -247,6 +247,35 @@ Neither kind of server is Ollama's own embedding endpoint, and requiem ships,
 downloads and defaults no classifier model. `requiem init` proves a configured
 classifier and says nothing when none is configured.
 
+## Related projects
+
+Projects that are part of a larger whole refer to each other: a hosted
+edition builds on its open-source core and cites the core's decisions. Each
+keeps its own corpus, but one can read the other's when you ask it to.
+
+```yaml
+# .requiem/config.local.yaml — gitignored: these paths are yours, not the team's
+related:
+  versine-ce: /home/me/Projects/versine/versine-ce
+```
+
+Any location on the machine works; the name is yours to choose. Then opt in
+per command:
+
+```sh
+requiem check --text "<the idea>" --related versine-ce   # or --related all
+requiem brief --related versine-ce --namespace server
+requiem get versine-ce:server/api-contract
+```
+
+Each related project is searched as itself — its own index, config and
+embedding model — and its candidates follow this project's in a separate
+run, ranked and limited on their own and marked with `project` and a
+`<name>:` prefix on every id. Nothing from it enters this project's index,
+vectors, audit or graph, and requiem never writes to it. Without `--related`
+every command answers from this project alone. A related project that is
+missing, misconfigured or unreadable is an error, never a silent skip.
+
 ## Linking decisions to code
 
 A marker comment names the statement a piece of code implements:

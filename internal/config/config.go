@@ -243,6 +243,16 @@ type Config struct {
 	Classifier *Classifier `yaml:"classifier,omitempty"`
 	Hooks      *Hooks      `yaml:"hooks,omitempty"`
 	Gate       *Gate       `yaml:"gate,omitempty"`
+	// Related maps a name the developer chooses to the root of another
+	// requiem project on this machine, which check, get and brief read
+	// when --related names it. Read only from config.local.yaml: a path
+	// names one machine's checkout.
+	Related map[string]string `yaml:"related,omitempty"`
+
+	// SharedRelated reports that the committed config.yaml carries a
+	// related: section, which Load ignores; set so the caller can say so
+	// rather than leave the setting silently without effect.
+	SharedRelated bool `yaml:"-"`
 }
 
 // GateDiff reports the configured diff gate, defaulting to off. An
@@ -296,12 +306,18 @@ func Load(requiemDir string) (*Config, error) {
 	if shared.Embedding != nil {
 		shared.Embedding.Fallbacks = nil
 	}
+	// requiem: cli/related-projects-per-developer
+	// Which neighbour a developer has cloned, and where, is true of one
+	// machine; a committed path would be wrong in every other clone.
+	sharedRelated := len(shared.Related) > 0
+	shared.Related = nil
 	c.overlay(shared)
 	local, err := LoadFile(filepath.Join(requiemDir, LocalFileName))
 	if err != nil {
 		return nil, err
 	}
 	c.overlay(local)
+	c.SharedRelated = sharedRelated
 	return c, nil
 }
 
@@ -420,6 +436,9 @@ func (c *Config) overlay(o *Config) {
 	}
 	if o.Gate != nil {
 		setString(&c.ensureGate().Diff, o.Gate.Diff)
+	}
+	if len(o.Related) > 0 {
+		c.Related = o.Related
 	}
 }
 
@@ -634,6 +653,14 @@ const LocalTemplate = `# requiem local configuration — gitignored, this clone 
 #   kind: chat
 #   endpoint: http://localhost:11434
 #   model: gemma4:latest
+#
+# Related projects: other requiem projects on this machine that check, get
+# and brief read only when --related names one. Each is a name you choose
+# and the absolute path of that project's root, wherever it lives. Each is
+# searched with its own index and model, and nothing from it is copied here.
+#
+# related:
+#   other-project: /path/to/other-project
 `
 
 // localOnlyEmbeddingKeys are the embedding fields that describe one machine

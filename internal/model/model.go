@@ -259,6 +259,10 @@ type InboundRef struct {
 // Statement is the atomic unit requiem tracks: a requirement, rule, or
 // design decision, addressed by the composite "<namespace>/<id>".
 type Statement struct {
+	// Project names the related project a statement was read from, when
+	// get was given a <project>:<namespace>/<id>; its ids are that
+	// project's own. Never stored.
+	Project   string   `yaml:"-" json:"project,omitempty"`
 	ID        string   `yaml:"id" json:"id"`
 	Namespace string   `yaml:"namespace" json:"namespace"`
 	Kind      Kind     `yaml:"kind" json:"kind"`

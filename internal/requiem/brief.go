@@ -31,6 +31,9 @@ type BriefEntry struct {
 // is indistinguishable from none.
 // requiem: cli/brief
 type Brief struct {
+	// Project names the related project this brief describes; empty for
+	// this project.
+	Project   string `json:"project,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	// Rules are the must and must_not statements in scope. They come first
 	// because a prohibition is the cheapest thing to check a draft against
@@ -192,4 +195,21 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// BriefRelated builds the brief for a related project, as that project
+// would build it, with every id prefixed so it can be passed to get.
+// requiem: retrieval/related-ids-prefixed
+func (s *Service) BriefRelated(rp RelatedProject, namespace string, limit int) (*Brief, error) {
+	b, err := rp.Open().BriefFor(namespace, limit)
+	if err != nil {
+		return nil, fmt.Errorf("related project %s: %w", rp.Name, err)
+	}
+	b.Project = rp.Name
+	for _, section := range [][]BriefEntry{b.Rules, b.Parents, b.Rejections} {
+		for i := range section {
+			section[i].FullID = rp.Prefix(section[i].FullID)
+		}
+	}
+	return b, nil
 }

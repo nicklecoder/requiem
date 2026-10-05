@@ -37,7 +37,7 @@ func checkLong(semantic bool) string {
 
 func newCheckCmd(semantic bool) *cobra.Command {
 	var namespace, text, vectorJSON, model, diffRev string
-	var tags, touches []string
+	var tags, touches, related []string
 	var limit int
 	var useSemantic, diff, staged bool
 
@@ -55,6 +55,9 @@ func newCheckCmd(semantic bool) *cobra.Command {
 			if diff || staged || diffRev != "" {
 				if text != "" {
 					return fmt.Errorf("--diff and --text ask different questions: one scopes to a patch, the other to a draft")
+				}
+				if len(related) > 0 {
+					return fmt.Errorf("--diff checks this project's patch against this project's decisions; it takes no --related")
 				}
 				rev := diffRev
 				if staged {
@@ -103,7 +106,15 @@ func newCheckCmd(semantic bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			candidates, coverage, err := svc.Check(requiem.CheckParams{
+			// Resolved before anything is searched, so a misconfigured
+			// related project fails the command instead of leaving an
+			// answer from this project alone that reads as complete.
+			// requiem: retrieval/related-projects-opt-in
+			projects, err := svc.Related(related)
+			if err != nil {
+				return err
+			}
+			params := requiem.CheckParams{
 				Namespace: namespace,
 				Text:      text,
 				Tags:      tags,
@@ -112,7 +123,11 @@ func newCheckCmd(semantic bool) *cobra.Command {
 				Vector:    vec,
 				Model:     model,
 				Semantic:  useSemantic,
-			})
+			}
+			if len(projects) > 0 && len(vec) > 0 {
+				return requiem.ErrRelatedVector
+			}
+			candidates, coverage, err := svc.Check(params)
 			if err != nil {
 				return err
 			}
@@ -120,6 +135,17 @@ func newCheckCmd(semantic bool) *cobra.Command {
 			warnNothingMatched(candidates)
 			if candidates == nil {
 				candidates = []index.Candidate{}
+			}
+			// This project's candidates first, then each related
+			// project's as its own run, ranked and limited on its own.
+			// requiem: retrieval/related-projects-stay-separate
+			answers, err := svc.CheckRelated(params, projects)
+			if err != nil {
+				return err
+			}
+			for _, a := range answers {
+				warnRelated(a)
+				candidates = append(candidates, a.Candidates...)
 			}
 			return printJSON(candidates)
 		},
@@ -133,6 +159,7 @@ func newCheckCmd(semantic bool) *cobra.Command {
 	cmd.Flags().StringVar(&model, "model", "", "name of the embedding model that produced --vector (required with it)")
 	cmd.Flags().BoolVar(&useSemantic, "semantic", false, "also match by meaning, embedding --text via the configured endpoint")
 	cmd.Flags().IntVar(&limit, "limit", index.DefaultCheckLimit, "maximum candidates to return (0 = unlimited)")
+	cmd.Flags().StringSliceVar(&related, "related", nil, "also search these related projects from .requiem/config.local.yaml, each as itself (comma-separated names, or all)")
 	cmd.Flags().BoolVar(&diff, "diff", false, "scope to the working tree's changes instead of a draft: which recorded decisions cover this patch")
 	cmd.Flags().BoolVar(&staged, "staged", false, "like --diff, over the staged changes")
 	cmd.Flags().StringVar(&diffRev, "diff-rev", "", "like --diff, over a revision or range (e.g. HEAD~3, main...HEAD)")
