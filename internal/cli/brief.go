@@ -7,7 +7,7 @@ import (
 )
 
 func newBriefCmd() *cobra.Command {
-	var namespace string
+	var namespace, related string
 	var limit int
 
 	cmd := &cobra.Command{
@@ -25,7 +25,17 @@ func newBriefCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			brief, err := svc.BriefFor(namespace, limit)
+			var brief *requiem.Brief
+			if related != "" {
+				// requiem: retrieval/related-projects-opt-in
+				rp, rerr := svc.RelatedProjectByName(related)
+				if rerr != nil {
+					return rerr
+				}
+				brief, err = svc.BriefRelated(rp, namespace, limit)
+			} else {
+				brief, err = svc.BriefFor(namespace, limit)
+			}
 			if err != nil {
 				return err
 			}
@@ -34,6 +44,7 @@ func newBriefCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "scope the brief to this namespace (and anything nested under it)")
+	cmd.Flags().StringVar(&related, "related", "", "brief a related project from .requiem/config.local.yaml instead of this one, as that project would")
 	cmd.Flags().IntVar(&limit, "limit", requiem.DefaultBriefLimit, "maximum records per section")
 
 	return cmd

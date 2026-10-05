@@ -53,6 +53,25 @@ func warnCoverage(c requiem.Coverage) {
 	}
 }
 
+// warnRelated says what a related project's answer to check amounts to,
+// each line naming the project: the same coverage and nothing-matched notes
+// this project's answer gets, since a related project's empty answer is as
+// easy to over-read as this one's.
+func warnRelated(a requiem.RelatedCheck) {
+	label := "requiem: [" + a.Project.Name + "] "
+	for _, w := range []string{a.Coverage.Warning(), a.Coverage.Background} {
+		if w != "" {
+			fmt.Fprintln(os.Stderr, label+strings.TrimPrefix(w, "requiem: "))
+		}
+	}
+	switch {
+	case len(a.Candidates) == 0:
+		fmt.Fprintln(os.Stderr, label+"no candidates matched") // requiem:ignore message text, not a label
+	case index.StrongestVerdict(a.Candidates) == index.VerdictWeak:
+		fmt.Fprintf(os.Stderr, "%s%d candidate(s), all weak matches — nothing there appears to state this\n", label, len(a.Candidates))
+	}
+}
+
 // warnLink reports what a recorded relationship leaves for the caller to do.
 // Requiem does not act on the consequence itself (see
 // model/supersedes-does-not-retire), which makes saying so the whole

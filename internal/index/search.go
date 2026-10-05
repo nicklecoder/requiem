@@ -24,7 +24,11 @@ const (
 // both without the caller needing to know which table something came from.
 // Excerpt only, never the full body — see StatementSummary for why.
 type Candidate struct {
-	FullID     string         `json:"full_id"`
+	FullID string `json:"full_id"`
+	// Project names the related project this candidate came from, as
+	// configured in config.local.yaml; empty for this project's own records.
+	// requiem: retrieval/related-ids-prefixed
+	Project    string         `json:"project,omitempty"`
 	Namespace  string         `json:"namespace"`
 	SourceKind string         `json:"source_kind"` // "statement" | "rejection"
 	Kind       model.Kind     `json:"kind,omitempty"`
